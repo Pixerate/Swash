@@ -276,24 +276,17 @@ struct IOSContentView: View {
 }
 
 private extension FormatCommand {
+    /// The Undo menu's name for the edit: the manifest label ("Undo Heading 2"), without a
+    /// trailing ellipsis. Only Swash's own commands are named here.
     var actionName: String {
+        if let label = label {
+            return label.hasSuffix("…") ? String(label.dropLast()) : label
+        }
         switch self {
-        case .bold: return "Bold"
-        case .italic: return "Italic"
-        case .strikethrough: return "Strikethrough"
-        case .code: return "Code"
-        case .link: return "Link"
-        case .heading(let level): return "Heading \(level)"
-        case .paragraph: return "Paragraph"
-        case .bulletList: return "Bullet List"
-        case .numberedList: return "Numbered List"
-        case .taskList: return "To-do List"
-        case .quote: return "Quote"
-        case .codeBlock: return "Code Block"
-        case .table: return "Table"
         case .callout: return "Callout"
         case .footnote: return "Footnote"
         case .tableOfContents: return "Table of Contents"
+        default: return "Format"
         }
     }
 }
