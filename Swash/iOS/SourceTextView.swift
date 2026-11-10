@@ -17,6 +17,7 @@ struct SourceTextView: UIViewRepresentable {
     let controller: IOSEditorController
     var scrollSync: ScrollSync?
     var formattingEnabled: Bool = true
+    var flavor: MarkdownFlavor = .github
 
     func makeUIView(context: Context) -> MarkdownEditingTextView {
         let textView = MarkdownEditingTextView(usingTextLayoutManager: false)
@@ -36,6 +37,7 @@ struct SourceTextView: UIViewRepresentable {
         textView.autocapitalizationType = .sentences
         textView.dataDetectorTypes = []
         controller.attach(textView)
+        textView.flavor = flavor
         textView.installFormattingBar(enabled: formattingEnabled)
         scrollSync?.register(textView)
         return textView
@@ -51,6 +53,7 @@ struct SourceTextView: UIViewRepresentable {
             let length = (text as NSString).length
             textView.selectedRange = NSRange(location: min(selection.location, length), length: 0)
         }
+        textView.flavor = flavor
         textView.installFormattingBar(enabled: formattingEnabled)
     }
 
@@ -94,7 +97,7 @@ struct SourceTextView: UIViewRepresentable {
         }
 
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
-            (textView as? MarkdownEditingTextView)?.formattingMenu(for: range, suggestedActions: suggestedActions)
+            (textView as? MarkdownEditingTextView)?.editMenu(for: range, suggestedActions: suggestedActions)
         }
     }
 }

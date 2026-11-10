@@ -48,6 +48,8 @@ class MarkdownEditingTextView: UITextView {
     private var formattingBarEnabled: Bool?
     /// Set while a Markdown edit replaces text, so the delegate doesn't intercept the replacement.
     var isApplyingEdit = false
+    /// The document's flavour, for finding links (Slack mrkdwn writes them as `<url|text>`).
+    var flavor: MarkdownFlavor = .github
 
     /// The selection in raw-Markdown offsets.
     var markdownSelection: NSRange { selectedRange }
@@ -118,6 +120,44 @@ class MarkdownEditingTextView: UITextView {
     }
 
     // MARK: Edit menu
+
+    /// The edit menu for delegates' `editMenuForTextIn`: the system actions, Open Link when the
+    /// selection is in a link (links aren't followed by tapping while editing, and iOS has no
+    /// ⌘-click), and the Format submenu.
+    func editMenu(for range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+        var actions = suggestedActions
+        if let url = linkURL(at: markdownSelection) {
+            let open = UIAction(title: "Open Link", image: UIImage(systemName: "safari")) { _ in
+                UIApplication.shared.open(url)
+            }
+            actions.insert(UIMenu(options: .displayInline, children: [open]), at: 0)
+        }
+        if let menu = formattingMenu(for: range, suggestedActions: actions) { return menu }
+        return actions.count == suggestedActions.count ? nil : UIMenu(children: actions)
+    }
+
+    /// The URL of the link at `selection` (raw-Markdown offsets), if it is one the system can
+    /// open: a destination with a scheme, a `www.` autolink or an email address. Relative links
+    /// and fragments have nowhere to go from here.
+    func linkURL(at selection: NSRange) -> URL? {
+        let text = markdownText
+        var destination: String?
+        if flavor == .slack {
+            destination = LinkDetector.findLink(at: selection, in: text, flavor: .slack, includeBareURLs: true)?.url
+        } else if let node = MarkdownFormatting(text: text).link(at: selection), case .link(let target, _, _) = node.kind {
+            destination = target
+        }
+        guard var target = destination?.trimmingCharacters(in: .whitespacesAndNewlines), !target.isEmpty else { return nil }
+        if !target.contains(":") {
+            if target.lowercased().hasPrefix("www.") {
+                target = "https://" + target
+            } else if target.contains("@"), !target.contains("/") {
+                target = "mailto:" + target
+            }
+        }
+        guard let url = MarkdownSyntax.url(target), let scheme = url.scheme, !scheme.isEmpty else { return nil }
+        return url
+    }
 
     /// The edit menu with a Format submenu, for delegates' `editMenuForTextIn`.
     func formattingMenu(for range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
