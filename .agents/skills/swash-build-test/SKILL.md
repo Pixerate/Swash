@@ -71,7 +71,10 @@ The Format menu, shortcuts, bubble-menu labels and code languages come from the 
 ./scripts/run_rich_render_tests.sh # math and Mermaid rendering
 ./scripts/run_export_tests.sh      # HTML and PDF export
 ./scripts/run_paste_tests.sh       # Swash's paste additions to the engine (Confluence/Jira images)
+./scripts/run_agent_tools_tests.sh # agent tools (#49) called through a PixerateCore ToolRegistry
 ```
+
+To try the agent tools end to end, run the bridge from an editor checkout (`node ../editor/packages/core/dist/bridge/cli.js --port 4499 --token t0ken`, MCP on stdio) and open a document in a Debug build with `open -n -a build/.../Swash.app doc.md --args -agentBridgeEnabled YES -agentBridgeToken t0ken -agentBridgeURL ws://127.0.0.1:4499 -ApplePersistenceIgnoreState YES`. Launch arguments override the settings without saving them. See GOTCHAS #65.
 
 After `./scripts/run_spec_tests.sh`, restore the snapshots (GOTCHAS #8).
 
