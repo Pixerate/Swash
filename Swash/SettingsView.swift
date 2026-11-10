@@ -6,10 +6,11 @@
 #if os(macOS)
 import SwiftUI
 import MacAppKitExtras
+import PixerateCore
 
 struct SettingsView: View {
     private enum Tab: Hashable {
-        case general, appearance, updates
+        case general, appearance, agents, updates
     }
 
     @State private var selection: Tab = .general
@@ -23,6 +24,10 @@ struct SettingsView: View {
             AppearanceSettingsView()
                 .tabItem { Label("Appearance", systemImage: "textformat.size") }
                 .tag(Tab.appearance)
+
+            AgentSettingsView()
+                .tabItem { Label("Agents", systemImage: "sparkles") }
+                .tag(Tab.agents)
 
             UpdatesSettingsView()
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
@@ -246,6 +251,80 @@ private struct UpdatesSettingsView: View {
                         sparkleUpdater.checkForUpdates()
                     }
                     .disabled(!sparkleUpdater.canCheckForUpdates)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollDisabled(true)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+// MARK: - Agents
+
+/// Connects open documents to `pixerate-mcp-bridge`, so AI agents can read and edit them (#49).
+private struct AgentSettingsView: View {
+    @AppStorage(AgentBridgeDefaults.enabled) private var enabled = false
+    @AppStorage(AgentBridgeDefaults.url) private var url = AgentBridgeDefaults.defaultURL
+    @AppStorage(AgentBridgeDefaults.token) private var token = ""
+    private let bridge = AgentBridge.shared
+
+    private var statusText: String {
+        guard enabled else { return "Off" }
+        switch bridge.status {
+        case .connected:
+            return bridge.documentCount == 1 ? "Connected" : "Connected (\(bridge.connectedCount) of \(bridge.documentCount) documents)"
+        case .connecting:
+            return "Connecting…"
+        case .disconnected:
+            return "Not connected"
+        case .closed:
+            return bridge.documentCount == 0 ? "Connects when a document is open" : "Not connected"
+        }
+    }
+
+    private var statusColor: Color {
+        guard enabled else { return .secondary }
+        switch bridge.status {
+        case .connected: return .green
+        case .connecting: return .orange
+        default: return bridge.documentCount == 0 ? .secondary : .red
+        }
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Let agents edit open documents", isOn: $enabled)
+                    .onChange(of: enabled) { bridge.settingsChanged() }
+                LabeledContent("Status") {
+                    Label(statusText, systemImage: "circle.fill")
+                        .labelStyle(.titleAndIcon)
+                        .foregroundStyle(statusColor)
+                }
+                if enabled, bridge.status != .connected, let detail = bridge.detail {
+                    Text(detail)
+                        .settingsFooterStyle()
+                        .textSelection(.enabled)
+                }
+            } header: {
+                Text("Pixerate MCP Bridge")
+            } footer: {
+                Text("Agents such as Claude Code connect through pixerate-mcp-bridge, which runs on this Mac. Each open document is listed to them, and they edit it with the same tools as the Pixerate editor. Every change can be undone.")
+                    .settingsFooterStyle()
+            }
+
+            Section {
+                TextField("Bridge URL", text: $url)
+                    .onSubmit { bridge.settingsChanged() }
+                SecureField("Token", text: $token)
+                    .onSubmit { bridge.settingsChanged() }
+            } footer: {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Start the bridge with npx pixerate-mcp-bridge --token <secret>, and enter the same token here.")
+                        .settingsFooterStyle()
+                    Button("Reconnect") { bridge.settingsChanged() }
+                        .disabled(!enabled)
                 }
             }
         }
