@@ -17,6 +17,8 @@ struct SourceTextView: UIViewRepresentable {
     let controller: IOSEditorController
     var scrollSync: ScrollSync?
     var formattingEnabled: Bool = true
+    /// Space under the navigation bar and banner (see `UIScrollView.setTopBarInset`).
+    var topInset: CGFloat = 0
 
     func makeUIView(context: Context) -> MarkdownEditingTextView {
         let textView = MarkdownEditingTextView(usingTextLayoutManager: false)
@@ -38,6 +40,7 @@ struct SourceTextView: UIViewRepresentable {
         controller.attach(textView)
         textView.installFormattingBar(enabled: formattingEnabled)
         scrollSync?.register(textView)
+        textView.setTopBarInset(topInset)
         return textView
     }
 
@@ -52,6 +55,7 @@ struct SourceTextView: UIViewRepresentable {
             textView.selectedRange = NSRange(location: min(selection.location, length), length: 0)
         }
         textView.installFormattingBar(enabled: formattingEnabled)
+        textView.setTopBarInset(topInset)
     }
 
     /// Fill the space offered: a text view's own fitting size is its whole content height, which

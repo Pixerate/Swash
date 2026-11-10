@@ -18,6 +18,8 @@ struct StyledTextView: UIViewRepresentable {
     let controller: IOSEditorController
     var flavor: MarkdownFlavor
     var baseURL: URL?
+    /// Space under the navigation bar and banner (see `UIScrollView.setTopBarInset`).
+    var topInset: CGFloat = 0
 
     func makeUIView(context: Context) -> StyledUITextView {
         let storage = NSTextStorage()
@@ -45,6 +47,7 @@ struct StyledTextView: UIViewRepresentable {
         textView.installFormattingBar(enabled: true)
         context.coordinator.textView = textView
         context.coordinator.scheduleFullRestyle()
+        textView.setTopBarInset(topInset)
         return textView
     }
 
@@ -52,6 +55,7 @@ struct StyledTextView: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.parent = self
         controller.attach(textView)
+        textView.setTopBarInset(topInset)
         coordinator.isUpdatingFromSwiftUI = true
         defer { coordinator.isUpdatingFromSwiftUI = false }
 

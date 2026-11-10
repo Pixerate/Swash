@@ -68,6 +68,20 @@ typealias PlatformColor = UIColor
 typealias PlatformFont = UIFont
 typealias PlatformImage = UIImage
 
+extension UIScrollView {
+    /// Insets the content below bars SwiftUI reports. Editors ignore the top safe area so text
+    /// scrolls under the navigation bar, which leaves UIKit's automatic inset short of the bar
+    /// (and the folder banner); `total` is the full inset wanted, safe area included.
+    func setTopBarInset(_ total: CGFloat) {
+        let extra = max(0, total - safeAreaInsets.top)
+        guard abs(contentInset.top - extra) > 0.5 else { return }
+        let wasAtTop = contentOffset.y <= -adjustedContentInset.top + 0.5
+        contentInset.top = extra
+        verticalScrollIndicatorInsets.top = extra
+        if wasAtTop { contentOffset.y = -adjustedContentInset.top }
+    }
+}
+
 /// AppKit's semantic colour names, so shared views can use one spelling.
 extension UIColor {
     static var textColor: UIColor { .label }

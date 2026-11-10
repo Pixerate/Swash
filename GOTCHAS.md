@@ -258,3 +258,8 @@
 ## 64. `NSGraphicsContext(bitmapImageRep:)` Returns `nil` for 24-Bit (`samplesPerPixel: 3`) Bitmaps
 - **Issue**: Creating an opaque `NSBitmapImageRep` with `samplesPerPixel: 3, hasAlpha: false` (24-bit RGB without a padding byte) succeeds, but `NSGraphicsContext(bitmapImageRep:)` returns `nil` because CoreGraphics `CGBitmapContextCreate` only supports 32-bit RGB formats (`kCGImageAlphaNoneSkipLast` / `kCGImageAlphaNoneSkipFirst`). Drawing into the `nil` context silently no-ops and writes an all-black PNG for `icon_ios_1024.png`.
 - **Solution**: Copy the already-opaque 1024 × 1024 source PNG (`samplesPerPixel: 3, hasAlpha: no`) directly to `Swash/Assets.xcassets/AppIcon.appiconset/icon_ios_1024.png` (or strip alpha with `sips -s format png`), rather than re-drawing through `NSGraphicsContext(bitmapImageRep:)` with `samplesPerPixel: 3`.
+
+## 25. iOS Editors Under the Navigation Bar Get No Top Safe Area
+- **Issue**: For text to scroll under the iOS 26 navigation bar (transparent header, scroll-edge effect), the UIKit editors must ignore the top safe area. Once they do, their `safeAreaInsets.top` is 0, and so is a `GeometryReader`'s `proxy.safeAreaInsets.top` when it ignores the safe area too. Content then starts under the bar.
+- **Solution**: `IOSContentView` measures the gap as the global `minY` of a `Color.clear` that respects the safe area minus the editor's `minY`, then passes it as `topInset`. `UIScrollView.setTopBarInset(_:)` (in `PlatformTypes.swift`) applies it as `contentInset.top` on `SourceTextView`, `StyledTextView` and `PreviewScrollView`. `ScrollSync` already includes `adjustedContentInset.top`.
+
