@@ -17,6 +17,8 @@ struct SourceTextView: UIViewRepresentable {
     let controller: IOSEditorController
     var scrollSync: ScrollSync?
     var formattingEnabled: Bool = true
+    /// Space under the navigation bar and banner (see `UIScrollView.setTopBarInset`).
+    var topInset: CGFloat = 0
     var flavor: MarkdownFlavor = .github
     /// Settings › Text Size (before Dynamic Type, which the font applies itself).
     var textSize: CGFloat = EditorTypography.defaultTextSize
@@ -43,6 +45,7 @@ struct SourceTextView: UIViewRepresentable {
         textView.flavor = flavor
         textView.installFormattingBar(enabled: formattingEnabled)
         scrollSync?.register(textView)
+        textView.setTopBarInset(topInset)
         return textView
     }
 
@@ -58,6 +61,7 @@ struct SourceTextView: UIViewRepresentable {
         }
         textView.flavor = flavor
         textView.installFormattingBar(enabled: formattingEnabled)
+        textView.setTopBarInset(topInset)
         if context.coordinator.lastTextSize != textSize {
             context.coordinator.lastTextSize = textSize
             textView.font = Self.font(textSize: textSize)

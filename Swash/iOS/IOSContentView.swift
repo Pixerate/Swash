@@ -23,6 +23,9 @@ struct IOSContentView: View {
     @State private var showingSettings = false
     @State private var linkPrompt: LinkPrompt?
     @State private var dismissedFolderBanner: URL?
+    /// Global y of the top safe-area edge and of the editor, which extends under the bar.
+    @State private var safeAreaTop: CGFloat = 0
+    @State private var editorTop: CGFloat = 0
     @ObservedObject private var folderAccessManager = FolderAccessManager.shared
     private var typography = IOSTypographySettings()
     @State private var features = IOSDocumentFeaturesModel()
@@ -50,11 +53,20 @@ struct IOSContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        // The editors fill the window, so text scrolls under the navigation bar and gets its
+        // scroll-edge effect; the banner joins that bar instead of pushing the editor down
+        ZStack {
+            // Where the safe area (bar and banner) ends; the editor below starts at the window top
+            Color.clear
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { safeAreaTop = $0 }
+            content(topInset: max(0, safeAreaTop - editorTop))
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { editorTop = $0 }
+                .ignoresSafeArea(.container, edges: [.top, .bottom])
+        }
+        .safeAreaBar(edge: .top) {
             if let folderURL = unreadableFolderURL {
                 folderAccessBanner(for: folderURL)
             }
-            content
         }
         .modifier(IOSDocumentFeatures(model: features, text: document.text, editor: editor))
         .toolbar { toolbar }
@@ -89,42 +101,45 @@ struct IOSContentView: View {
         }
     }
 
+    /// The editors ignore the top safe area so text scrolls under the bar; `topInset` is the
+    /// bar's (and banner's) height, which they apply as a content inset.
     @ViewBuilder
-    private var content: some View {
+    private func content(topInset: CGFloat) -> some View {
         switch effectiveMode {
         case .edit:
-            sourceEditor
+            sourceEditor(topInset: topInset)
         case .preview:
             // Edit Text for every flavour: Slack mrkdwn is parsed onto the same model (SlackMarkdown)
-            StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL, typography: typography.scaled)
-                .ignoresSafeArea(.container, edges: .bottom)
+            StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL,
+                           topInset: topInset, typography: typography.scaled)
                 .id(folderAccessManager.accessGrantedTrigger)
         case .split:
             HStack(spacing: 0) {
-                sourceEditor
+                sourceEditor(topInset: topInset)
                 Divider()
-                preview
+                preview(topInset: topInset)
             }
         }
     }
 
-    private var sourceEditor: some View {
+    private func sourceEditor(topInset: CGFloat) -> some View {
         SourceTextView(
             text: $document.text,
             controller: editor,
             scrollSync: effectiveMode == .split ? scrollSync : nil,
+            topInset: topInset,
             flavor: document.flavor,
             textSize: typography.stored.textSize
         )
-        .ignoresSafeArea(.container, edges: .bottom)
     }
 
-    private var preview: some View {
+    private func preview(topInset: CGFloat) -> some View {
         MarkdownPreviewView(
             text: document.text,
             flavor: document.flavor,
             baseURL: fileURL,
             scrollSync: effectiveMode == .split ? scrollSync : nil,
+            topInset: topInset,
             typography: typography.scaled
         )
         .id(folderAccessManager.accessGrantedTrigger)
@@ -229,7 +244,9 @@ struct IOSContentView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(Color(PlatformColor.controlBackgroundColor))
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 6)
     }
 
     // MARK: - Formatting

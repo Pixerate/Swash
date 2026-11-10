@@ -15,6 +15,8 @@ import PixerateMarkdown
 #if os(macOS)
 struct PreviewScrollView<Content: View>: NSViewRepresentable {
     var scrollSync: ScrollSync?
+    /// Used on iOS only; the Mac window insets its content itself.
+    var topInset: CGFloat = 0
     /// Identifies the content: the hosting view is only updated and re-measured when it (or the
     /// width) changes, not on every update of the enclosing view.
     var contentKey: AnyHashable? = nil
@@ -148,6 +150,8 @@ import UIKit
 /// is pinned to the content layout guide and sized by its intrinsic height.
 struct PreviewScrollView<Content: View>: UIViewRepresentable {
     var scrollSync: ScrollSync?
+    /// Space under the navigation bar and banner (see `UIScrollView.setTopBarInset`).
+    var topInset: CGFloat = 0
     /// Accepted for parity with the macOS view, which uses it to skip re-measuring unchanged content.
     var contentKey: AnyHashable? = nil
     @ViewBuilder let content: () -> Content
@@ -160,6 +164,9 @@ struct PreviewScrollView<Content: View>: UIViewRepresentable {
 
         let host = UIHostingController(rootView: content())
         host.sizingOptions = .intrinsicContentSize
+        // The scroll view already insets its content for the bars; the hosted preview mustn't add
+        // the safe area again
+        host.safeAreaRegions = []
         host.view.backgroundColor = .clear
         host.view.translatesAutoresizingMaskIntoConstraints = false
         scrollView.addSubview(host.view)
@@ -172,10 +179,12 @@ struct PreviewScrollView<Content: View>: UIViewRepresentable {
         ])
         context.coordinator.host = host
         scrollSync?.register(scrollView)
+        scrollView.setTopBarInset(topInset)
         return scrollView
     }
 
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
+        scrollView.setTopBarInset(topInset)
         context.coordinator.host?.rootView = content()
     }
 
@@ -192,6 +201,8 @@ struct MarkdownPreviewView: View {
     let flavor: MarkdownFlavor
     let baseURL: URL?
     var scrollSync: ScrollSync? = nil
+    /// Space under the navigation bar on iOS, where the preview scrolls under it.
+    var topInset: CGFloat = 0
     /// Font, text size, line width and theme (Quick Look and exports use the defaults).
     var typography = EditorTypography()
     /// Reuses the last parse while the text is unchanged; the view is re-evaluated whenever
@@ -205,11 +216,12 @@ struct MarkdownPreviewView: View {
     static let updateDelay: Duration = .milliseconds(200)
     
     /// `preparsed`: the parse of `text`, made off the main thread by the caller (Quick Look).
-    init(text: String, flavor: MarkdownFlavor, baseURL: URL? = nil, scrollSync: ScrollSync? = nil, typography: EditorTypography = EditorTypography(), preparsed: MarkdownDocument? = nil) {
+    init(text: String, flavor: MarkdownFlavor, baseURL: URL? = nil, scrollSync: ScrollSync? = nil, topInset: CGFloat = 0, typography: EditorTypography = EditorTypography(), preparsed: MarkdownDocument? = nil) {
         self.text = text
         self.flavor = flavor
         self.baseURL = baseURL
         self.scrollSync = scrollSync
+        self.topInset = topInset
         self.typography = typography
         if let preparsed = preparsed {
             _parseCache = State(initialValue: ParseCache(text: text, flavor: flavor, document: preparsed))
@@ -233,7 +245,7 @@ struct MarkdownPreviewView: View {
         }
         let context = MarkdownRenderContext(document: document, baseURL: baseURL, typography: typography)
 
-        PreviewScrollView(scrollSync: scrollSync, contentKey: ContentKey(revision: revision, flavor: flavor, baseURL: baseURL, typography: typography)) {
+        PreviewScrollView(scrollSync: scrollSync, topInset: topInset, contentKey: ContentKey(revision: revision, flavor: flavor, baseURL: baseURL, typography: typography)) {
             VStack(alignment: .leading, spacing: 14) {
                 if blocks.isEmpty {
                     Text("Nothing to preview yet. Start typing on the left!")
