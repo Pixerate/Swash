@@ -17,12 +17,15 @@ struct SourceTextView: UIViewRepresentable {
     let controller: IOSEditorController
     var scrollSync: ScrollSync?
     var formattingEnabled: Bool = true
+    /// Settings › Text Size (before Dynamic Type, which the font applies itself).
+    var textSize: CGFloat = EditorTypography.defaultTextSize
 
     func makeUIView(context: Context) -> MarkdownEditingTextView {
         let textView = MarkdownEditingTextView(usingTextLayoutManager: false)
         textView.delegate = context.coordinator
         textView.text = text
-        textView.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: .monospacedSystemFont(ofSize: 15, weight: .regular))
+        textView.font = Self.font(textSize: textSize)
+        context.coordinator.lastTextSize = textSize
         textView.adjustsFontForContentSizeCategory = true
         textView.textColor = .label
         textView.backgroundColor = .systemBackground
@@ -52,6 +55,16 @@ struct SourceTextView: UIViewRepresentable {
             textView.selectedRange = NSRange(location: min(selection.location, length), length: 0)
         }
         textView.installFormattingBar(enabled: formattingEnabled)
+        if context.coordinator.lastTextSize != textSize {
+            context.coordinator.lastTextSize = textSize
+            textView.font = Self.font(textSize: textSize)
+        }
+    }
+
+    /// Monospaced, 15 pt at the default text size, scaled for Dynamic Type.
+    static func font(textSize: CGFloat) -> UIFont {
+        let size = (15 * textSize / EditorTypography.defaultTextSize).rounded()
+        return UIFontMetrics(forTextStyle: .body).scaledFont(for: .monospacedSystemFont(ofSize: size, weight: .regular))
     }
 
     /// Fill the space offered: a text view's own fitting size is its whole content height, which
@@ -65,6 +78,7 @@ struct SourceTextView: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: SourceTextView
+        var lastTextSize: CGFloat = EditorTypography.defaultTextSize
 
         init(parent: SourceTextView) {
             self.parent = parent

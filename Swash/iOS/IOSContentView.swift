@@ -24,6 +24,8 @@ struct IOSContentView: View {
     @State private var linkPrompt: LinkPrompt?
     @State private var dismissedFolderBanner: URL?
     @ObservedObject private var folderAccessManager = FolderAccessManager.shared
+    private var typography = IOSTypographySettings()
+    @State private var features = IOSDocumentFeaturesModel()
 
     /// Split needs room for two columns; in compact width it falls back to Source.
     private var effectiveMode: ViewMode {
@@ -47,6 +49,7 @@ struct IOSContentView: View {
             }
             content
         }
+        .modifier(IOSDocumentFeatures(model: features, text: document.text, editor: editor))
         .toolbar { toolbar }
         .toolbarRole(.editor)
         .sheet(isPresented: $showingSettings) {
@@ -82,7 +85,7 @@ struct IOSContentView: View {
             sourceEditor
         case .preview:
             if usesStyledEditor {
-                StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL)
+                StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL, typography: typography.scaled)
                     .ignoresSafeArea(.container, edges: .bottom)
                     .id(folderAccessManager.accessGrantedTrigger)
             } else {
@@ -102,7 +105,8 @@ struct IOSContentView: View {
             text: $document.text,
             controller: editor,
             scrollSync: effectiveMode == .split ? scrollSync : nil,
-            formattingEnabled: document.flavor != .slack
+            formattingEnabled: document.flavor != .slack,
+            textSize: typography.stored.textSize
         )
         .ignoresSafeArea(.container, edges: .bottom)
     }
@@ -112,13 +116,16 @@ struct IOSContentView: View {
             text: document.text,
             flavor: document.flavor,
             baseURL: fileURL,
-            scrollSync: effectiveMode == .split ? scrollSync : nil
+            scrollSync: effectiveMode == .split ? scrollSync : nil,
+            typography: typography.scaled
         )
         .id(folderAccessManager.accessGrantedTrigger)
     }
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
+                           editor: editor, regularWidth: horizontalSizeClass == .regular)
         ToolbarItem(placement: .primaryAction) {
             Picker("View", selection: $viewMode) {
                 ForEach(availableModes) { mode in
@@ -172,18 +179,11 @@ struct IOSContentView: View {
 
     /// The system share sheet for the Markdown, anchored at the top trailing corner on iPad.
     private func presentShareSheet() {
-        let activity = UIActivityViewController(activityItems: [document.text], applicationActivities: nil)
-        activity.setValue(documentTitle, forKey: "subject")
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        guard let window = scenes.filter({ $0.activationState == .foregroundActive }).flatMap(\.windows).first(where: \.isKeyWindow),
-              var presenter = window.rootViewController else { return }
-        while let presented = presenter.presentedViewController { presenter = presented }
-        if let popover = activity.popoverPresentationController {
-            popover.sourceView = presenter.view
-            popover.sourceRect = CGRect(x: presenter.view.bounds.maxX - 60, y: presenter.view.safeAreaInsets.top, width: 1, height: 1)
-            popover.permittedArrowDirections = .up
-        }
-        presenter.present(activity, animated: true)
+        IOSPresenter.share([document.text], subject: documentTitle)
+    }
+
+    private var exportSource: DocumentExporter.Source {
+        DocumentExporter.Source(text: document.text, flavor: document.flavor, fileURL: fileURL, title: documentTitle)
     }
 
     private var documentTitle: String {
