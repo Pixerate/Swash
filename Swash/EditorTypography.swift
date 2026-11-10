@@ -186,8 +186,16 @@ struct EditorTypography: Hashable {
         if isDefaultSize {
             return design == nil && font == .system ? .body : .system(.body, design: resolved)
         }
-        return .system(size: scaled(13), design: resolved)
+        return .system(size: scaled(Self.previewBodySize), design: resolved)
     }
+
+    /// The size of `.body` at the default Dynamic Type size, which the preview uses at the default
+    /// text size: 13 pt on the Mac, 17 pt on iPhone and iPad.
+    #if os(macOS)
+    static let previewBodySize: CGFloat = 13
+    #else
+    static let previewBodySize: CGFloat = 17
+    #endif
 
     /// A fixed-size preview font scaled with the text size.
     func previewFont(size: CGFloat, weight: Font.Weight = .regular, design: Font.Design? = nil) -> Font {
