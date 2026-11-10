@@ -425,7 +425,7 @@ struct StyledTextView: UIViewRepresentable {
             cachedOffsetMap = nil
             storage.setAttributes(baseAttributes, range: NSRange(location: 0, length: storage.length))
 
-            let document = MarkdownDocument.parse(rawText)
+            let document = MarkdownDocument.parse(rawText, flavor: parent.flavor)
             let styler = MarkdownEditorStyler(storage: storage, document: document)
             styler.typography = parent.typography
             configureRichPreviews(styler, for: textView)
@@ -449,7 +449,7 @@ struct StyledTextView: UIViewRepresentable {
 
             let rawText = swashRawMarkdown(from: storage)
             let raw = rawText as NSString
-            let document = MarkdownDocument.parse(rawText)
+            let document = MarkdownDocument.parse(rawText, flavor: parent.flavor)
             let blocks = document.root.children
             let current = Self.blockSummaries(document, raw: raw)
 

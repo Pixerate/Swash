@@ -76,7 +76,7 @@ Status: **in progress** on the `feat/universal-ios` branch. The phase checklists
 - [x] Flavour picker, share sheet, settings sheet.
 - [x] iOS simulator build in `pr-build.yml`.
 
-**Phase 2 notes.** The formatting bar is hidden for Slack mrkdwn, whose delimiters the AST engine doesn't write yet. Preview table cells use a plain `TextField` when edited (they are read-only in the preview).
+**Phase 2 notes.** The formatting bar and edit menu write Slack's own delimiters for Slack mrkdwn (`SlackMarkdown.swift`, #56). Preview table cells use a plain `TextField` when edited (they are read-only in the preview).
 
 ### 3. Styled editor ("Edit Text") on UIKit
 - [x] Make `MarkdownEditorStyler` cross-platform. macOS keeps its `NSTextBlock`s unchanged. On iOS, quotes, alerts, code blocks and rules carry a `BlockDecoration` paragraph attribute that `StyledLayoutManager` paints (GOTCHAS #31). Italics use font descriptors on iOS.
@@ -85,7 +85,7 @@ Status: **in progress** on the `feat/universal-ios` branch. The phase checklists
 - [x] Incremental restyling, ported from the macOS coordinator.
 - [ ] iOS harness comparing incremental and full restyles (with the simulator tests in phase 6).
 
-**Phase 3 notes.** Formatted mode on iOS is now the Edit Text editor, except for Slack mrkdwn, which still shows the read-only preview (the Mac styles Slack with a separate legacy path). Text is drawn at 17/14 of the Mac sizes (`MarkdownEditorStyler.fontScale`). Known gaps:
+**Phase 3 notes.** Formatted mode on iOS is now the Edit Text editor for every flavour. Slack mrkdwn is parsed onto the shared model (`SlackMarkdown.swift`), so both platforms style and format it through the same path (#56). Text is drawn at 17/14 of the Mac sizes (`MarkdownEditorStyler.fontScale`). Known gaps:
 - UIKit has no per-range spell-check hook, so code isn't excluded from spell-checking on iOS.
 - Links in the editor are edited, not followed.
 - Undo across collapsed tables and images still needs testing on a device with a hardware keyboard.

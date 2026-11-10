@@ -20,6 +20,9 @@ final class IOSEditorController {
     fileprivate(set) weak var textView: MarkdownEditingTextView?
     /// Called by the formatting bar, the edit menu and Tab handling; set by the hosting view.
     var onFormatCommand: ((FormatCommand) -> Void)?
+    /// The document's flavour, so the edit menu checks commands against the right parse (Slack
+    /// mrkdwn has its own inline syntax, SlackMarkdown.swift); set by the hosting view.
+    var flavor: MarkdownFlavor = .github
 
     var isAttached: Bool { textView != nil }
 
@@ -165,7 +168,7 @@ class MarkdownEditingTextView: UITextView {
     func formattingMenu(for range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
         guard formattingBarEnabled == true, range.length > 0 else { return nil }
         let selection = markdownSelection
-        let formatting = MarkdownFormatting(text: markdownText)
+        let formatting = MarkdownFormatting(text: markdownText, flavor: controller?.flavor ?? .github)
         let entries = FormatManifest.entries(for: .bubble).filter {
             $0.command.isAvailableOnIOS && formatting.isEnabled($0.command, selection: selection)
         }
@@ -179,8 +182,7 @@ class MarkdownEditingTextView: UITextView {
 
     // MARK: Formatting bar
 
-    /// Shows the formatting bar above the software keyboard (hidden when Slack mrkdwn is
-    /// selected, whose delimiters the AST engine does not write yet).
+    /// Shows the formatting bar above the software keyboard.
     func installFormattingBar(enabled: Bool) {
         guard formattingBarEnabled != enabled else { return }
         formattingBarEnabled = enabled
