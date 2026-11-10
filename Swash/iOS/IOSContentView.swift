@@ -113,6 +113,7 @@ struct IOSContentView: View {
             text: $document.text,
             controller: editor,
             scrollSync: effectiveMode == .split ? scrollSync : nil,
+            flavor: document.flavor,
             textSize: typography.stored.textSize
         )
         .ignoresSafeArea(.container, edges: .bottom)
