@@ -160,6 +160,31 @@ final class SwashEditorController {
         coordinator.applyEdit(in: textView, newRawText: newText, rawSelection: selection, actionName: actionName)
         return true
     }
+
+    /// The live raw Markdown of the attached editor (styled storage turned back into source), or
+    /// nil when no editor is attached.
+    var currentRawText: String? {
+        guard let textView = textView, let coordinator = coordinator else { return nil }
+        return coordinator.rawText(of: textView)
+    }
+
+    /// An agent tool's edit (#49): like `apply`, but never merged into the user's typing, so each
+    /// tool call is its own undo step.
+    @discardableResult
+    func applyAgentEdit(newText: String, selection: NSRange, actionName: String) -> Bool {
+        textView?.breakUndoCoalescing()
+        let applied = apply(newText: newText, selection: selection, actionName: actionName)
+        textView?.breakUndoCoalescing()
+        return applied
+    }
+
+    /// Selects `range` (raw-Markdown offsets) and scrolls it into view, without taking focus.
+    func select(rawRange range: NSRange) {
+        guard let textView = textView, let coordinator = coordinator else { return }
+        let storage = coordinator.storageRange(forRaw: range, in: textView)
+        textView.setSelectedRange(storage)
+        textView.scrollRangeToVisible(storage)
+    }
 }
 
 final class SwashLayoutManager: NSLayoutManager {
@@ -1214,7 +1239,13 @@ struct SwashTextView: NSViewRepresentable {
             }
             return result as String
         }
-        
+
+        /// The raw Markdown the text view shows (as `applyEdit` computes it).
+        func rawText(of textView: NSTextView) -> String {
+            if parent.isStyled, let storage = textView.textStorage { return buildRawMarkdown(from: storage) }
+            return textView.string
+        }
+
         // MARK: - Storage ↔ Raw Offsets
         
         private var sharedFormatting: MarkdownFormatting?
