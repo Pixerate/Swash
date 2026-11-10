@@ -76,7 +76,7 @@ struct SwashApp: App {
     
     var body: some Scene {
         DocumentGroup(newDocument: SwashDocument()) { file in
-            ContentView(document: file.$document, fileURL: file.fileURL)
+            ContentView(document: file.$document, fileURL: file.fileURL, isEditable: file.isEditable)
         }
         .windowToolbarStyle(.unified)
         .defaultSize(width: 800, height: 750)
