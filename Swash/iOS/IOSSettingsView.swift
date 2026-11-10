@@ -8,6 +8,7 @@
 
 #if os(iOS)
 import SwiftUI
+import PixerateStickers
 
 struct IOSSettingsView: View {
     @AppStorage("markdownFlavor") private var markdownFlavor: MarkdownFlavor = .github
@@ -24,6 +25,9 @@ struct IOSSettingsView: View {
                     }
                 }
                 IOSTypographySettingsSections()
+                if StickerCatalog.isAvailable {
+                    StickerSetsSection()
+                }
                 Section {
                     LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
                 }

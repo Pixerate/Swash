@@ -17,6 +17,9 @@ jobs:
   release:
     name: Build, Package & Release
     runs-on: macos-26
+    env:
+      # Secrets can't be read in a step's `if`, so expose only whether this one is set.
+      HAS_PIXERATE_PACKAGES_TOKEN: ${{ secrets.PIXERATE_PACKAGES_TOKEN != '' }}
 
     steps:
       - name: Checkout Code
@@ -94,6 +97,20 @@ jobs:
           echo "Found Signing Identity: $IDENTITY"
           echo "CODE_SIGN_IDENTITY=$IDENTITY" >> $GITHUB_ENV
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+
+      # Packages/PixerateStickers is an MIT-safe stub with no artwork, so anyone can build Swash.
+      # Official builds swap in the private Pixerate/stickers package when the token is set (#62).
+      # Without the secret this step is skipped and the build keeps the stub.
+      - name: Inject Proprietary Stickers
+        if: (steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch') && env.HAS_PIXERATE_PACKAGES_TOKEN == 'true'
+        env:
+          PIXERATE_PACKAGES_TOKEN: ${{ secrets.PIXERATE_PACKAGES_TOKEN }}
+        run: |
+          rm -rf Packages/PixerateStickers
+          git clone --depth 1 --branch v0.9.0 \
+            "https://x-access-token:${PIXERATE_PACKAGES_TOKEN}@github.com/Pixerate/stickers.git" \
+            Packages/PixerateStickers
+          test -d Packages/PixerateStickers/swift/Sources/PixerateStickers/Resources/Stickers.xcassets
 
       - name: Build macOS App
         if: steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch'
