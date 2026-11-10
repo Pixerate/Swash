@@ -9,7 +9,7 @@
 # build/pixerate-editor. To test against a local checkout instead, set PIXERATE_EDITOR_DIR.
 
 PIXERATE_REPO_URL="https://github.com/Pixerate/editor.git"
-PIXERATE_SPARSE_PATHS=(packages/swift/Sources/PixerateMarkdown packages/swift/Tests/PixerateMarkdownTests packages/markdown-conformance)
+PIXERATE_SPARSE_PATHS=(packages/swift/Sources/PixerateMarkdown packages/swift/Tests/PixerateMarkdownTests packages/markdown-conformance packages/swift/Sources/PixerateCore)
 
 pixerate_pinned_revision() {
   python3 - "Swash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved" <<'PY'
