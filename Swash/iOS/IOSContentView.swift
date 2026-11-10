@@ -27,6 +27,13 @@ struct IOSContentView: View {
     private var typography = IOSTypographySettings()
     @State private var features = IOSDocumentFeaturesModel()
 
+    // Explicit, because `typography` is a private stored property, which would
+    // otherwise make the memberwise initializer private.
+    init(document: Binding<SwashDocument>, fileURL: URL?) {
+        _document = document
+        self.fileURL = fileURL
+    }
+
     /// Split needs room for two columns; in compact width it falls back to Source.
     private var effectiveMode: ViewMode {
         viewMode == .split && horizontalSizeClass == .compact ? .edit : viewMode
