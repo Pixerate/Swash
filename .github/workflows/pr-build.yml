@@ -58,6 +58,9 @@ jobs:
       - name: Markdown conformance tests (@pixerate/markdown-conformance)
         run: scripts/run_conformance_tests.sh
 
+      - name: Agent tools tests (MCP bridge tools through a PixerateCore ToolRegistry)
+        run: scripts/run_agent_tools_tests.sh
+
       - name: MacAppKitExtras package tests
         run: swift test --package-path Packages/MacAppKitExtras
 

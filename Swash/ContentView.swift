@@ -66,6 +66,9 @@ struct ContentView: View {
     /// The outline shown by a sidebar outside this view (a folder window's). Without one, the
     /// view shows its own outline in a leading split view column.
     var hostedOutline: DocumentOutlineState? = nil
+    /// False for documents SwiftUI opened read-only (a locked file, a version being browsed).
+    /// Agent tools then only read (#49).
+    var isEditable: Bool = true
     
     @State private var viewMode: ViewMode = .preview
     @State private var selectedRange: NSRange? = nil
@@ -150,6 +153,8 @@ struct ContentView: View {
     // expression it exceeded the compiler's type-checking time limit on CI.
     var body: some View {
         withLifecycle
+        .modifier(AgentToolsHookup(text: $document.text, editor: editor, name: documentTitle,
+                                   readOnlyReason: isEditable ? nil : "the file is locked or can't be saved"))
         .onChange(of: window) { _, window in
             if window?.isKeyWindow == true { documentWindowBecameKey() }
         }
