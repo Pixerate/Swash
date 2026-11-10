@@ -377,6 +377,9 @@ struct StyledTextView: UIViewRepresentable {
         private var lastRawLength = 0
         /// Set whenever the storage was replaced or styling inputs changed; the next pass is a full one.
         var forceFullRestyle = true
+        /// Styling passes so far, by kind (read by the iOS editor tests).
+        private(set) var fullPassCount = 0
+        private(set) var incrementalPassCount = 0
 
         private static func blockSummaries(_ document: MarkdownDocument, raw: NSString) -> [(source: String, range: NSRange, isDefinition: Bool)] {
             document.root.children.map { block in
@@ -397,6 +400,7 @@ struct StyledTextView: UIViewRepresentable {
                 return
             }
             forceFullRestyle = false
+            fullPassCount += 1
             isHighlighting = true
             let savedOffset = textView.contentOffset
             let savedRawSelection = pendingRawSelection ?? rawRange(forStorage: textView.selectedRange, in: textView)
@@ -466,6 +470,7 @@ struct StyledTextView: UIViewRepresentable {
             let storageRegion = NSRange(location: storageStart, length: storageEnd - storageStart)
             let shift = start - storageStart
 
+            incrementalPassCount += 1
             isHighlighting = true
             storage.beginEditing()
             storage.enumerateAttribute(.attachment, in: storageRegion, options: []) { value, _, _ in
