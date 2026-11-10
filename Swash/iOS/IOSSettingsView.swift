@@ -24,6 +24,7 @@ struct IOSSettingsView: View {
                         }
                     }
                 }
+                IOSTypographySettingsSections()
                 if StickerCatalog.isAvailable {
                     StickerSetsSection()
                 }

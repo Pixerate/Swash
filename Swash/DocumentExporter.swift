@@ -285,11 +285,13 @@ final class DocumentExporter: NSObject {
         return data as Data
     }
 
-    /// Shows the system print sheet for the document.
-    static func print(_ source: Source) async throws {
+    /// Shows the system print sheet for the document. `willPresent` runs once typesetting is done,
+    /// just before the sheet appears.
+    static func print(_ source: Source, willPresent: () -> Void = {}) async throws {
         let exporter = DocumentExporter()
         try await exporter.typeset(source)
         guard let webView = exporter.webView else { return }
+        willPresent()
         let info = UIPrintInfo.printInfo()
         info.jobName = source.title
         info.outputType = .general
