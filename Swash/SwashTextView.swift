@@ -73,19 +73,23 @@ final class SwashEditorController {
     weak var textView: NSTextView?
     weak var coordinator: SwashTextView.Coordinator?
     private var cachedFormatting: MarkdownFormatting?
+    private var cachedFlavor: MarkdownFlavor?
 
     /// Where the bubble menu is drawn (overlay coordinates), so the editor shows the arrow over it.
     var bubbleMenuFrame: NSRect? {
         didSet { (textView as? SwashNSTextView)?.bubbleMenuFrame = bubbleMenuFrame }
     }
     
-    /// Parsed formatting state for `text`, reused until the text changes.
-    func formatting(for text: String) -> MarkdownFormatting {
+    /// Parsed formatting state for `text`, reused until the text changes. `flavor` defaults to the
+    /// editor's (Slack mrkdwn has its own inline syntax, SlackMarkdown.swift).
+    func formatting(for text: String, flavor: MarkdownFlavor? = nil) -> MarkdownFormatting {
         // Share the editor's parse when it has one for this text
-        if let coordinator = coordinator { return coordinator.formatting(for: text) }
-        if let cached = cachedFormatting, cached.text == text { return cached }
-        let formatting = MarkdownFormatting(text: text)
+        if let coordinator = coordinator { return coordinator.formatting(for: text, flavor: flavor) }
+        let flavor = flavor ?? .github
+        if let cached = cachedFormatting, cached.text == text, cachedFlavor == flavor { return cached }
+        let formatting = MarkdownFormatting(text: text, flavor: flavor)
         cachedFormatting = formatting
+        cachedFlavor = flavor
         return formatting
     }
 
@@ -159,6 +163,31 @@ final class SwashEditorController {
         guard let textView = textView, let coordinator = coordinator, textView.window != nil else { return false }
         coordinator.applyEdit(in: textView, newRawText: newText, rawSelection: selection, actionName: actionName)
         return true
+    }
+
+    /// The live raw Markdown of the attached editor (styled storage turned back into source), or
+    /// nil when no editor is attached.
+    var currentRawText: String? {
+        guard let textView = textView, let coordinator = coordinator else { return nil }
+        return coordinator.rawText(of: textView)
+    }
+
+    /// An agent tool's edit (#49): like `apply`, but never merged into the user's typing, so each
+    /// tool call is its own undo step.
+    @discardableResult
+    func applyAgentEdit(newText: String, selection: NSRange, actionName: String) -> Bool {
+        textView?.breakUndoCoalescing()
+        let applied = apply(newText: newText, selection: selection, actionName: actionName)
+        textView?.breakUndoCoalescing()
+        return applied
+    }
+
+    /// Selects `range` (raw-Markdown offsets) and scrolls it into view, without taking focus.
+    func select(rawRange range: NSRange) {
+        guard let textView = textView, let coordinator = coordinator else { return }
+        let storage = coordinator.storageRange(forRaw: range, in: textView)
+        textView.setSelectedRange(storage)
+        textView.scrollRangeToVisible(storage)
     }
 }
 
@@ -1095,8 +1124,6 @@ struct SwashTextView: NSViewRepresentable {
         private var cachedOffsetMap: AttachmentOffsetMap? = nil
         /// Code-block ranges in storage coordinates, refreshed on every styling pass (used by spellcheck).
         private var cachedStorageCodeBlocks: [NSRange] = []
-        /// Code ranges of the raw text currently being styled.
-        private var currentCodeRanges = MarkdownParser.CodeRanges()
         /// Raw-markdown selection to restore after the next styling pass.
         private var pendingRawSelection: NSRange? = nil
         private var editGeneration = 0
@@ -1214,17 +1241,25 @@ struct SwashTextView: NSViewRepresentable {
             }
             return result as String
         }
-        
+
+        /// The raw Markdown the text view shows (as `applyEdit` computes it).
+        func rawText(of textView: NSTextView) -> String {
+            if parent.isStyled, let storage = textView.textStorage { return buildRawMarkdown(from: storage) }
+            return textView.string
+        }
+
         // MARK: - Storage ↔ Raw Offsets
         
-        private var sharedFormatting: MarkdownFormatting?
+        private var sharedFormatting: (formatting: MarkdownFormatting, flavor: MarkdownFlavor)?
         
         /// The parse of `text`, shared by styling, the link under the caret, structural editing and
-        /// (through `SwashEditorController`) the bubble menu, so each revision is parsed once.
-        func formatting(for text: String) -> MarkdownFormatting {
-            if let cached = sharedFormatting, cached.text == text { return cached }
-            let formatting = MarkdownFormatting(text: text)
-            sharedFormatting = formatting
+        /// (through `SwashEditorController`) the bubble menu, so each revision is parsed once. Slack
+        /// mrkdwn is parsed onto the same model with its own inline syntax (SlackMarkdown.swift).
+        func formatting(for text: String, flavor: MarkdownFlavor? = nil) -> MarkdownFormatting {
+            let flavor = flavor ?? parent.flavor
+            if let cached = sharedFormatting, cached.formatting.text == text, cached.flavor == flavor { return cached.formatting }
+            let formatting = MarkdownFormatting(text: text, flavor: flavor)
+            sharedFormatting = (formatting, flavor)
             return formatting
         }
         
@@ -1386,7 +1421,7 @@ struct SwashTextView: NSViewRepresentable {
         /// Storage ranges and labels of the headings, links or tables in the document, in order.
         func rotorItems(_ kind: MarkdownRotorDelegate.Kind, in textView: NSTextView) -> [(range: NSRange, label: String)] {
             let text = parent.text
-            let document = parent.controller?.formatting(for: text).document ?? MarkdownDocument.parse(text)
+            let document = parent.controller?.formatting(for: text).document ?? MarkdownDocument.parse(text, flavor: parent.flavor)
             var items: [(NSRange, String)] = []
             switch kind {
             case .headings:
@@ -1427,14 +1462,10 @@ struct SwashTextView: NSViewRepresentable {
                     parent.text = raw
                     editGeneration += 1
                     let generation = editGeneration
-                    // Slack mrkdwn has no incremental path: each pass restyles the whole document,
-                    // so it waits for a short pause in typing and only the latest edit is styled
-                    let isSlack = parent.flavor == .slack
-                    DispatchQueue.main.asyncAfter(deadline: .now() + (isSlack ? 0.12 : 0)) { [weak self, weak textView] in
+                    DispatchQueue.main.async { [weak self, weak textView] in
                         guard let self = self, let textView = textView else { return }
                         // Skip if a synchronous pass (e.g. a bubble-menu edit) already styled this revision
                         guard self.highlightedGeneration < generation else { return }
-                        if isSlack && generation != self.editGeneration { return }
                         self.highlightMarkdown(in: textView)
                     }
                 } else {
@@ -1525,9 +1556,7 @@ struct SwashTextView: NSViewRepresentable {
             // Published selections and link ranges are in raw-markdown offsets
             let rawSelection = rawRange(forStorage: range, in: textView)
             let activeLink: (fullRange: NSRange, url: String)?
-            if parent.flavor == .slack {
-                activeLink = LinkDetector.findLink(at: rawSelection, in: parent.text, flavor: .slack).map { ($0.fullRange, $0.url) }
-            } else if let node = formatting(for: parent.text).link(at: rawSelection),
+            if let node = formatting(for: parent.text).link(at: rawSelection),
                       case .link(let destination, _, let kind) = node.kind, kind != .extendedAutolink {
                 activeLink = (node.range, destination)
             } else {
@@ -1804,8 +1833,8 @@ struct SwashTextView: NSViewRepresentable {
         
         /// The shared parse of `text` if it is already available (no parse is started for it).
         private func cachedDocument(for text: String) -> MarkdownDocument? {
-            guard let cached = sharedFormatting, cached.text == text else { return nil }
-            return cached.document
+            guard let cached = sharedFormatting, cached.formatting.text == text, cached.flavor == parent.flavor else { return nil }
+            return cached.formatting.document
         }
         
         // MARK: TeX completion
@@ -1875,9 +1904,6 @@ struct SwashTextView: NSViewRepresentable {
             
             let text = textStorage.string
             let fullRange = NSRange(location: 0, length: textStorage.length)
-            // Locate all code once per pass; every inline rule consults this instead of rescanning
-            let codeRanges = MarkdownParser.codeRanges(in: text)
-            currentCodeRanges = codeRanges
             
             textStorage.beginEditing()
             
@@ -1889,582 +1915,18 @@ struct SwashTextView: NSViewRepresentable {
                 .foregroundColor: defaultColor
             ], range: fullRange)
             
-            // Helper to hide markdown tags in Preview mode
-            func hideRange(_ range: NSRange) {
-                let valid = NSIntersectionRange(range, NSRange(location: 0, length: textStorage.length))
-                if valid.length > 0 {
-                    textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: 0.01), range: valid)
-                    textStorage.addAttribute(.foregroundColor, value: NSColor.clear, range: valid)
-                }
-            }
-            
-            // Simple syntax highlighting on code lines (Slack path)
-            func highlightCodeLine(_ line: String, offset: Int, language: String?) {
-                MarkdownCodeHighlighter.highlight(line: line, offset: offset, language: language, in: textStorage)
-            }
-            
-            var pendingAttachments: [PendingAttachment] = []
-            
-            var styledCodeRanges: [NSRange]? = nil
-            if parent.flavor != .slack {
-                // CommonMark / GFM: style from the shared Markdown AST
-                let document = formatting(for: text).document
-                let styler = MarkdownEditorStyler(storage: textStorage, document: document)
-                styler.typography = parent.typography
-                configureRichPreviews(styler, for: textView)
-                styler.style()
-                collectRichPreviews(from: styler, fullPass: true)
-                pendingAttachments = Coordinator.pending(styler.attachments)
-                styledCodeRanges = MarkdownEditorStyler.spellcheckExclusions(in: document)
-                lastBlocks = Coordinator.blockSummaries(document, raw: text as NSString)
-                lastRawLength = (text as NSString).length
-            } else {
-                lastBlocks = nil
-                // Slack mrkdwn is not CommonMark: legacy line- and regex-based styling
-                // 2. Block-level parsing
-                let lines = text.components(separatedBy: .newlines)
-                var currentOffset = 0
-            
-                var inCodeBlock = false
-                var currentOpenFence: MarkdownParser.CodeFenceInfo? = nil
-                var currentLanguage: String? = nil
-                var currentBlockStyle: NSTextBlock? = nil
-            
-                var hideNextLineAsSetextDelimiter = false
-                var activeAlertColor: NSColor? = nil
-                var lineIndex = 0
-                while lineIndex < lines.count {
-                    let line = lines[lineIndex]
-                    let lineLength = line.utf16.count
-                    let lineRange = NSRange(location: currentOffset, length: lineLength)
-                
-                    if inCodeBlock {
-                        if let fence = currentOpenFence, MarkdownParser.isClosingCodeFence(line, matching: fence) {
-                            inCodeBlock = false
-                            currentOpenFence = nil
-                            currentLanguage = nil
-                            currentBlockStyle = nil
-                            hideRange(lineRange)
-                            currentOffset += lineLength + 1
-                            lineIndex += 1
-                            continue
-                        }
-                    } else if let openFence = MarkdownParser.parseOpeningCodeFence(line) {
-                        activeAlertColor = nil
-                        inCodeBlock = true
-                        currentOpenFence = openFence
-                        currentLanguage = openFence.language?.lowercased()
-                    
-                        let block = NSTextBlock()
-                        block.backgroundColor = NSColor.textColor.withAlphaComponent(0.04)
-                    
-                        // Force block to span 100% width of the text container
-                        block.setValue(100, type: .percentageValueType, for: .width)
-                    
-                        let edges: [NSRectEdge] = [.minX, .maxX, .minY, .maxY]
-                        for edge in edges {
-                            block.setBorderColor(NSColor.textColor.withAlphaComponent(0.12), for: edge)
-                        }
-                    
-                        block.setWidth(0.5, type: .absoluteValueType, for: .border)
-                        block.setWidth(3.0, type: .absoluteValueType, for: .border, edge: .minX)
-                        block.setWidth(8, type: .absoluteValueType, for: .padding)
-                        block.setWidth(12, type: .absoluteValueType, for: .padding, edge: .minX)
-                        currentBlockStyle = block
-                    
-                        hideRange(lineRange)
-                        currentOffset += lineLength + 1
-                        lineIndex += 1
-                        continue
-                    }
-                
-                    if inCodeBlock {
-                        let valid = NSIntersectionRange(lineRange, NSRange(location: 0, length: textStorage.length))
-                        if valid.length > 0 {
-                            textStorage.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular), range: valid)
-                            textStorage.addAttribute(.foregroundColor, value: NSColor.labelColor.withAlphaComponent(0.85), range: valid)
-                        
-                            if let block = currentBlockStyle {
-                                let para = NSMutableParagraphStyle()
-                                para.textBlocks = [block]
-                                para.lineSpacing = 4
-                                textStorage.addAttribute(.paragraphStyle, value: para, range: valid)
-                            }
-                        }
-                    
-                        highlightCodeLine(line, offset: currentOffset, language: currentLanguage)
-                    
-                        currentOffset += lineLength + 1
-                        lineIndex += 1
-                        continue
-                    }
-                
-                    let trimmedLine = line.trimmingCharacters(in: .whitespaces)
-                
-                    // Indented (4-space / tab) code block lines
-                    if lineLength > 0, MarkdownParser.CodeRanges.anyIntersects(codeRanges.indentedBlocks, lineRange) {
-                        activeAlertColor = nil
-                        let valid = NSIntersectionRange(lineRange, NSRange(location: 0, length: textStorage.length))
-                        if valid.length > 0 {
-                            textStorage.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular), range: valid)
-                            textStorage.addAttribute(.foregroundColor, value: NSColor.labelColor.withAlphaComponent(0.85), range: valid)
-                        }
-                        currentOffset += lineLength + 1
-                        lineIndex += 1
-                        continue
-                    }
-                
-                    // Detect Table Block
-                    let isTableStart = trimmedLine.contains("|") && lineIndex + 1 < lines.count
-                    if isTableStart {
-                        let nextTrimmed = lines[lineIndex + 1].trimmingCharacters(in: .whitespaces)
-                        let isDelimiter = nextTrimmed.contains("|") && nextTrimmed.contains("-")
-                        if isDelimiter {
-                            let headers = MarkdownParser.parseTableCells(trimmedLine)
-                            let alignments = MarkdownParser.parseAlignments(nextTrimmed)
-                        
-                            if !headers.isEmpty {
-                                activeAlertColor = nil
-                                let tableStartOffset = currentOffset
-                                var tableLineIdx = lineIndex + 2
-                                var tableRows: [[String]] = []
-                            
-                                while tableLineIdx < lines.count {
-                                    let rowLine = lines[tableLineIdx].trimmingCharacters(in: .whitespaces)
-                                    if rowLine.contains("|") && !rowLine.isEmpty {
-                                        tableRows.append(MarkdownParser.parseTableCells(rowLine))
-                                        tableLineIdx += 1
-                                    } else {
-                                        break
-                                    }
-                                }
-                            
-                                // Calculate total character length of table block
-                                var tableEndOffset = currentOffset
-                                for i in lineIndex..<tableLineIdx {
-                                    tableEndOffset += lines[i].utf16.count + 1
-                                }
-                                let tableTotalLen = min(textStorage.length - tableStartOffset, max(1, tableEndOffset - tableStartOffset - 1))
-                                let tableFullRange = NSRange(location: tableStartOffset, length: tableTotalLen)
-                            
-                                let tableSource = (text as NSString).substring(with: tableFullRange)
-                                pendingAttachments.append(.table(range: tableFullRange, source: tableSource, headers: headers, alignments: alignments, rows: tableRows))
-                            
-                                currentOffset = tableEndOffset
-                                lineIndex = tableLineIdx
-                                continue
-                            }
-                        }
-                    }
-                
-                    if hideNextLineAsSetextDelimiter {
-                        hideRange(lineRange)
-                        hideNextLineAsSetextDelimiter = false
-                        currentOffset += lineLength + 1
-                        lineIndex += 1
-                        continue
-                    }
-                
-                    let validLineRange = NSIntersectionRange(lineRange, NSRange(location: 0, length: textStorage.length))
-                    if validLineRange.length > 0 {
-                        if MarkdownParser.isThematicBreak(line) {
-                            let block = NSTextBlock()
-                            block.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.25)
-                            block.setValue(100, type: .percentageValueType, for: .width)
-                            block.setValue(1, type: .absoluteValueType, for: .height)
-                            let para = NSMutableParagraphStyle()
-                            para.textBlocks = [block]
-                            textStorage.addAttribute(.paragraphStyle, value: para, range: validLineRange)
-                            textStorage.addAttribute(.foregroundColor, value: NSColor.clear, range: validLineRange)
-                            textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: 2), range: validLineRange)
-                        } else if let heading = MarkdownParser.parseATXHeading(line) {
-                            let headingFontSize: CGFloat
-                            switch heading.level {
-                            case 1: headingFontSize = 24
-                            case 2: headingFontSize = 20
-                            case 3: headingFontSize = 17
-                            case 4: headingFontSize = 15
-                            case 5: headingFontSize = 14
-                            default: headingFontSize = 13
-                            }
-                            let para = NSMutableParagraphStyle()
-                            para.lineSpacing = 4
-                            para.paragraphSpacing = heading.level == 1 ? 8 : 6
-                            para.paragraphSpacingBefore = heading.level == 1 ? 16 : 12
-                            textStorage.addAttribute(.paragraphStyle, value: para, range: validLineRange)
-                            textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: headingFontSize, weight: .bold), range: validLineRange)
-                        
-                            let leadingSpacesCount = line.prefix(while: { $0 == " " || $0 == "\t" }).count
-                            let hashPrefixCount = line.dropFirst(leadingSpacesCount).prefix(while: { $0 == "#" }).count
-                            let spaceAfterHash = line.dropFirst(leadingSpacesCount + hashPrefixCount).hasPrefix(" ") ? 1 : 0
-                            let hideLen = leadingSpacesCount + hashPrefixCount + spaceAfterHash
-                            let hashRange = NSRange(location: currentOffset, length: min(lineLength, hideLen))
-                            hideRange(hashRange)
-                        
-                            if let closingMatch = line.range(of: "(?:[ \\t]+#+[ \\t]*)$", options: .regularExpression) {
-                                let closingNSRange = NSRange(closingMatch, in: line)
-                                let absClosingRange = NSRange(location: currentOffset + closingNSRange.location, length: closingNSRange.length)
-                                hideRange(absClosingRange)
-                            }
-                        } else if lineIndex + 1 < lines.count && !trimmedLine.isEmpty && lines[lineIndex + 1].trimmingCharacters(in: .whitespaces).range(of: "^ {0,3}=+[ \\t]*$", options: .regularExpression) != nil {
-                            textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: 24, weight: .bold), range: validLineRange)
-                            hideNextLineAsSetextDelimiter = true
-                        } else if lineIndex + 1 < lines.count && !trimmedLine.isEmpty && lines[lineIndex + 1].trimmingCharacters(in: .whitespaces).range(of: "^ {0,3}-+[ \\t]*$", options: .regularExpression) != nil {
-                            textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: 20, weight: .bold), range: validLineRange)
-                            hideNextLineAsSetextDelimiter = true
-                        } else if line.hasPrefix("> ") || line == ">" {
-                            let quoteContent = line.hasPrefix("> ") ? String(line.dropFirst(2)) : ""
-                            let alertPattern = "^\\[\\!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\\]"
-                            if let alertRegex = Coordinator.regex(alertPattern, [.caseInsensitive]),
-                               let match = alertRegex.firstMatch(in: quoteContent, options: [], range: NSRange(location: 0, length: (quoteContent as NSString).length)) {
-                                let typeStr = (quoteContent as NSString).substring(with: match.range(at: 1)).lowercased()
-                                let calloutColor: NSColor
-                                switch typeStr {
-                                case "tip": calloutColor = NSColor.systemGreen
-                                case "important": calloutColor = NSColor.systemPurple
-                                case "warning": calloutColor = NSColor.systemOrange
-                                case "caution": calloutColor = NSColor.systemRed
-                                default: calloutColor = NSColor.systemBlue
-                                }
-                                activeAlertColor = calloutColor
-                            
-                                textStorage.addAttribute(.foregroundColor, value: calloutColor, range: validLineRange)
-                                textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: 13, weight: .bold), range: validLineRange)
-                                let block = NSTextBlock()
-                                block.backgroundColor = calloutColor.withAlphaComponent(0.08)
-                                block.setValue(100, type: .percentageValueType, for: .width)
-                                block.setBorderColor(calloutColor, for: .minX)
-                                block.setWidth(4.0, type: .absoluteValueType, for: .border, edge: .minX)
-                                block.setWidth(6, type: .absoluteValueType, for: .padding)
-                                block.setWidth(10, type: .absoluteValueType, for: .padding, edge: .minX)
-                                let para = NSMutableParagraphStyle()
-                                para.textBlocks = [block]
-                                textStorage.addAttribute(.paragraphStyle, value: para, range: validLineRange)
-                                let quoteRange = NSRange(location: currentOffset, length: min(lineLength, 2))
-                                hideRange(quoteRange)
-                            } else if let alertColor = activeAlertColor {
-                                let block = NSTextBlock()
-                                block.backgroundColor = alertColor.withAlphaComponent(0.08)
-                                block.setValue(100, type: .percentageValueType, for: .width)
-                                block.setBorderColor(alertColor, for: .minX)
-                                block.setWidth(4.0, type: .absoluteValueType, for: .border, edge: .minX)
-                                block.setWidth(6, type: .absoluteValueType, for: .padding)
-                                block.setWidth(10, type: .absoluteValueType, for: .padding, edge: .minX)
-                                let para = NSMutableParagraphStyle()
-                                para.textBlocks = [block]
-                                textStorage.addAttribute(.paragraphStyle, value: para, range: validLineRange)
-                                textStorage.addAttribute(.font, value: defaultFont, range: validLineRange)
-                                let quoteRange = NSRange(location: currentOffset, length: min(lineLength, line.hasPrefix("> ") ? 2 : 1))
-                                hideRange(quoteRange)
-                            } else {
-                                textStorage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: validLineRange)
-                                let italicFont = NSFontManager.shared.convert(defaultFont, toHaveTrait: .italicFontMask)
-                                textStorage.addAttribute(.font, value: italicFont, range: validLineRange)
-                                let quoteRange = NSRange(location: currentOffset, length: min(lineLength, line.hasPrefix("> ") ? 2 : 1))
-                                hideRange(quoteRange)
-                            }
-                        } else {
-                            activeAlertColor = nil
-                            let taskPattern = "^[-*+]\\s+\\[([ xX])\\]\\s*"
-                            if let taskRegex = Coordinator.regex(taskPattern),
-                               let taskMatch = taskRegex.firstMatch(in: trimmedLine, options: [], range: NSRange(location: 0, length: (trimmedLine as NSString).length)) {
-                                let leadingSpacesCount = line.prefix(while: { $0 == " " || $0 == "\t" }).count
-                                let fullMarkerLen = taskMatch.range(at: 0).length
-                                let checkChar = (trimmedLine as NSString).substring(with: taskMatch.range(at: 1))
-                                let isChecked = checkChar.lowercased() == "x"
-                            
-                                let rawMarkerRange = NSRange(location: currentOffset + leadingSpacesCount, length: min(lineLength - leadingSpacesCount, fullMarkerLen))
-                                hideRange(rawMarkerRange)
-                            
-                                let indent = CGFloat((leadingSpacesCount / 2 + 1) * 20)
-                                let para = NSMutableParagraphStyle()
-                                para.headIndent = indent
-                                para.firstLineHeadIndent = indent
-                                para.lineSpacing = 5
-                                para.paragraphSpacing = 6
-                                textStorage.addAttribute(.paragraphStyle, value: para, range: validLineRange)
-                            
-                                let markerGlyph = isChecked ? "☑" : "☐"
-                                let markerColor = isChecked ? NSColor.controlAccentColor : NSColor.secondaryLabelColor
-                                textStorage.addAttribute(.listMarker, value: ListMarkerInfo(text: markerGlyph, indent: indent, color: markerColor), range: rawMarkerRange)
-                            } else if let numMarkerRange = trimmedLine.range(of: "^[0-9]+[.)]\\s+", options: .regularExpression) {
-                                let leadingSpacesCount = line.prefix(while: { $0 == " " || $0 == "\t" }).count
-                                let fullMarkerStr = String(trimmedLine[numMarkerRange])
-                                let totalMarkerLen = fullMarkerStr.utf16.count
-                            
-                                let delimiterIdx = fullMarkerStr.firstIndex(where: { $0 == "." || $0 == ")" }) ?? fullMarkerStr.endIndex
-                                let numberDotStr = String(fullMarkerStr[...delimiterIdx])
-                            
-                                let rawMarkerRange = NSRange(location: currentOffset + leadingSpacesCount, length: min(lineLength - leadingSpacesCount, totalMarkerLen))
-                                hideRange(rawMarkerRange)
-                            
-                                let indent = CGFloat((leadingSpacesCount / 2 + 1) * 24)
-                                let para = NSMutableParagraphStyle()
-                                para.headIndent = indent
-                                para.firstLineHeadIndent = indent
-                                para.lineSpacing = 5
-                                para.paragraphSpacing = 6
-                                textStorage.addAttribute(.paragraphStyle, value: para, range: validLineRange)
-                            
-                                textStorage.addAttribute(.listMarker, value: ListMarkerInfo(text: numberDotStr, indent: indent), range: rawMarkerRange)
-                            } else if let listMarkerRange = trimmedLine.range(of: "^[-*+]\\s+", options: .regularExpression) {
-                                let leadingSpacesCount = line.prefix(while: { $0 == " " || $0 == "\t" }).count
-                                let fullMarkerStr = String(trimmedLine[listMarkerRange])
-                                let totalMarkerLen = fullMarkerStr.utf16.count
-                            
-                                let rawMarkerRange = NSRange(location: currentOffset + leadingSpacesCount, length: min(lineLength - leadingSpacesCount, totalMarkerLen))
-                                hideRange(rawMarkerRange)
-                            
-                                let indent = CGFloat((leadingSpacesCount / 2 + 1) * 20)
-                                let para = NSMutableParagraphStyle()
-                                para.headIndent = indent
-                                para.firstLineHeadIndent = indent
-                                para.lineSpacing = 5
-                                para.paragraphSpacing = 6
-                                textStorage.addAttribute(.paragraphStyle, value: para, range: validLineRange)
-                            
-                                textStorage.addAttribute(.listMarker, value: ListMarkerInfo(text: "•", indent: indent), range: rawMarkerRange)
-                            } else if let fnDefMatch = Coordinator.regex("^ {0,3}\\[\\^([^\\]]+)\\]:\\s*(.*)$")?.firstMatch(in: trimmedLine, options: [], range: NSRange(location: 0, length: (trimmedLine as NSString).length)) {
-                                let leadingSpacesCount = line.prefix(while: { $0 == " " || $0 == "\t" }).count
-                                let fullPrefixLen = fnDefMatch.range(at: 0).length - fnDefMatch.range(at: 2).length
-                            
-                                // Style footnote definition line in formatted mode: 12pt secondary color, hanging indent
-                                let fnFont = NSFont.systemFont(ofSize: 12, weight: .regular)
-                                textStorage.addAttribute(.font, value: fnFont, range: validLineRange)
-                                textStorage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: validLineRange)
-                            
-                                let para = NSMutableParagraphStyle()
-                                para.headIndent = 24
-                                para.firstLineHeadIndent = 0
-                                textStorage.addAttribute(.paragraphStyle, value: para, range: validLineRange)
-                            
-                                // Style the marker: [label]:
-                                let markerRangeInLine = NSRange(location: currentOffset + leadingSpacesCount, length: min(lineLength - leadingSpacesCount, fullPrefixLen))
-                                let validMarker = NSIntersectionRange(markerRangeInLine, NSRange(location: 0, length: textStorage.length))
-                                if validMarker.length > 0 {
-                                    textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: 11, weight: .bold), range: validMarker)
-                                    textStorage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: validMarker)
-                                }
-                            
-                                // Hide the '^'
-                                let caretRangeInLine = NSRange(location: currentOffset + leadingSpacesCount + 1, length: 1)
-                                hideRange(caretRangeInLine)
-                            }
-                        }
-                    }
-                
-                    currentOffset += lineLength + 1
-                    lineIndex += 1
-                }
-            
-                // Code spans (CommonMark backtick-run matching); contents are never further interpreted
-                func styleCodeSpans() {
-                    let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-                    for span in codeRanges.spans where span.content.length > 0 {
-                        let content = NSIntersectionRange(span.content, NSRange(location: 0, length: textStorage.length))
-                        guard content.length > 0 else { continue }
-                        textStorage.addAttribute(.font, value: monoFont, range: content)
-                        textStorage.addAttribute(.foregroundColor, value: NSColor.controlAccentColor, range: content)
-                        hideRange(NSRange(location: span.full.location, length: span.content.location - span.full.location))
-                        let contentEnd = span.content.location + span.content.length
-                        hideRange(NSRange(location: contentEnd, length: span.full.location + span.full.length - contentEnd))
-                    }
-                }
-            
-                // 3. Inline style parsing via regexes
-                // Slack inline styles
-                // Slack Bold: *text*
-                applyRegex(pattern: "(?<!\\*)\\*([^*\\n]+?)\\*(?!\\*)", in: text) { matchRange, contentRange in
-                    let boldFont = NSFont.systemFont(ofSize: 14, weight: .bold)
-                    textStorage.addAttribute(.font, value: boldFont, range: contentRange)
-                    hideRange(NSRange(location: matchRange.location, length: 1))
-                    hideRange(NSRange(location: matchRange.location + matchRange.length - 1, length: 1))
-                }
-            
-                // Slack Italic: _text_
-                applyRegex(pattern: "(?<!_)(?<!\\w)_([^_\\n]+?)_(?!\\w)(?!_)", in: text) { matchRange, contentRange in
-                    let italicFont = NSFontManager.shared.convert(defaultFont, toHaveTrait: .italicFontMask)
-                    textStorage.addAttribute(.font, value: italicFont, range: contentRange)
-                    hideRange(NSRange(location: matchRange.location, length: 1))
-                    hideRange(NSRange(location: matchRange.location + matchRange.length - 1, length: 1))
-                }
-            
-                // Slack Strikethrough: ~text~
-                applyRegex(pattern: "(?<!~)~([^~\\n]+?)~(?!~)", in: text) { matchRange, contentRange in
-                    textStorage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: contentRange)
-                    textStorage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: contentRange)
-                    hideRange(NSRange(location: matchRange.location, length: 1))
-                    hideRange(NSRange(location: matchRange.location + matchRange.length - 1, length: 1))
-                }
-            
-                // Slack Inline Code: `code`
-                styleCodeSpans()
-            
-                // Slack Links: <url|text>
-                if let linkWithPipeRegex = Coordinator.regex("(<(https?://[^>|\\n]+)\\|)([^>|\\n]+)(>)") {
-                    let nsString = text as NSString
-                    let matches = linkWithPipeRegex.matches(in: text, options: [], range: NSRange(location: 0, length: nsString.length))
-                    for match in matches {
-                        if match.numberOfRanges >= 5 {
-                            let leftPart = match.range(at: 1)
-                            let urlRange = match.range(at: 2)
-                            let textRange = match.range(at: 3)
-                            let rightPart = match.range(at: 4)
-                            let urlString = nsString.substring(with: urlRange)
-                        
-                            let validUrl = NSIntersectionRange(urlRange, NSRange(location: 0, length: textStorage.length))
-                            if validUrl.length > 0 {
-                                textStorage.addAttribute(.foregroundColor, value: NSColor.systemBlue, range: validUrl)
-                                textStorage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: validUrl)
-                                if let url = URL(string: urlString) {
-                                    textStorage.addAttribute(.link, value: url, range: validUrl)
-                                }
-                            }
-                        
-                            textStorage.addAttribute(.foregroundColor, value: NSColor.systemBlue, range: textRange)
-                            textStorage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: textRange)
-                            if let url = URL(string: urlString) {
-                                textStorage.addAttribute(.link, value: url, range: textRange)
-                            }
-                            hideRange(leftPart)
-                            hideRange(rightPart)
-                        }
-                    }
-                }
-            
-                // Slack Links: <url>
-                if let linkRegex = Coordinator.regex("(<)(https?://[^>|\\n]+)(>)") {
-                    let nsString = text as NSString
-                    let matches = linkRegex.matches(in: text, options: [], range: NSRange(location: 0, length: nsString.length))
-                    for match in matches {
-                        if match.numberOfRanges >= 4 {
-                            let leftPart = match.range(at: 1)
-                            let urlRange = match.range(at: 2)
-                            let rightPart = match.range(at: 3)
-                            let urlString = nsString.substring(with: urlRange)
-                            textStorage.addAttribute(.foregroundColor, value: NSColor.systemBlue, range: urlRange)
-                            textStorage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: urlRange)
-                            if let url = URL(string: urlString) {
-                                textStorage.addAttribute(.link, value: url, range: urlRange)
-                            }
-                            hideRange(leftPart)
-                            hideRange(rightPart)
-                        }
-                    }
-                }
-
-                // Bare URLs, www. domains, and emails
-                let urlPattern = "(?:https?://|www\\.)[^\\s<>\"'\\)]+|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
-                if let bareUrlRegex = Coordinator.regex(urlPattern, []) {
-                    let nsString = text as NSString
-                    let matches = bareUrlRegex.matches(in: text, options: [], range: NSRange(location: 0, length: nsString.length))
-                    for match in matches {
-                        var matchRange = match.range(at: 0)
-                        if codeRanges.excludes(matchRange) {
-                            continue
-                        }
-                    
-                        // Trim trailing punctuation if any (. , ; : ! ? ) ])
-                        var str = nsString.substring(with: matchRange)
-                        while let last = str.last, [".", ",", ";", ":", "!", "?", ")", "]", "\"", "'"].contains(last) {
-                            str.removeLast()
-                            matchRange.length -= 1
-                        }
-                        if matchRange.length == 0 { continue }
-                    
-                        let validMatch = NSIntersectionRange(matchRange, NSRange(location: 0, length: textStorage.length))
-                        if validMatch.length > 0 {
-                            var isHidden = false
-                            if let font = textStorage.attribute(.font, at: validMatch.location, effectiveRange: nil) as? NSFont, font.pointSize < 1.0 {
-                                isHidden = true
-                            }
-                            if !isHidden {
-                                let urlString = nsString.substring(with: validMatch)
-                                let targetUrlString: String
-                                if urlString.hasPrefix("www.") {
-                                    targetUrlString = "https://\(urlString)"
-                                } else if urlString.contains("@") && !urlString.hasPrefix("http") {
-                                    targetUrlString = "mailto:\(urlString)"
-                                } else {
-                                    targetUrlString = urlString
-                                }
-                                textStorage.addAttribute(.foregroundColor, value: NSColor.systemBlue, range: validMatch)
-                                textStorage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: validMatch)
-                                if let url = URL(string: targetUrlString) ?? URL(string: targetUrlString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "") {
-                                    textStorage.addAttribute(.link, value: url, range: validMatch)
-                                }
-                            }
-                        }
-                    }
-                }
-            
-                // Extract link references for reference-style images
-                var linkReferences: [String: String] = [:]
-                for line in lines {
-                    if let (label, url) = MarkdownParser.extractLinkReferenceDefinition(line) {
-                        linkReferences[label] = url
-                    }
-                }
-            
-                // Images inside a table become part of the table attachment, never separate attachments
-                let tableRanges: [NSRange] = pendingAttachments.compactMap {
-                    if case .table(let range, _, _, _, _) = $0 { return range }
-                    return nil
-                }
-                func isInsideTable(_ range: NSRange) -> Bool {
-                    tableRanges.contains { NSIntersectionRange($0, range).length > 0 }
-                }
-            
-                // Scan for Inline Images: ![alt](url)
-                let inlineImgPattern = "!\\[(.*?)\\]\\((.*?)\\)"
-                if let regex = Coordinator.regex(inlineImgPattern) {
-                    let nsText = text as NSString
-                    let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
-                    for match in matches {
-                        let matchRange = match.range(at: 0)
-                        if codeRanges.excludes(matchRange) || isInsideTable(matchRange) { continue }
-                        let alt = nsText.substring(with: match.range(at: 1))
-                        let urlStr = nsText.substring(with: match.range(at: 2))
-                        let raw = nsText.substring(with: matchRange)
-                        pendingAttachments.append(.image(range: matchRange, alt: alt, urlString: urlStr, rawMarkdown: raw))
-                    }
-                }
-            
-                // Scan for Reference-Style Images: ![alt][ref]
-                let refImgPattern = "!\\[(.*?)\\]\\[(.*?)\\]"
-                if let regex = Coordinator.regex(refImgPattern) {
-                    let nsText = text as NSString
-                    let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
-                    for match in matches {
-                        let matchRange = match.range(at: 0)
-                        if codeRanges.excludes(matchRange) || isInsideTable(matchRange) { continue }
-                        let alt = nsText.substring(with: match.range(at: 1))
-                        let refKey = nsText.substring(with: match.range(at: 2)).lowercased()
-                        let targetKey = refKey.isEmpty ? alt.lowercased() : refKey
-                        if let urlStr = linkReferences[targetKey] {
-                            let raw = nsText.substring(with: matchRange)
-                            pendingAttachments.append(.image(range: matchRange, alt: alt, urlString: urlStr, rawMarkdown: raw))
-                        }
-                    }
-                }
-            
-                // Scan for Shortcut Reference-Style Images: ![alt]
-                let shortcutImgPattern = "!\\[([^\\]\\^]+)\\](?![\\(\\[:])"
-                if let regex = Coordinator.regex(shortcutImgPattern) {
-                    let nsText = text as NSString
-                    let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
-                    for match in matches {
-                        let matchRange = match.range(at: 0)
-                        if codeRanges.excludes(matchRange) || isInsideTable(matchRange) { continue }
-                        let alt = nsText.substring(with: match.range(at: 1))
-                        if let urlStr = linkReferences[alt.lowercased()] {
-                            let raw = nsText.substring(with: matchRange)
-                            pendingAttachments.append(.image(range: matchRange, alt: alt, urlString: urlStr, rawMarkdown: raw))
-                        }
-                    }
-                }
-            
-            }
+            // Every flavour styles from the shared Markdown AST; Slack mrkdwn is parsed onto the same
+            // model with its own inline syntax (SlackMarkdown.swift)
+            let document = formatting(for: text).document
+            let styler = MarkdownEditorStyler(storage: textStorage, document: document)
+            styler.typography = parent.typography
+            configureRichPreviews(styler, for: textView)
+            styler.style()
+            collectRichPreviews(from: styler, fullPass: true)
+            let pendingAttachments = Coordinator.pending(styler.attachments)
+            let exclusions = MarkdownEditorStyler.spellcheckExclusions(in: document)
+            lastBlocks = Coordinator.blockSummaries(document, raw: text as NSString)
+            lastRawLength = (text as NSString).length
             
             // 4. Collapse tables and images into attachments (raw == storage offsets on this path)
             collapseAttachments(pendingAttachments, in: textView)
@@ -2472,7 +1934,6 @@ struct SwashTextView: NSViewRepresentable {
             textStorage.endEditing()
             isHighlighting = false
             
-            let exclusions = styledCodeRanges ?? codeRanges.blockRanges
             finishStyling(in: textView, rawText: text, exclusions: exclusions, savedRawSelection: savedRawSelection, savedScrollOrigin: savedScrollOrigin, fullPass: true)
         }
         
@@ -2670,7 +2131,7 @@ struct SwashTextView: NSViewRepresentable {
         /// Restyles only the top-level blocks that changed since the last pass. Returns false when a
         /// full pass is required (first pass, definitions changed, or the change cannot be localised).
         private func highlightIncrementally(in textView: NSTextView, storage: NSTextStorage) -> Bool {
-            guard parent.flavor != .slack, !forceFullRestyle, let previous = lastBlocks else { return false }
+            guard !forceFullRestyle, let previous = lastBlocks else { return false }
             let savedScrollOrigin = textView.enclosingScrollView?.contentView.bounds.origin ?? lastKnownScrollOrigin
             let savedRawSelection = pendingRawSelection ?? rawRange(forStorage: textView.selectedRange(), in: textView)
             
@@ -2841,7 +2302,7 @@ struct SwashTextView: NSViewRepresentable {
         /// incremental pass), so the formula or diagram appears without a full restyle.
         func refreshRichPreviews() {
             richPreviewRefreshScheduled = false
-            guard let textView = currentTextView, lastIsStyled == true, parent.flavor != .slack, !isHighlighting else { return }
+            guard let textView = currentTextView, lastIsStyled == true, !isHighlighting else { return }
             let ready = pendingRichPreviews.filter { RichContentRenderer.cachedOutcome($0.request) != nil }
             guard !ready.isEmpty else { return }
             pendingRichPreviews.removeAll { pending in ready.contains { $0.request == pending.request } }
@@ -2903,32 +2364,6 @@ struct SwashTextView: NSViewRepresentable {
         @objc private func refreshPlainCodeBlocks(_ textView: NSTextView) {
             guard !parent.isStyled else { return }
             cachedStorageCodeBlocks = MarkdownParser.codeRanges(in: textView.string).blockRanges
-        }
-        
-        /// Compiled patterns for the Slack styling path, which used to compile them per line and per pass.
-        private static var regexCache: [String: NSRegularExpression] = [:]
-        
-        static func regex(_ pattern: String, _ options: NSRegularExpression.Options = []) -> NSRegularExpression? {
-            let key = "\(options.rawValue)|\(pattern)"
-            if let cached = regexCache[key] { return cached }
-            let compiled = try? NSRegularExpression(pattern: pattern, options: options)
-            regexCache[key] = compiled
-            return compiled
-        }
-        
-        private func applyRegex(pattern: String, in text: String, action: (NSRange, NSRange) -> Void) {
-            guard let regex = Coordinator.regex(pattern, []) else { return }
-            let nsString = text as NSString
-            let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsString.length))
-            for match in matches {
-                if match.numberOfRanges >= 2 {
-                    let matchRange = match.range(at: 0)
-                    if currentCodeRanges.excludes(matchRange) {
-                        continue
-                    }
-                    action(matchRange, match.range(at: 1))
-                }
-            }
         }
         
         deinit {

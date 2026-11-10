@@ -83,6 +83,8 @@ struct FormatMenuCommands: Commands {
                     item(entry)
                 }
             }
+            #if os(macOS)
+            // Swash's own commands, which only the Mac editor applies (the iPadOS menu is the manifest's)
             Menu("Callout") {
                 ForEach(AlertType.allCases, id: \.self) { type in
                     Button(type.title) { handler?(.callout(type)) }
@@ -106,13 +108,19 @@ struct FormatMenuCommands: Commands {
             Divider()
             Button("Insert Table of Contents") { handler?(.tableOfContents) }
                 .disabled(handler == nil)
+            #endif
         }
     }
     
     /// The manifest's menu commands, split into its groups (in order of first appearance).
     private static let menuGroups: [[FormatMenuEntry]] = {
         var groups: [[FormatMenuEntry]] = []
-        for entry in FormatManifest.entries(for: .menu) {
+        #if os(iOS)
+        let entries = FormatManifest.entries(for: .menu).filter(\.command.isAvailableOnIOS)
+        #else
+        let entries = FormatManifest.entries(for: .menu)
+        #endif
+        for entry in entries {
             if let last = groups.last?.last, last.group == entry.group {
                 groups[groups.count - 1].append(entry)
             } else {

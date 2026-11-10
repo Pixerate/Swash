@@ -19,12 +19,16 @@ struct SourceTextView: UIViewRepresentable {
     var formattingEnabled: Bool = true
     /// Space under the navigation bar and banner (see `UIScrollView.setTopBarInset`).
     var topInset: CGFloat = 0
+    var flavor: MarkdownFlavor = .github
+    /// Settings › Text Size (before Dynamic Type, which the font applies itself).
+    var textSize: CGFloat = EditorTypography.defaultTextSize
 
     func makeUIView(context: Context) -> MarkdownEditingTextView {
         let textView = MarkdownEditingTextView(usingTextLayoutManager: false)
         textView.delegate = context.coordinator
         textView.text = text
-        textView.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: .monospacedSystemFont(ofSize: 15, weight: .regular))
+        textView.font = Self.font(textSize: textSize)
+        context.coordinator.lastTextSize = textSize
         textView.adjustsFontForContentSizeCategory = true
         textView.textColor = .label
         textView.backgroundColor = .systemBackground
@@ -38,6 +42,7 @@ struct SourceTextView: UIViewRepresentable {
         textView.autocapitalizationType = .sentences
         textView.dataDetectorTypes = []
         controller.attach(textView)
+        textView.flavor = flavor
         textView.installFormattingBar(enabled: formattingEnabled)
         scrollSync?.register(textView)
         textView.setTopBarInset(topInset)
@@ -54,8 +59,19 @@ struct SourceTextView: UIViewRepresentable {
             let length = (text as NSString).length
             textView.selectedRange = NSRange(location: min(selection.location, length), length: 0)
         }
+        textView.flavor = flavor
         textView.installFormattingBar(enabled: formattingEnabled)
         textView.setTopBarInset(topInset)
+        if context.coordinator.lastTextSize != textSize {
+            context.coordinator.lastTextSize = textSize
+            textView.font = Self.font(textSize: textSize)
+        }
+    }
+
+    /// Monospaced, 15 pt at the default text size, scaled for Dynamic Type.
+    static func font(textSize: CGFloat) -> UIFont {
+        let size = (15 * textSize / EditorTypography.defaultTextSize).rounded()
+        return UIFontMetrics(forTextStyle: .body).scaledFont(for: .monospacedSystemFont(ofSize: size, weight: .regular))
     }
 
     /// Fill the space offered: a text view's own fitting size is its whole content height, which
@@ -69,6 +85,7 @@ struct SourceTextView: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: SourceTextView
+        var lastTextSize: CGFloat = EditorTypography.defaultTextSize
 
         init(parent: SourceTextView) {
             self.parent = parent
@@ -98,7 +115,7 @@ struct SourceTextView: UIViewRepresentable {
         }
 
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
-            (textView as? MarkdownEditingTextView)?.formattingMenu(for: range, suggestedActions: suggestedActions)
+            (textView as? MarkdownEditingTextView)?.editMenu(for: range, suggestedActions: suggestedActions)
         }
     }
 }

@@ -52,8 +52,14 @@ jobs:
       - name: Paste conversion tests (Swash's engine additions)
         run: scripts/run_paste_tests.sh
 
+      - name: Slack mrkdwn parsing and formatting tests
+        run: scripts/run_slack_tests.sh
+
       - name: Markdown conformance tests (@pixerate/markdown-conformance)
         run: scripts/run_conformance_tests.sh
+
+      - name: Agent tools tests (MCP bridge tools through a PixerateCore ToolRegistry)
+        run: scripts/run_agent_tools_tests.sh
 
       - name: MacAppKitExtras package tests
         run: swift test --package-path Packages/MacAppKitExtras
@@ -77,3 +83,27 @@ jobs:
             -configuration Release \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO
+
+      # The Edit Text editor tests (Tests/SwashiOSTests), hosted by the app on an iPhone simulator
+      - name: iOS editor tests (Simulator)
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          runtimes = json.load(sys.stdin)["devices"]
+          ios = sorted((r for r in runtimes if ".iOS-" in r), key=lambda r: [int(p) for p in r.rsplit(".iOS-", 1)[1].split("-")], reverse=True)
+          print(next(d["udid"] for r in ios for d in runtimes[r] if d["name"].startswith("iPhone")))
+          ')
+          echo "Testing on $(xcrun simctl list devices | grep "$DEVICE_ID")"
+          xcodebuild test -scheme Swash \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -configuration Debug \
+            -derivedDataPath build-tests \
+            -resultBundlePath build-tests/SwashiOSTests.xcresult \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Upload iOS test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwashiOSTests.xcresult
+          path: build-tests/SwashiOSTests.xcresult

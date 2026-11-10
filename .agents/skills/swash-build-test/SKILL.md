@@ -71,7 +71,12 @@ The Format menu, shortcuts, bubble-menu labels and code languages come from the 
 ./scripts/run_rich_render_tests.sh # math and Mermaid rendering
 ./scripts/run_export_tests.sh      # HTML and PDF export
 ./scripts/run_paste_tests.sh       # Swash's paste additions to the engine (Confluence/Jira images)
+./scripts/run_slack_tests.sh       # Slack mrkdwn parsing (Edit Text) and formatting with Slack delimiters
+./scripts/run_agent_tools_tests.sh # agent tools (#49) called through a PixerateCore ToolRegistry
+xcodebuild test -scheme Swash -destination "platform=iOS Simulator,name=iPhone 17" CODE_SIGNING_ALLOWED=NO  # iOS Edit Text editor (Tests/SwashiOSTests)
 ```
+
+To try the agent tools end to end, run the bridge from an editor checkout (`node ../editor/packages/core/dist/bridge/cli.js --port 4499 --token t0ken`, MCP on stdio) and open a document in a Debug build with `open -n -a build/.../Swash.app doc.md --args -agentBridgeEnabled YES -agentBridgeToken t0ken -agentBridgeURL ws://127.0.0.1:4499 -ApplePersistenceIgnoreState YES`. Launch arguments override the settings without saving them. See GOTCHAS #69.
 
 After `./scripts/run_spec_tests.sh`, restore the snapshots (GOTCHAS #8).
 

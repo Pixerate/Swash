@@ -66,6 +66,9 @@ struct ContentView: View {
     /// The outline shown by a sidebar outside this view (a folder window's). Without one, the
     /// view shows its own outline in a leading split view column.
     var hostedOutline: DocumentOutlineState? = nil
+    /// False for documents SwiftUI opened read-only (a locked file, a version being browsed).
+    /// Agent tools then only read (#49).
+    var isEditable: Bool = true
     
     @State private var viewMode: ViewMode = .preview
     @State private var selectedRange: NSRange? = nil
@@ -150,6 +153,8 @@ struct ContentView: View {
     // expression it exceeded the compiler's type-checking time limit on CI.
     var body: some View {
         withLifecycle
+        .modifier(AgentToolsHookup(text: $document.text, editor: editor, name: documentTitle,
+                                   readOnlyReason: isEditable ? nil : "the file is locked or can't be saved"))
         .onChange(of: window) { _, window in
             if window?.isKeyWindow == true { documentWindowBecameKey() }
         }
@@ -622,10 +627,10 @@ struct ContentView: View {
                     },
                     translatableText: cellSelectionRect == nil && bubbleContext != .codeBlock && bubbleContext != .image ? selectedPlainText : nil,
                     onReplaceWithTranslation: { replaceSelection(with: $0) },
-                    onSelectCalloutType: astFormatting == nil ? nil : { applyCalloutType($0) },
+                    onSelectCalloutType: astFormatting == nil || document.flavor == .slack ? nil : { applyCalloutType($0) },
                     image: selectedImage?.source,
                     imageActions: selectedImage.map { imageMenuActions(range: $0.range, image: $0.source) },
-                    onInsertFootnote: astFormatting == nil || cellSelectionRect != nil ? nil : { insertFootnote() },
+                    onInsertFootnote: astFormatting == nil || document.flavor == .slack || cellSelectionRect != nil ? nil : { insertFootnote() },
                     footnoteActions: cellSelectionRect == nil ? footnoteMenuActions() : nil
                 )
                 .background(
@@ -1221,7 +1226,7 @@ struct ContentView: View {
         // Commands from the shared manifest use the same engine as the conformance corpus
         // (scripts/run_conformance_tests.sh), including its enabledWhen conditions.
         if let formatting = astFormatting, command.manifestInvocation != nil, command != .link, command != .table {
-            if let edit = FormatCommandEdits.edit(for: command, formatting: formatting, selection: range) {
+            if let edit = FormatCommandEdits.edit(for: command, formatting: formatting, selection: range, flavor: document.flavor) {
                 commitEdit(edit.text, selection: edit.selection, actionName: command.label ?? "Format")
             }
             return
@@ -1439,9 +1444,10 @@ struct ContentView: View {
     
     // MARK: - AST Formatting
     
-    /// The parsed document for CommonMark/GFM flavors (Slack mrkdwn keeps the legacy string logic).
+    /// The parsed document, in the document's flavour (Slack mrkdwn has its own inline syntax,
+    /// SlackMarkdown.swift).
     private var astFormatting: MarkdownFormatting? {
-        document.flavor == .slack ? nil : editor.formatting(for: document.text)
+        editor.formatting(for: document.text, flavor: document.flavor)
     }
     
     private func determineActiveLink() -> DetectedLink? {
@@ -1459,9 +1465,9 @@ struct ContentView: View {
     private func applyASTFormatting(_ action: FormatAction, formatting: MarkdownFormatting, range: NSRange) -> Bool {
         var edit: MarkdownEdit? = nil
         switch action {
-        case .bold: edit = formatting.toggle(.strong, selection: range)
-        case .italic: edit = formatting.toggle(.emphasis, selection: range)
-        case .strikethrough: edit = formatting.toggle(.strikethrough, selection: range)
+        case .bold: edit = FormatCommandEdits.edit(for: .bold, formatting: formatting, selection: range, flavor: document.flavor)
+        case .italic: edit = FormatCommandEdits.edit(for: .italic, formatting: formatting, selection: range, flavor: document.flavor)
+        case .strikethrough: edit = FormatCommandEdits.edit(for: .strikethrough, formatting: formatting, selection: range, flavor: document.flavor)
         case .code:
             // Code blocks and existing spans use the code-format path; multi-line text becomes a block
             if determineActiveCodeFormat() != nil { return false }
@@ -1939,7 +1945,9 @@ struct ContentView: View {
     
     private func applyLink(url: String, activeLink: DetectedLink?) {
         if let formatting = astFormatting, let range = selectedRange {
-            if let edit = formatting.setLink(url, selection: activeLink?.fullRange ?? range) {
+            let selection = activeLink?.fullRange ?? range
+            let edit = document.flavor == .slack ? formatting.setSlackLink(url, selection: selection) : formatting.setLink(url, selection: selection)
+            if let edit = edit {
                 commitEdit(edit.text, selection: edit.selection, actionName: activeLink == nil ? "Add Link" : "Edit Link")
             }
             return
@@ -1983,7 +1991,7 @@ struct ContentView: View {
     private var selectedPlainText: String? {
         let ns = document.text as NSString
         guard let range = selectedRange, range.length > 0, NSMaxRange(range) <= ns.length else { return nil }
-        let selected = MarkdownDocument.parse(ns.substring(with: range))
+        let selected = MarkdownDocument.parse(ns.substring(with: range), flavor: document.flavor)
         var paragraphs: [String] = []
         selected.root.walk { node in
             switch node.kind {

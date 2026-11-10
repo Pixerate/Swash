@@ -23,6 +23,7 @@ struct IOSSettingsView: View {
                         }
                     }
                 }
+                IOSTypographySettingsSections()
                 Section {
                     LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
                 }

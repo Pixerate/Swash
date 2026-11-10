@@ -78,16 +78,6 @@ enum MarkdownCodeHighlighter {
         }
     }
 
-    /// Colours one line of code in the text storage (the Slack editor path, which styles line by line).
-    static func highlight(line: String, offset: Int, language: String?, in storage: NSTextStorage) {
-        guard let language = CodeLanguage(name: language) else { return }
-        let full = NSRange(location: 0, length: storage.length)
-        for token in CodeHighlighter.tokens(for: line, language: language) {
-            let r = NSIntersectionRange(NSRange(location: offset + token.range.location, length: token.range.length), full)
-            if r.length > 0 { storage.addAttribute(.foregroundColor, value: CodeHighlightTheme.color(for: token.kind), range: r) }
-        }
-    }
-
     /// Colours a fenced code block in Edit Text. The block's code (`node.literal`) is tokenized as a
     /// whole, so block comments and multi-line strings are coloured across lines; each piece is then
     /// placed on its raw Markdown line (after any block-quote or list prefix). `apply` receives raw

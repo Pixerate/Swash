@@ -27,6 +27,15 @@ struct IOSContentView: View {
     @State private var safeAreaTop: CGFloat = 0
     @State private var editorTop: CGFloat = 0
     @ObservedObject private var folderAccessManager = FolderAccessManager.shared
+    private var typography = IOSTypographySettings()
+    @State private var features = IOSDocumentFeaturesModel()
+
+    // Explicit, because `typography` is a private stored property, which would
+    // otherwise make the memberwise initializer private.
+    init(document: Binding<SwashDocument>, fileURL: URL?) {
+        _document = document
+        self.fileURL = fileURL
+    }
 
     /// Split needs room for two columns; in compact width it falls back to Source.
     private var effectiveMode: ViewMode {
@@ -59,6 +68,7 @@ struct IOSContentView: View {
                 folderAccessBanner(for: folderURL)
             }
         }
+        .modifier(IOSDocumentFeatures(model: features, text: document.text, editor: editor))
         .toolbar { toolbar }
         .toolbarRole(.editor)
         .sheet(isPresented: $showingSettings) {
@@ -81,9 +91,13 @@ struct IOSContentView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .focusedSceneValue(\.formatCommandHandler, canFormat ? { handleFormatCommand($0) } : nil)
+        .focusedSceneValue(\.formatCommandHandler, { handleFormatCommand($0) })
         .onAppear {
             editor.onFormatCommand = { handleFormatCommand($0) }
+            editor.flavor = document.flavor
+        }
+        .onChange(of: document.flavor) { _, flavor in
+            editor.flavor = flavor
         }
     }
 
@@ -95,12 +109,10 @@ struct IOSContentView: View {
         case .edit:
             sourceEditor(topInset: topInset)
         case .preview:
-            if usesStyledEditor {
-                StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL, topInset: topInset)
-                    .id(folderAccessManager.accessGrantedTrigger)
-            } else {
-                preview(topInset: topInset)
-            }
+            // Edit Text for every flavour: Slack mrkdwn is parsed onto the same model (SlackMarkdown)
+            StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL,
+                           topInset: topInset, typography: typography.scaled)
+                .id(folderAccessManager.accessGrantedTrigger)
         case .split:
             HStack(spacing: 0) {
                 sourceEditor(topInset: topInset)
@@ -115,8 +127,9 @@ struct IOSContentView: View {
             text: $document.text,
             controller: editor,
             scrollSync: effectiveMode == .split ? scrollSync : nil,
-            formattingEnabled: document.flavor != .slack,
-            topInset: topInset
+            topInset: topInset,
+            flavor: document.flavor,
+            textSize: typography.stored.textSize
         )
     }
 
@@ -126,13 +139,16 @@ struct IOSContentView: View {
             flavor: document.flavor,
             baseURL: fileURL,
             scrollSync: effectiveMode == .split ? scrollSync : nil,
-            topInset: topInset
+            topInset: topInset,
+            typography: typography.scaled
         )
         .id(folderAccessManager.accessGrantedTrigger)
     }
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
+                           editor: editor, regularWidth: horizontalSizeClass == .regular)
         ToolbarItem(placement: .primaryAction) {
             Picker("View", selection: $viewMode) {
                 ForEach(availableModes) { mode in
@@ -186,18 +202,11 @@ struct IOSContentView: View {
 
     /// The system share sheet for the Markdown, anchored at the top trailing corner on iPad.
     private func presentShareSheet() {
-        let activity = UIActivityViewController(activityItems: [document.text], applicationActivities: nil)
-        activity.setValue(documentTitle, forKey: "subject")
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        guard let window = scenes.filter({ $0.activationState == .foregroundActive }).flatMap(\.windows).first(where: \.isKeyWindow),
-              var presenter = window.rootViewController else { return }
-        while let presented = presenter.presentedViewController { presenter = presented }
-        if let popover = activity.popoverPresentationController {
-            popover.sourceView = presenter.view
-            popover.sourceRect = CGRect(x: presenter.view.bounds.maxX - 60, y: presenter.view.safeAreaInsets.top, width: 1, height: 1)
-            popover.permittedArrowDirections = .up
-        }
-        presenter.present(activity, animated: true)
+        IOSPresenter.share([document.text], subject: documentTitle)
+    }
+
+    private var exportSource: DocumentExporter.Source {
+        DocumentExporter.Source(text: document.text, flavor: document.flavor, fileURL: fileURL, title: documentTitle)
     }
 
     private var documentTitle: String {
@@ -242,34 +251,24 @@ struct IOSContentView: View {
 
     // MARK: - Formatting
 
-    /// Formatted mode edits in place (Edit Text) for CommonMark and GFM; Slack mrkdwn, which the
-    /// AST styler does not handle, shows the read-only preview there.
-    private var usesStyledEditor: Bool {
-        document.flavor != .slack
-    }
-
-    /// Formatting needs an editor on screen, and isn't offered for Slack mrkdwn.
-    private var canFormat: Bool {
-        document.flavor != .slack
-    }
-
+    /// Formatting writes the document's flavour: Slack mrkdwn gets `*bold*`, `_italic_`, `~strike~`
+    /// and `<url|text>` links (SlackMarkdown.swift).
     private func handleFormatCommand(_ command: FormatCommand) {
-        guard canFormat else { return }
         let selection = editor.isAttached ? editor.selection : NSRange(location: (document.text as NSString).length, length: 0)
         if command == .link {
-            let current = FormatCommandEdits.activeLink(text: document.text, selection: selection)
+            let current = FormatCommandEdits.activeLink(text: document.text, selection: selection, flavor: document.flavor)
             let clipboard = PlatformPasteboard.string.flatMap { URL(string: $0)?.scheme != nil ? $0 : nil }
             linkPrompt = LinkPrompt(url: current ?? clipboard ?? "", isEditing: current != nil, selection: selection)
             return
         }
-        guard let edit = FormatCommandEdits.edit(for: command, text: document.text, selection: selection) else { return }
+        guard let edit = FormatCommandEdits.edit(for: command, text: document.text, selection: selection, flavor: document.flavor) else { return }
         commit(edit, actionName: command.actionName)
     }
 
     private func applyLink(_ url: String?, selection: NSRange) {
         let trimmed = url?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let trimmed = trimmed, trimmed.isEmpty { return }
-        guard let edit = FormatCommandEdits.link(trimmed, text: document.text, selection: selection) else { return }
+        guard let edit = FormatCommandEdits.link(trimmed, text: document.text, selection: selection, flavor: document.flavor) else { return }
         commit(edit, actionName: trimmed == nil ? "Remove Link" : "Link")
     }
 
@@ -292,24 +291,17 @@ struct IOSContentView: View {
 }
 
 private extension FormatCommand {
+    /// The Undo menu's name for the edit: the manifest label ("Undo Heading 2"), without a
+    /// trailing ellipsis. Only Swash's own commands are named here.
     var actionName: String {
+        if let label = label {
+            return label.hasSuffix("…") ? String(label.dropLast()) : label
+        }
         switch self {
-        case .bold: return "Bold"
-        case .italic: return "Italic"
-        case .strikethrough: return "Strikethrough"
-        case .code: return "Code"
-        case .link: return "Link"
-        case .heading(let level): return "Heading \(level)"
-        case .paragraph: return "Paragraph"
-        case .bulletList: return "Bullet List"
-        case .numberedList: return "Numbered List"
-        case .taskList: return "To-do List"
-        case .quote: return "Quote"
-        case .codeBlock: return "Code Block"
-        case .table: return "Table"
         case .callout: return "Callout"
         case .footnote: return "Footnote"
         case .tableOfContents: return "Table of Contents"
+        default: return "Format"
         }
     }
 }

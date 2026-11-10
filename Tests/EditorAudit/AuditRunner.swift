@@ -256,7 +256,7 @@ struct AuditRunner {
             _ = host
             sideBySide(p.md, to: outDir.appendingPathComponent("shots/\(p.id).png"))
         }
-        // Slack mrkdwn keeps its own (legacy) styling path
+        // Slack mrkdwn styles through the shared AST styler too (SlackMarkdown parses it)
         let slack = TextBox("*bold* _italic_ ~strike~ `code` <https://s.com|site>\n> quote\n- item")
         let (slackHost, slackView) = makeEditor(slack, flavor: .slack)
         if let tv = slackView, let storage = tv.textStorage {

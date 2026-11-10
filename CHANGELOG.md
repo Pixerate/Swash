@@ -1,5 +1,39 @@
 # swash
 
+## 1.26.0
+
+### Minor Changes
+
+- 0440cb6: Slack mrkdwn documents get the full editor on iPhone and iPad: Formatted mode is now Edit Text, and the formatting bar and edit-menu formatting write Slack's own syntax (`*bold*`, `_italic_`, `~strike~`, `` `code` ``, code blocks, quotes and `<url|text>` links). Slack text is parsed onto the shared Markdown model, so the Mac's Edit Text, bubble menu and Format menu use the same path, replacing the Mac's separate Slack styling; Slack documents now restyle incrementally while typing.
+
+## 1.25.0
+
+### Minor Changes
+
+- c114839: On iPhone and iPad, the edit menu offers Open Link when the selection or caret is in a link, and table cells are edited in a text view that shows bold, italic, inline code and links formatted as you type, as on the Mac.
+
+## 1.24.0
+
+### Minor Changes
+
+- 9336802: AI agents can now read and edit open documents on macOS through the Pixerate MCP bridge (`pixerate-mcp-bridge`), with the same tools as the Pixerate editor: `get_text`, `find_text`, `insert_text`, `replace_text`, `replace_range`, `replace_selection`, `set_selection`, `format_text` and `set_block_type`. Positions are offsets into the Markdown source, every change is one undo step, and read-only documents only offer the read tools. Turn it on in Settings › Agents (off by default), with the bridge's token; the tab shows the connection status.
+
+### Patch Changes
+
+- 278bfb7: Add `SwashiOSTests`, simulator tests for the iOS Edit Text editor (restyling, raw ↔ storage offsets, structural editing, block decorations and the clipboard), and run them in the PR build.
+
+## 1.23.0
+
+### Minor Changes
+
+- d5cebfa: iPhone and iPad: heading outline (a sheet on iPhone, a sidebar column on iPad), Document Info with word count and reading time, Export as PDF or HTML through the share sheet, Print, Copy as Rich Text and Copy HTML, and Typography and Colours in Settings (font, text size, line width and theme), applied to Formatted, Source and the preview on top of Dynamic Type.
+
+## 1.22.0
+
+### Minor Changes
+
+- edefa31: The iOS and iPadOS formatting bar, edit menu and Format menu now read their commands, labels, order, groups and shortcuts from the shared format manifest, like the Mac's Format and bubble menus. The edit menu's Format submenu offers the bubble-menu commands that apply to the selection, including headings and block formats, and the iPadOS Format menu no longer shows Mac-only commands that did nothing on iPad.
+
 ## 1.21.2
 
 ### Patch Changes

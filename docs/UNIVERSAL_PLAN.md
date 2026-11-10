@@ -43,6 +43,13 @@ Status: **in progress** on the `feat/universal-ios` branch. The phase checklists
 | Images next to the document | Grant Folder Access (`NSOpenPanel`), security-scoped bookmarks | Folder picker (`UIDocumentPickerViewController`) with persisted bookmarks | Same |
 | Math and Mermaid | WKWebView snapshots | Same renderer | Same |
 | Settings | Settings window | Settings sheet in the app | Same |
+| Heading outline | Outline sidebar column | Outline column beside the editor at regular width (toolbar button) | Outline sheet (medium/large detents) from the toolbar |
+| Typography (font, size, line width, theme) | Settings › Appearance, View › Bigger/Smaller | Settings sheet › Typography and Colours, on top of Dynamic Type | Same |
+| Document insights (word count, reading time) | Status bar statistic menu | Document Info sheet from the overflow menu, with selection counts | Same |
+| Export and print | File › Export as PDF/HTML, Print, Copy as Rich Text | Overflow › Export: PDF or HTML files through the share sheet, Print (`UIPrintInteractionController`), Copy as Rich Text, Copy HTML | Same |
+| Focus mode, typewriter scrolling | View menu (`WritingModes.swift`) | Not yet (#57) | Not yet |
+| iCloud conflict resolution | Conflict banner and sheet | Not yet (#57) | Not yet |
+| Folder of files | Folder window with a file sidebar | Document browser (no folder sidebar yet, #57) | Document browser |
 | Quick Look and thumbnails | Extensions | iOS Quick Look preview and thumbnail extensions | Same |
 | Share into Swash | Share extension, Services menu | Share extension | Same |
 | Widget | Quick Note widget | Widget for iOS families | Same |
@@ -69,7 +76,7 @@ Status: **in progress** on the `feat/universal-ios` branch. The phase checklists
 - [x] Flavour picker, share sheet, settings sheet.
 - [x] iOS simulator build in `pr-build.yml`.
 
-**Phase 2 notes.** The formatting bar is hidden for Slack mrkdwn, whose delimiters the AST engine doesn't write yet. Preview table cells use a plain `TextField` when edited (they are read-only in the preview).
+**Phase 2 notes.** The formatting bar and edit menu write Slack's own delimiters for Slack mrkdwn (`SlackMarkdown.swift`, #56). Preview table cells use a plain `TextField` when edited (they are read-only in the preview).
 
 ### 3. Styled editor ("Edit Text") on UIKit
 - [x] Make `MarkdownEditorStyler` cross-platform. macOS keeps its `NSTextBlock`s unchanged. On iOS, quotes, alerts, code blocks and rules carry a `BlockDecoration` paragraph attribute that `StyledLayoutManager` paints (GOTCHAS #31). Italics use font descriptors on iOS.
@@ -78,7 +85,7 @@ Status: **in progress** on the `feat/universal-ios` branch. The phase checklists
 - [x] Incremental restyling, ported from the macOS coordinator.
 - [ ] iOS harness comparing incremental and full restyles (with the simulator tests in phase 6).
 
-**Phase 3 notes.** Formatted mode on iOS is now the Edit Text editor, except for Slack mrkdwn, which still shows the read-only preview (the Mac styles Slack with a separate legacy path). Text is drawn at 17/14 of the Mac sizes (`MarkdownEditorStyler.fontScale`). Known gaps:
+**Phase 3 notes.** Formatted mode on iOS is now the Edit Text editor for every flavour. Slack mrkdwn is parsed onto the shared model (`SlackMarkdown.swift`), so both platforms style and format it through the same path (#56). Text is drawn at 17/14 of the Mac sizes (`MarkdownEditorStyler.fontScale`). Known gaps:
 - UIKit has no per-range spell-check hook, so code isn't excluded from spell-checking on iOS.
 - Links in the editor are edited, not followed.
 - Undo across collapsed tables and images still needs testing on a device with a hardware keyboard.

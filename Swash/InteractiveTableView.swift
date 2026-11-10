@@ -8,6 +8,8 @@
 import SwiftUI
 #if os(macOS)
 import AppKit
+#else
+import UIKit
 #endif
 import PixerateMarkdown
 
@@ -463,47 +465,233 @@ struct CellTextField: View {
         )
         .frame(height: Self.lineHeight)
         #else
-        IOSCellTextField(text: $text, onCommit: onCommit, onNextCell: onNextCell, onPrevCell: onPrevCell)
+        IOSCellTextView(
+            text: $text,
+            isHeader: isHeader,
+            alignment: alignment,
+            onCommit: onCommit,
+            onNextCell: onNextCell,
+            onPrevCell: onPrevCell
+        )
+        .frame(height: Self.lineHeight)
         #endif
     }
 }
 
+// MARK: - Cell Markdown Styling
+
+/// Styles a table cell's Markdown while it's edited, as the Edit Text editor does: inline code,
+/// bold, italic and links are shown formatted and their syntax is hidden. The Mac and iOS cell
+/// editors share it.
+enum CellMarkdownStyler {
+    static func style(_ textStorage: NSTextStorage, isHeader: Bool, alignment: TableAlignment) {
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        guard fullRange.length > 0 else { return }
+        let string = textStorage.string
+
+        textStorage.beginEditing()
+        defer { textStorage.endEditing() }
+        // Same weight and alignment as the cell shows when it isn't being edited
+        let paragraph = NSMutableParagraphStyle()
+        switch alignment {
+        case .center: paragraph.alignment = .center
+        case .right: paragraph.alignment = .right
+        case .left, .defaultAlignment: paragraph.alignment = .left
+        }
+        let baseFont = PlatformFont.systemFont(ofSize: 13, weight: isHeader ? .bold : .regular)
+        #if os(macOS)
+        let codeColor = NSColor.labelColor
+        let linkColor = NSColor.linkColor
+        #else
+        let codeColor = UIColor.label
+        let linkColor = UIColor.link
+        #endif
+        textStorage.setAttributes([
+            .font: baseFont,
+            .foregroundColor: PlatformColor.textColor,
+            .paragraphStyle: paragraph
+        ], range: fullRange)
+
+        func hideRange(_ range: NSRange) {
+            let valid = NSIntersectionRange(range, fullRange)
+            if valid.length > 0 {
+                textStorage.addAttribute(.font, value: PlatformFont.systemFont(ofSize: 0.01), range: valid)
+                textStorage.addAttribute(.foregroundColor, value: PlatformColor.clear, range: valid)
+            }
+        }
+
+        func matches(_ pattern: String) -> [NSTextCheckingResult] {
+            (try? NSRegularExpression(pattern: pattern))?.matches(in: string, range: fullRange) ?? []
+        }
+
+        // Inline code pills: `code`
+        for match in matches("`([^`]+)`") {
+            let contentRange = match.range(at: 1)
+            textStorage.addAttribute(.font, value: PlatformFont.monospacedSystemFont(ofSize: 12, weight: .regular), range: contentRange)
+            textStorage.addAttribute(.foregroundColor, value: codeColor, range: contentRange)
+            textStorage.addAttribute(.backgroundColor, value: PlatformColor.textColor.withAlphaComponent(0.06), range: match.range)
+            hideRange(NSRange(location: match.range.location, length: 1))
+            hideRange(NSRange(location: match.range.location + match.range.length - 1, length: 1))
+        }
+
+        // Bold: **text**
+        for match in matches("\\*\\*([^*]+)\\*\\*") {
+            textStorage.addAttribute(.font, value: PlatformFont.systemFont(ofSize: 13, weight: .bold), range: match.range(at: 1))
+            hideRange(NSRange(location: match.range.location, length: 2))
+            hideRange(NSRange(location: match.range.location + match.range.length - 2, length: 2))
+        }
+
+        // Italics: *text* or _text_
+        for match in matches("(?<!\\*)\\*([^*]+)\\*(?!\\*)|(?<!_)_([^_]+)_(?!_)") {
+            let contentRange = match.range(at: 1).location != NSNotFound ? match.range(at: 1) : match.range(at: 2)
+            textStorage.addAttribute(.font, value: PlatformFont.italicVariant(of: baseFont), range: contentRange)
+            hideRange(NSRange(location: match.range.location, length: 1))
+            hideRange(NSRange(location: match.range.location + match.range.length - 1, length: 1))
+        }
+
+        // Links: [text](url)
+        for match in matches("\\[([^\\]]+)\\]\\(([^\\)]+)\\)") {
+            let textRange = match.range(at: 1)
+            textStorage.addAttribute(.foregroundColor, value: linkColor, range: textRange)
+            textStorage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: textRange)
+            hideRange(NSRange(location: match.range.location, length: 1))
+            let urlPartStart = textRange.location + textRange.length
+            hideRange(NSRange(location: urlPartStart, length: NSMaxRange(match.range) - urlPartStart))
+        }
+    }
+}
+
 #if os(iOS)
-/// iOS cell editor: focused as soon as it appears; Return commits, Tab / Shift-Tab move between
-/// cells on a hardware keyboard, and the keyboard toolbar offers the same moves on screen.
-private struct IOSCellTextField: View {
+/// iOS cell editor: a small UITextView that styles the cell's inline Markdown as it's edited, like
+/// the Mac's `CellTextView`. It's focused as soon as it appears; Return commits, Tab / Shift-Tab
+/// move between cells on a hardware keyboard, and the keyboard toolbar offers the same moves.
+private struct IOSCellTextView: UIViewRepresentable {
     @Binding var text: String
+    var isHeader: Bool
+    var alignment: TableAlignment
     var onCommit: () -> Void
     var onNextCell: () -> Void
     var onPrevCell: () -> Void
-    @FocusState private var isFocused: Bool
 
-    var body: some View {
-        TextField("", text: $text)
-            .textFieldStyle(.plain)
-            .autocorrectionDisabled()
-            .focused($isFocused)
-            .submitLabel(.done)
-            .onSubmit(onCommit)
-            .onKeyPress(keys: [.tab]) { press in
-                press.modifiers.contains(.shift) ? onPrevCell() : onNextCell()
-                return .handled
+    func makeUIView(context: Context) -> CellUITextView {
+        let textView = CellUITextView(usingTextLayoutManager: false)
+        textView.delegate = context.coordinator
+        textView.coordinator = context.coordinator
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.isScrollEnabled = true
+        textView.showsVerticalScrollIndicator = false
+        textView.autocorrectionType = .no
+        textView.smartQuotesType = .no
+        textView.smartDashesType = .no
+        textView.smartInsertDeleteType = .no
+        textView.dataDetectorTypes = []
+        textView.returnKeyType = .done
+        textView.inputAccessoryView = makeToolbar(context.coordinator)
+        textView.text = text
+        context.coordinator.style(textView)
+        DispatchQueue.main.async {
+            textView.becomeFirstResponder()
+        }
+        return textView
+    }
+
+    func updateUIView(_ textView: CellUITextView, context: Context) {
+        context.coordinator.parent = self
+        if textView.text != text, textView.markedTextRange == nil {
+            textView.text = text
+            context.coordinator.style(textView)
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: CellUITextView, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 120, height: proposal.height ?? CellTextField.lineHeight)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    private func makeToolbar(_ coordinator: Coordinator) -> UIToolbar {
+        let bar = UIToolbar(frame: CGRect(x: 0, y: 0, width: 320, height: 44))
+        bar.autoresizingMask = .flexibleWidth
+        let previous = UIBarButtonItem(image: UIImage(systemName: "chevron.left"), primaryAction: UIAction(title: "Previous Cell") { [weak coordinator] _ in
+            coordinator?.parent.onPrevCell()
+        })
+        previous.accessibilityLabel = "Previous Cell"
+        let next = UIBarButtonItem(image: UIImage(systemName: "chevron.right"), primaryAction: UIAction(title: "Next Cell") { [weak coordinator] _ in
+            coordinator?.parent.onNextCell()
+        })
+        next.accessibilityLabel = "Next Cell"
+        let done = UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak coordinator] _ in
+            coordinator?.parent.onCommit()
+        })
+        bar.items = [previous, next, .flexibleSpace(), done]
+        bar.sizeToFit()
+        return bar
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: IOSCellTextView
+
+        init(_ parent: IOSCellTextView) {
+            self.parent = parent
+        }
+
+        /// Restyles the whole cell (it's one short line). Skipped while the keyboard is composing
+        /// (marked text), which replacing attributes would cancel.
+        func style(_ textView: UITextView) {
+            guard textView.markedTextRange == nil else { return }
+            let selection = textView.selectedRange
+            CellMarkdownStyler.style(textView.textStorage, isHeader: parent.isHeader, alignment: parent.alignment)
+            textView.typingAttributes = [
+                .font: UIFont.systemFont(ofSize: 13, weight: parent.isHeader ? .bold : .regular),
+                .foregroundColor: UIColor.label,
+            ]
+            textView.selectedRange = selection
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            style(textView)
+            parent.text = textView.text
+        }
+
+        func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+            // A cell is one line: Return commits, and pasted line breaks become spaces
+            if text == "\n" {
+                parent.onCommit()
+                return false
             }
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Button(action: onPrevCell) { Image(systemName: "chevron.left") }
-                        .accessibilityLabel("Previous Cell")
-                    Button(action: onNextCell) { Image(systemName: "chevron.right") }
-                        .accessibilityLabel("Next Cell")
-                    Spacer()
-                    Button("Done", action: onCommit)
+            if text.contains(where: \.isNewline) {
+                let flattened = text.components(separatedBy: .newlines).joined(separator: " ")
+                if let start = textView.position(from: textView.beginningOfDocument, offset: range.location),
+                   let end = textView.position(from: start, offset: range.length),
+                   let textRange = textView.textRange(from: start, to: end) {
+                    textView.replace(textRange, withText: flattened)
                 }
+                return false
             }
-            .frame(minHeight: 20)
-            .onAppear { isFocused = true }
+            return true
+        }
     }
 }
+
+/// The cell editor's text view, with Tab / Shift-Tab bound to the next and previous cell.
+private final class CellUITextView: UITextView {
+    weak var coordinator: IOSCellTextView.Coordinator?
+
+    override var keyCommands: [UIKeyCommand]? {
+        let next = UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(nextCell))
+        let previous = UIKeyCommand(input: "\t", modifierFlags: .shift, action: #selector(previousCell))
+        next.wantsPriorityOverSystemBehavior = true
+        previous.wantsPriorityOverSystemBehavior = true
+        return (super.keyCommands ?? []) + [next, previous]
+    }
+
+    @objc private func nextCell() { coordinator?.parent.onNextCell() }
+    @objc private func previousCell() { coordinator?.parent.onPrevCell() }
+}
 #endif
+
 
 #if os(macOS)
 
@@ -798,94 +986,12 @@ struct CellTextView: NSViewRepresentable {
             }
         }
 
+
         func highlightCellText(in textView: NSTextView) {
             guard let textStorage = textView.textStorage else { return }
-            let fullRange = NSRange(location: 0, length: textStorage.length)
-            guard fullRange.length > 0 else { return }
-            
-            textStorage.beginEditing()
-            // Same weight and alignment as the cell shows when it isn't being edited
-            let paragraph = NSMutableParagraphStyle()
-            switch parent.alignment {
-            case .center: paragraph.alignment = .center
-            case .right: paragraph.alignment = .right
-            case .left, .defaultAlignment: paragraph.alignment = .left
-            }
-            let baseFont = NSFont.systemFont(ofSize: 13, weight: parent.isHeader ? .bold : .regular)
-            textStorage.setAttributes([
-                .font: baseFont,
-                .foregroundColor: NSColor.textColor,
-                .paragraphStyle: paragraph
-            ], range: fullRange)
-            
-            func hideRange(_ range: NSRange) {
-                let valid = NSIntersectionRange(range, NSRange(location: 0, length: textStorage.length))
-                if valid.length > 0 {
-                    textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: 0.01), range: valid)
-                    textStorage.addAttribute(.foregroundColor, value: NSColor.clear, range: valid)
-                }
-            }
-            
-            // Inline code pills: `code`
-            let codePattern = "`([^`]+)`"
-            if let codeRegex = try? NSRegularExpression(pattern: codePattern, options: []) {
-                let matches = codeRegex.matches(in: textView.string, options: [], range: fullRange)
-                for match in matches {
-                    let contentRange = match.range(at: 1)
-                    textStorage.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), range: contentRange)
-                    textStorage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: contentRange)
-                    textStorage.addAttribute(.backgroundColor, value: NSColor.textColor.withAlphaComponent(0.06), range: match.range)
-                    
-                    hideRange(NSRange(location: match.range.location, length: 1))
-                    hideRange(NSRange(location: match.range.location + match.range.length - 1, length: 1))
-                }
-            }
-            
-            // Bold: **text**
-            let boldPattern = "\\*\\*([^*]+)\\*\\*"
-            if let boldRegex = try? NSRegularExpression(pattern: boldPattern, options: []) {
-                let matches = boldRegex.matches(in: textView.string, options: [], range: fullRange)
-                for match in matches {
-                    let contentRange = match.range(at: 1)
-                    textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: 13, weight: .bold), range: contentRange)
-                    
-                    hideRange(NSRange(location: match.range.location, length: 2))
-                    hideRange(NSRange(location: match.range.location + match.range.length - 2, length: 2))
-                }
-            }
-            
-            // Italics: *text* or _text_
-            let italicPattern = "(?<!\\*)\\*([^*]+)\\*(?!\\*)|(?<!_)_([^_]+)_(?!_)"
-            if let italicRegex = try? NSRegularExpression(pattern: italicPattern, options: []) {
-                let matches = italicRegex.matches(in: textView.string, options: [], range: fullRange)
-                for match in matches {
-                    let contentRange = match.range(at: 1).location != NSNotFound ? match.range(at: 1) : match.range(at: 2)
-                    let italicFont = NSFontManager.shared.convert(baseFont, toHaveTrait: .italicFontMask)
-                    textStorage.addAttribute(.font, value: italicFont, range: contentRange)
-                    
-                    hideRange(NSRange(location: match.range.location, length: 1))
-                    hideRange(NSRange(location: match.range.location + match.range.length - 1, length: 1))
-                }
-            }
-            
-            // Links: [text](url)
-            let linkPattern = "\\[([^\\]]+)\\]\\(([^\\)]+)\\)"
-            if let linkRegex = try? NSRegularExpression(pattern: linkPattern, options: []) {
-                let matches = linkRegex.matches(in: textView.string, options: [], range: fullRange)
-                for match in matches {
-                    let textRange = match.range(at: 1)
-                    textStorage.addAttribute(.foregroundColor, value: NSColor.linkColor, range: textRange)
-                    textStorage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: textRange)
-                    
-                    hideRange(NSRange(location: match.range.location, length: 1))
-                    let urlPartStart = textRange.location + textRange.length
-                    let urlPartLen = (match.range.location + match.range.length) - urlPartStart
-                    hideRange(NSRange(location: urlPartStart, length: urlPartLen))
-                }
-            }
-            
-            textStorage.endEditing()
+            CellMarkdownStyler.style(textStorage, isHeader: parent.isHeader, alignment: parent.alignment)
         }
+
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
