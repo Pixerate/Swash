@@ -47,6 +47,13 @@
 			remoteGlobalIDString = 046013A330045F6800853817;
 			remoteInfo = SwashWidgetExtension;
 		};
+		0460F50730045F6800853817 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0460133830045F6800853817 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0460133F30045F6800853817;
+			remoteInfo = Swash;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -72,6 +79,7 @@
 		0460138030045F6800853817 /* SwashShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = SwashShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		0460139030045F6800853817 /* SwashThumbnailExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = SwashThumbnailExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		046013A030045F6800853817 /* SwashWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = SwashWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		0460F50130045F6800853817 /* SwashiOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SwashiOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -202,6 +210,11 @@
 			path = SwashWidgetExtension;
 			sourceTree = "<group>";
 		};
+		0460F50230045F6800853817 /* SwashiOSTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Tests/SwashiOSTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -224,6 +237,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		0460F50530045F6800853817 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -235,6 +255,7 @@
 				0460138630045F6800853817 /* SwashShareExtension */,
 				0460139630045F6800853817 /* SwashThumbnailExtension */,
 				046013A630045F6800853817 /* SwashWidgetExtension */,
+				0460F50230045F6800853817 /* SwashiOSTests */,
 				0460134130045F6800853817 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -247,6 +268,7 @@
 				0460138030045F6800853817 /* SwashShareExtension.appex */,
 				0460139030045F6800853817 /* SwashThumbnailExtension.appex */,
 				046013A030045F6800853817 /* SwashWidgetExtension.appex */,
+				0460F50130045F6800853817 /* SwashiOSTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -370,6 +392,27 @@
 			productReference = 046013A030045F6800853817 /* SwashWidgetExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		0460F50330045F6800853817 /* SwashiOSTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0460F50930045F6800853817 /* Build configuration list for PBXNativeTarget "SwashiOSTests" */;
+			buildPhases = (
+				0460F50430045F6800853817 /* Sources */,
+				0460F50530045F6800853817 /* Frameworks */,
+				0460F50630045F6800853817 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0460F50830045F6800853817 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				0460F50230045F6800853817 /* SwashiOSTests */,
+			);
+			name = SwashiOSTests;
+			productName = SwashiOSTests;
+			productReference = 0460F50130045F6800853817 /* SwashiOSTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -394,6 +437,10 @@
 					};
 					046013A330045F6800853817 = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					0460F50330045F6800853817 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 0460133F30045F6800853817;
 					};
 				};
 			};
@@ -421,6 +468,7 @@
 				0460138330045F6800853817 /* SwashShareExtension */,
 				0460139330045F6800853817 /* SwashThumbnailExtension */,
 				046013A330045F6800853817 /* SwashWidgetExtension */,
+				0460F50330045F6800853817 /* SwashiOSTests */,
 			);
 		};
 /* End PBXProject section */
@@ -455,6 +503,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		046013AB30045F6800853817 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0460F50630045F6800853817 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -521,6 +576,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		0460F50430045F6800853817 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -549,6 +611,11 @@
 			isa = PBXTargetDependency;
 			target = 046013A330045F6800853817 /* SwashWidgetExtension */;
 			targetProxy = 046013A230045F6800853817 /* PBXContainerItemProxy */;
+		};
+		0460F50830045F6800853817 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0460133F30045F6800853817 /* Swash */;
+			targetProxy = 0460F50730045F6800853817 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1059,6 +1126,56 @@
 			};
 			name = Release;
 		};
+		0460F50A30045F6800853817 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.SwashiOSTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Swash.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Swash";
+			};
+			name = Debug;
+		};
+		0460F50B30045F6800853817 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.SwashiOSTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Swash.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Swash";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1112,6 +1229,15 @@
 			buildConfigurations = (
 				046013AC30045F6800853817 /* Debug */,
 				046013AD30045F6800853817 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		0460F50930045F6800853817 /* Build configuration list for PBXNativeTarget "SwashiOSTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0460F50A30045F6800853817 /* Debug */,
+				0460F50B30045F6800853817 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
