@@ -18,6 +18,8 @@ struct StyledTextView: UIViewRepresentable {
     let controller: IOSEditorController
     var flavor: MarkdownFlavor
     var baseURL: URL?
+    /// Space under the navigation bar and banner (see `UIScrollView.setTopBarInset`).
+    var topInset: CGFloat = 0
     /// Font, size (already adjusted for Dynamic Type), line width and theme (GOTCHAS #43).
     var typography = EditorTypography()
 
@@ -49,6 +51,7 @@ struct StyledTextView: UIViewRepresentable {
         textView.installFormattingBar(enabled: true)
         context.coordinator.textView = textView
         context.coordinator.scheduleFullRestyle()
+        textView.setTopBarInset(topInset)
         return textView
     }
 
@@ -57,6 +60,7 @@ struct StyledTextView: UIViewRepresentable {
         coordinator.parent = self
         textView.flavor = flavor
         controller.attach(textView)
+        textView.setTopBarInset(topInset)
         coordinator.isUpdatingFromSwiftUI = true
         defer { coordinator.isUpdatingFromSwiftUI = false }
 
