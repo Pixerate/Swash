@@ -17,6 +17,7 @@ struct SourceTextView: UIViewRepresentable {
     let controller: IOSEditorController
     var scrollSync: ScrollSync?
     var formattingEnabled: Bool = true
+    var flavor: MarkdownFlavor = .github
     /// Settings › Text Size (before Dynamic Type, which the font applies itself).
     var textSize: CGFloat = EditorTypography.defaultTextSize
 
@@ -39,6 +40,7 @@ struct SourceTextView: UIViewRepresentable {
         textView.autocapitalizationType = .sentences
         textView.dataDetectorTypes = []
         controller.attach(textView)
+        textView.flavor = flavor
         textView.installFormattingBar(enabled: formattingEnabled)
         scrollSync?.register(textView)
         return textView
@@ -54,6 +56,7 @@ struct SourceTextView: UIViewRepresentable {
             let length = (text as NSString).length
             textView.selectedRange = NSRange(location: min(selection.location, length), length: 0)
         }
+        textView.flavor = flavor
         textView.installFormattingBar(enabled: formattingEnabled)
         if context.coordinator.lastTextSize != textSize {
             context.coordinator.lastTextSize = textSize
@@ -108,7 +111,7 @@ struct SourceTextView: UIViewRepresentable {
         }
 
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
-            (textView as? MarkdownEditingTextView)?.formattingMenu(for: range, suggestedActions: suggestedActions)
+            (textView as? MarkdownEditingTextView)?.editMenu(for: range, suggestedActions: suggestedActions)
         }
     }
 }

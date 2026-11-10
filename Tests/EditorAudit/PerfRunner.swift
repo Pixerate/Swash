@@ -111,7 +111,7 @@ func findTextView(in v: NSView) -> NSTextView? { if let tv = v as? NSTextView { 
         if average > budget { print("PERF FAILURE: keystroke in a \(lines)-line code block took \(Int(average))ms, over the \(Int(budget))ms budget"); exit(1) }
         if coloured != (lines == 300) { print("PERF FAILURE: \(lines)-line block coloured=\(coloured)"); exit(1) }
     }
-    // Slack mrkdwn restyles the whole document per pass
+    // Slack mrkdwn: a full restyle through the shared AST styler (typing restyles incrementally)
     do {
         let section = "*Bold* and _italic_ with ~strike~ and `code` <https://s.com|a link>\n> quoted [!NOTE] text\n- [ ] task item\n1. numbered\n[^1]: footnote\n\n"
         var t = String(repeating: section, count: 150)

@@ -45,6 +45,7 @@ struct StyledTextView: UIViewRepresentable {
         textView.text = text
         textView.typingAttributes = context.coordinator.baseAttributes
         controller.attach(textView)
+        textView.flavor = flavor
         textView.installFormattingBar(enabled: true)
         context.coordinator.textView = textView
         context.coordinator.scheduleFullRestyle()
@@ -54,6 +55,7 @@ struct StyledTextView: UIViewRepresentable {
     func updateUIView(_ textView: StyledUITextView, context: Context) {
         let coordinator = context.coordinator
         coordinator.parent = self
+        textView.flavor = flavor
         controller.attach(textView)
         coordinator.isUpdatingFromSwiftUI = true
         defer { coordinator.isUpdatingFromSwiftUI = false }
@@ -295,7 +297,7 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
-            (textView as? MarkdownEditingTextView)?.formattingMenu(for: range, suggestedActions: suggestedActions)
+            (textView as? MarkdownEditingTextView)?.editMenu(for: range, suggestedActions: suggestedActions)
         }
 
         func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem, defaultAction: UIAction) -> UIAction? {
@@ -423,7 +425,7 @@ struct StyledTextView: UIViewRepresentable {
             cachedOffsetMap = nil
             storage.setAttributes(baseAttributes, range: NSRange(location: 0, length: storage.length))
 
-            let document = MarkdownDocument.parse(rawText)
+            let document = MarkdownDocument.parse(rawText, flavor: parent.flavor)
             let styler = MarkdownEditorStyler(storage: storage, document: document)
             styler.typography = parent.typography
             configureRichPreviews(styler, for: textView)
@@ -447,7 +449,7 @@ struct StyledTextView: UIViewRepresentable {
 
             let rawText = swashRawMarkdown(from: storage)
             let raw = rawText as NSString
-            let document = MarkdownDocument.parse(rawText)
+            let document = MarkdownDocument.parse(rawText, flavor: parent.flavor)
             let blocks = document.root.children
             let current = Self.blockSummaries(document, raw: raw)
 
