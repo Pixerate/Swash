@@ -1,5 +1,17 @@
 # swash
 
+## 1.23.0
+
+### Minor Changes
+
+- d5cebfa: iPhone and iPad: heading outline (a sheet on iPhone, a sidebar column on iPad), Document Info with word count and reading time, Export as PDF or HTML through the share sheet, Print, Copy as Rich Text and Copy HTML, and Typography and Colours in Settings (font, text size, line width and theme), applied to Formatted, Source and the preview on top of Dynamic Type.
+
+## 1.22.0
+
+### Minor Changes
+
+- edefa31: The iOS and iPadOS formatting bar, edit menu and Format menu now read their commands, labels, order, groups and shortcuts from the shared format manifest, like the Mac's Format and bubble menus. The edit menu's Format submenu offers the bubble-menu commands that apply to the selection, including headings and block formats, and the iPadOS Format menu no longer shows Mac-only commands that did nothing on iPad.
+
 ## 1.21.2
 
 ### Patch Changes

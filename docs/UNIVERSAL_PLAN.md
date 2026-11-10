@@ -43,6 +43,13 @@ Status: **in progress** on the `feat/universal-ios` branch. The phase checklists
 | Images next to the document | Grant Folder Access (`NSOpenPanel`), security-scoped bookmarks | Folder picker (`UIDocumentPickerViewController`) with persisted bookmarks | Same |
 | Math and Mermaid | WKWebView snapshots | Same renderer | Same |
 | Settings | Settings window | Settings sheet in the app | Same |
+| Heading outline | Outline sidebar column | Outline column beside the editor at regular width (toolbar button) | Outline sheet (medium/large detents) from the toolbar |
+| Typography (font, size, line width, theme) | Settings › Appearance, View › Bigger/Smaller | Settings sheet › Typography and Colours, on top of Dynamic Type | Same |
+| Document insights (word count, reading time) | Status bar statistic menu | Document Info sheet from the overflow menu, with selection counts | Same |
+| Export and print | File › Export as PDF/HTML, Print, Copy as Rich Text | Overflow › Export: PDF or HTML files through the share sheet, Print (`UIPrintInteractionController`), Copy as Rich Text, Copy HTML | Same |
+| Focus mode, typewriter scrolling | View menu (`WritingModes.swift`) | Not yet (#57) | Not yet |
+| iCloud conflict resolution | Conflict banner and sheet | Not yet (#57) | Not yet |
+| Folder of files | Folder window with a file sidebar | Document browser (no folder sidebar yet, #57) | Document browser |
 | Quick Look and thumbnails | Extensions | iOS Quick Look preview and thumbnail extensions | Same |
 | Share into Swash | Share extension, Services menu | Share extension | Same |
 | Widget | Quick Note widget | Widget for iOS families | Same |

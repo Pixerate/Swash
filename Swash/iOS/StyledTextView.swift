@@ -18,6 +18,8 @@ struct StyledTextView: UIViewRepresentable {
     let controller: IOSEditorController
     var flavor: MarkdownFlavor
     var baseURL: URL?
+    /// Font, size (already adjusted for Dynamic Type), line width and theme (GOTCHAS #43).
+    var typography = EditorTypography()
 
     func makeUIView(context: Context) -> StyledUITextView {
         let storage = NSTextStorage()
@@ -30,17 +32,18 @@ struct StyledTextView: UIViewRepresentable {
         let textView = StyledUITextView(frame: .zero, textContainer: container)
         textView.coordinator = context.coordinator
         textView.delegate = context.coordinator
-        textView.backgroundColor = .systemBackground
+        textView.backgroundColor = typography.theme.background ?? .systemBackground
         textView.textContainerInset = UIEdgeInsets(top: 20, left: 14, bottom: 20, right: 14)
+        context.coordinator.lastTypography = typography
         textView.alwaysBounceVertical = true
         textView.keyboardDismissMode = .interactive
         textView.smartQuotesType = .no
         textView.smartDashesType = .no
         textView.smartInsertDeleteType = .no
         textView.dataDetectorTypes = []
-        textView.typingAttributes = Coordinator.baseAttributes
+        textView.typingAttributes = context.coordinator.baseAttributes
         textView.text = text
-        textView.typingAttributes = Coordinator.baseAttributes
+        textView.typingAttributes = context.coordinator.baseAttributes
         controller.attach(textView)
         textView.installFormattingBar(enabled: true)
         context.coordinator.textView = textView
@@ -59,12 +62,16 @@ struct StyledTextView: UIViewRepresentable {
         if coordinator.lastStyledText != text, current != text {
             // External change (revert, another window, flavour conversion)
             let offset = textView.contentOffset
-            textView.textStorage.setAttributedString(NSAttributedString(string: text, attributes: Coordinator.baseAttributes))
+            textView.textStorage.setAttributedString(NSAttributedString(string: text, attributes: context.coordinator.baseAttributes))
             coordinator.invalidateOffsetMap()
             textView.contentOffset = offset
             coordinator.scheduleFullRestyle()
         } else if coordinator.lastFlavor != flavor || coordinator.lastBaseURL != baseURL {
             coordinator.scheduleFullRestyle()
+        }
+        if coordinator.lastTypography != typography {
+            coordinator.lastTypography = typography
+            coordinator.applyTypography(in: textView)
         }
     }
 
@@ -88,6 +95,7 @@ struct StyledTextView: UIViewRepresentable {
         var lastStyledText: String?
         var lastFlavor: MarkdownFlavor?
         var lastBaseURL: URL?
+        var lastTypography = EditorTypography()
 
         private var cachedOffsetMap: AttachmentOffsetMap?
         /// Raw-markdown selection to restore after the next styling pass.
@@ -97,8 +105,8 @@ struct StyledTextView: UIViewRepresentable {
         /// Caret position before the latest selection change, to tell arrow steps from jumps.
         private var lastSelection = NSRange(location: 0, length: 0)
 
-        static var baseFont: UIFont { .systemFont(ofSize: MarkdownEditorStyler.baseFontSize * MarkdownEditorStyler.fontScale, weight: .regular) }
-        static var baseAttributes: [NSAttributedString.Key: Any] { [.font: baseFont, .foregroundColor: UIColor.label] }
+        var baseFont: UIFont { parent.typography.font(ofSize: parent.typography.textSize * MarkdownEditorStyler.fontScale) }
+        var baseAttributes: [NSAttributedString.Key: Any] { [.font: baseFont, .foregroundColor: UIColor.label] }
 
         init(_ parent: StyledTextView) {
             self.parent = parent
@@ -351,7 +359,7 @@ struct StyledTextView: UIViewRepresentable {
             var attributes = textView.typingAttributes
             var changed = false
             if let font = attributes[.font] as? UIFont, font.pointSize < 1 {
-                attributes[.font] = Self.baseFont
+                attributes[.font] = baseFont
                 changed = true
             }
             if let color = attributes[.foregroundColor] as? UIColor, color == .clear {
@@ -377,6 +385,9 @@ struct StyledTextView: UIViewRepresentable {
         private var lastRawLength = 0
         /// Set whenever the storage was replaced or styling inputs changed; the next pass is a full one.
         var forceFullRestyle = true
+        /// Styling passes so far, by kind (read by the iOS editor tests).
+        private(set) var fullPassCount = 0
+        private(set) var incrementalPassCount = 0
 
         private static func blockSummaries(_ document: MarkdownDocument, raw: NSString) -> [(source: String, range: NSRange, isDefinition: Bool)] {
             document.root.children.map { block in
@@ -397,6 +408,7 @@ struct StyledTextView: UIViewRepresentable {
                 return
             }
             forceFullRestyle = false
+            fullPassCount += 1
             isHighlighting = true
             let savedOffset = textView.contentOffset
             let savedRawSelection = pendingRawSelection ?? rawRange(forStorage: textView.selectedRange, in: textView)
@@ -409,10 +421,11 @@ struct StyledTextView: UIViewRepresentable {
                 storage.replaceCharacters(in: NSRange(location: 0, length: storage.length), with: rawText)
             }
             cachedOffsetMap = nil
-            storage.setAttributes(Self.baseAttributes, range: NSRange(location: 0, length: storage.length))
+            storage.setAttributes(baseAttributes, range: NSRange(location: 0, length: storage.length))
 
             let document = MarkdownDocument.parse(rawText, flavor: parent.flavor)
             let styler = MarkdownEditorStyler(storage: storage, document: document)
+            styler.typography = parent.typography
             configureRichPreviews(styler, for: textView)
             styler.style()
             collectRichPreviews(from: styler, fullPass: true)
@@ -466,6 +479,7 @@ struct StyledTextView: UIViewRepresentable {
             let storageRegion = NSRange(location: storageStart, length: storageEnd - storageStart)
             let shift = start - storageStart
 
+            incrementalPassCount += 1
             isHighlighting = true
             storage.beginEditing()
             storage.enumerateAttribute(.attachment, in: storageRegion, options: []) { value, _, _ in
@@ -473,9 +487,10 @@ struct StyledTextView: UIViewRepresentable {
             }
             storage.replaceCharacters(in: storageRegion, with: raw.substring(with: NSRange(location: start, length: end - start)))
             let region = NSRange(location: storageStart, length: end - start)
-            storage.setAttributes(Self.baseAttributes, range: region)
+            storage.setAttributes(baseAttributes, range: region)
 
             let styler = MarkdownEditorStyler(storage: storage, document: document, storageShift: shift)
+            styler.typography = parent.typography
             configureRichPreviews(styler, for: textView)
             styler.style(blocks: Array(blocks[firstStyled..<(blocks.count - suffix)]))
             collectRichPreviews(from: styler, fullPass: false)
@@ -540,7 +555,7 @@ struct StyledTextView: UIViewRepresentable {
                     attachment = ImageTextAttachment(image: image, alt: "Mermaid Diagram", urlString: "", rawMarkdown: rawMarkdown)
                 }
                 let replacement = NSMutableAttributedString(attachment: attachment)
-                replacement.addAttributes(Self.baseAttributes, range: NSRange(location: 0, length: replacement.length))
+                replacement.addAttributes(baseAttributes, range: NSRange(location: 0, length: replacement.length))
                 storage.replaceCharacters(in: range, with: replacement)
             }
         }
@@ -556,7 +571,7 @@ struct StyledTextView: UIViewRepresentable {
             }
             lastSelection = restored
             isHighlighting = false
-            textView.typingAttributes = Self.baseAttributes
+            textView.typingAttributes = baseAttributes
             if textView.contentOffset != savedOffset, !textView.isFirstResponder || textView.isDragging || textView.isDecelerating {
                 textView.contentOffset = savedOffset
             }
@@ -639,6 +654,27 @@ struct StyledTextView: UIViewRepresentable {
             forceFullRestyle = true
             highlight(in: textView)
         }
+
+        /// Typography changed in Settings (or Dynamic Type): new page colour, column and a full restyle.
+        func applyTypography(in textView: StyledUITextView) {
+            textView.backgroundColor = parent.typography.theme.background ?? .systemBackground
+            updateColumnInsets(in: textView)
+            textView.typingAttributes = baseAttributes
+            scheduleFullRestyle()
+        }
+
+        /// The readable column centres the text in `readableColumnWidth` (scaled like the text);
+        /// full width keeps the standard margins.
+        func updateColumnInsets(in textView: StyledUITextView) {
+            let typography = parent.typography
+            var side: CGFloat = 14
+            if typography.lineWidth == .readable {
+                let column = typography.readableColumnWidth * MarkdownEditorStyler.fontScale
+                side = max(14, ((textView.bounds.width - column) / 2).rounded())
+            }
+            guard textView.textContainerInset.left != side else { return }
+            textView.textContainerInset = UIEdgeInsets(top: 20, left: side, bottom: 20, right: side)
+        }
     }
 }
 
@@ -686,6 +722,7 @@ final class StyledUITextView: MarkdownEditingTextView {
             needsOverlayLayout = true
             let isFirstLayout = lastLayoutWidth == 0
             lastLayoutWidth = bounds.width
+            coordinator?.updateColumnInsets(in: self)
             if !isFirstLayout { coordinator?.widthChanged(in: self) }
         }
         // Tables and badge buttons are content subviews: they scroll with the text, so they only

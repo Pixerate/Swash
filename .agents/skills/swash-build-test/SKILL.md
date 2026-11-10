@@ -72,6 +72,7 @@ The Format menu, shortcuts, bubble-menu labels and code languages come from the 
 ./scripts/run_export_tests.sh      # HTML and PDF export
 ./scripts/run_paste_tests.sh       # Swash's paste additions to the engine (Confluence/Jira images)
 ./scripts/run_slack_tests.sh       # Slack mrkdwn parsing (Edit Text) and formatting with Slack delimiters
+xcodebuild test -scheme Swash -destination "platform=iOS Simulator,name=iPhone 17" CODE_SIGNING_ALLOWED=NO  # iOS Edit Text editor (Tests/SwashiOSTests)
 ```
 
 After `./scripts/run_spec_tests.sh`, restore the snapshots (GOTCHAS #8).
