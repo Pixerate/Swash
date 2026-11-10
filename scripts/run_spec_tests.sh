@@ -23,6 +23,7 @@ swiftc $EXTRAS \
   Swash/MarkdownParser.swift \
   $PIXERATE_MARKDOWN \
   Swash/PixerateMarkdownExtensions.swift \
+  Swash/SlackMarkdown.swift \
   Swash/MarkdownEditorStyler.swift \
   Swash/CodeHighlightTheme.swift \
   Swash/RichContentRenderer.swift \

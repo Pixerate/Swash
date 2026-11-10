@@ -69,7 +69,7 @@ struct IOSContentView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .focusedSceneValue(\.formatCommandHandler, canFormat ? { handleFormatCommand($0) } : nil)
+        .focusedSceneValue(\.formatCommandHandler, { handleFormatCommand($0) })
         .onAppear {
             editor.onFormatCommand = { handleFormatCommand($0) }
         }
@@ -81,13 +81,10 @@ struct IOSContentView: View {
         case .edit:
             sourceEditor
         case .preview:
-            if usesStyledEditor {
-                StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL)
-                    .ignoresSafeArea(.container, edges: .bottom)
-                    .id(folderAccessManager.accessGrantedTrigger)
-            } else {
-                preview
-            }
+            // Edit Text for every flavour: Slack mrkdwn is parsed onto the same model (SlackMarkdown)
+            StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL)
+                .ignoresSafeArea(.container, edges: .bottom)
+                .id(folderAccessManager.accessGrantedTrigger)
         case .split:
             HStack(spacing: 0) {
                 sourceEditor
@@ -101,8 +98,7 @@ struct IOSContentView: View {
         SourceTextView(
             text: $document.text,
             controller: editor,
-            scrollSync: effectiveMode == .split ? scrollSync : nil,
-            formattingEnabled: document.flavor != .slack
+            scrollSync: effectiveMode == .split ? scrollSync : nil
         )
         .ignoresSafeArea(.container, edges: .bottom)
     }
@@ -226,34 +222,24 @@ struct IOSContentView: View {
 
     // MARK: - Formatting
 
-    /// Formatted mode edits in place (Edit Text) for CommonMark and GFM; Slack mrkdwn, which the
-    /// AST styler does not handle, shows the read-only preview there.
-    private var usesStyledEditor: Bool {
-        document.flavor != .slack
-    }
-
-    /// Formatting needs an editor on screen, and isn't offered for Slack mrkdwn.
-    private var canFormat: Bool {
-        document.flavor != .slack
-    }
-
+    /// Formatting writes the document's flavour: Slack mrkdwn gets `*bold*`, `_italic_`, `~strike~`
+    /// and `<url|text>` links (SlackMarkdown.swift).
     private func handleFormatCommand(_ command: FormatCommand) {
-        guard canFormat else { return }
         let selection = editor.isAttached ? editor.selection : NSRange(location: (document.text as NSString).length, length: 0)
         if command == .link {
-            let current = FormatCommandEdits.activeLink(text: document.text, selection: selection)
+            let current = FormatCommandEdits.activeLink(text: document.text, selection: selection, flavor: document.flavor)
             let clipboard = PlatformPasteboard.string.flatMap { URL(string: $0)?.scheme != nil ? $0 : nil }
             linkPrompt = LinkPrompt(url: current ?? clipboard ?? "", isEditing: current != nil, selection: selection)
             return
         }
-        guard let edit = FormatCommandEdits.edit(for: command, text: document.text, selection: selection) else { return }
+        guard let edit = FormatCommandEdits.edit(for: command, text: document.text, selection: selection, flavor: document.flavor) else { return }
         commit(edit, actionName: command.actionName)
     }
 
     private func applyLink(_ url: String?, selection: NSRange) {
         let trimmed = url?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let trimmed = trimmed, trimmed.isEmpty { return }
-        guard let edit = FormatCommandEdits.link(trimmed, text: document.text, selection: selection) else { return }
+        guard let edit = FormatCommandEdits.link(trimmed, text: document.text, selection: selection, flavor: document.flavor) else { return }
         commit(edit, actionName: trimmed == nil ? "Remove Link" : "Link")
     }
 

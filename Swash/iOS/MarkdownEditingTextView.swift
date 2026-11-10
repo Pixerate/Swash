@@ -137,8 +137,7 @@ class MarkdownEditingTextView: UITextView {
 
     // MARK: Formatting bar
 
-    /// Shows the formatting bar above the software keyboard (hidden when Slack mrkdwn is
-    /// selected, whose delimiters the AST engine does not write yet).
+    /// Shows the formatting bar above the software keyboard.
     func installFormattingBar(enabled: Bool) {
         guard formattingBarEnabled != enabled else { return }
         formattingBarEnabled = enabled
