@@ -11,5 +11,5 @@ swiftc -O -target arm64-apple-macos14.0 -sdk "$(xcrun --show-sdk-path --sdk maco
   -swift-version 5 -default-isolation MainActor \
   -enable-upcoming-feature NonisolatedNonsendingByDefault -enable-upcoming-feature InferIsolatedConformances \
   $PIXERATE_MARKDOWN $PIXERATE_CORE \
-  Swash/MarkdownAgentTools.swift Tests/AgentTools/main.swift -o "$OUT/runner"
+  Swash/MarkdownFlavor.swift Swash/PixerateMarkdownExtensions.swift Swash/SlackMarkdown.swift Swash/MarkdownAgentTools.swift Tests/AgentTools/main.swift -o "$OUT/runner"
 "$OUT/runner"

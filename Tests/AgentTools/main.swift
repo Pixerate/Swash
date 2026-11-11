@@ -10,12 +10,14 @@ final class FakeDocument: MarkdownToolTarget {
     var markdown: String
     var selection: NSRange
     var readOnlyReason: String?
+    var flavor: MarkdownFlavor
     /// Every edit, as the editor's undo stack would record it.
     var edits: [(text: String, actionName: String)] = []
 
-    init(_ markdown: String, selection: NSRange = NSRange(location: 0, length: 0)) {
+    init(_ markdown: String, selection: NSRange = NSRange(location: 0, length: 0), flavor: MarkdownFlavor = .github) {
         self.markdown = markdown
         self.selection = selection
+        self.flavor = flavor
     }
 
     func apply(markdown: String, selection: NSRange, actionName: String) {
@@ -48,8 +50,8 @@ struct Harness {
     let notify: () -> Void
 
     @MainActor
-    init(_ markdown: String, selection: NSRange = NSRange(location: 0, length: 0)) {
-        document = FakeDocument(markdown, selection: selection)
+    init(_ markdown: String, selection: NSRange = NSRange(location: 0, length: 0), flavor: MarkdownFlavor = .github) {
+        document = FakeDocument(markdown, selection: selection, flavor: flavor)
         registry = ToolRegistry()
         var listener: (() -> Void)?
         let tools = MarkdownToolProvider(target: document)
@@ -262,6 +264,36 @@ func run() async {
         expectEqual(h.document.selection, NSRange(location: 3, length: 0), "set_selection caret")
         await fails(h, "set_selection", ["from": 3, "to": 99], code: "tool_failed", containing: "outside the document")
         await fails(h, "set_selection", ["to": 3], code: "invalid_arguments")
+    }
+
+    // MARK: format_text in Slack mrkdwn
+    do {
+        let h = Harness("Hello world and more", flavor: .slack)
+        let bold = await ok(h, "format_text", ["from": 6, "to": 11, "bold": true])
+        expectEqual(h.document.markdown, "Hello *world* and more", "Slack bold uses single asterisks")
+        expectEqual(range(bold["range"]) ?? NSRange(), NSRange(location: 7, length: 5), "Slack range on the text inside the markers")
+        expectEqual(bold["formatting"]?["bold"]?.boolValue ?? false, true, "Slack *text* reads as bold, not italic")
+        check(bold["formatting"]?["italic"] == nil, "Slack *text* is not reported as italic")
+
+        _ = await ok(h, "format_text", ["from": 7, "to": 12, "bold": false, "italic": true])
+        expectEqual(h.document.markdown, "Hello _world_ and more", "Slack italic uses underscores")
+
+        _ = await ok(h, "format_text", ["from": 14, "to": 17, "strike": true])
+        expectEqual(h.document.markdown, "Hello _world_ ~and~ more", "Slack strike uses single tildes")
+
+        let linked = await ok(h, "format_text", ["from": 20, "to": 24, "link": "https://example.com"])
+        expectEqual(h.document.markdown, "Hello _world_ ~and~ <https://example.com|more>", "Slack link uses <url|text>")
+        expectEqual(linked["formatting"]?["link"]?.stringValue ?? "", "https://example.com", "Slack link is reported")
+        expectEqual(h.document.edits.count, 4, "Slack: one undo step per call")
+
+        let text = await ok(h, "get_text", ["format": "text"])
+        expectEqual(text["content"]?.stringValue ?? "", "Hello world and more", "Slack plain text drops Slack syntax")
+    }
+    do {
+        // Without the flavour, the same text would be GitHub Markdown
+        let h = Harness("Hello world", flavor: .github)
+        _ = await ok(h, "format_text", ["from": 6, "to": 11, "bold": true])
+        expectEqual(h.document.markdown, "Hello **world**", "GitHub bold still uses double asterisks")
     }
 
     // MARK: format_text

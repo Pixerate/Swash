@@ -26,6 +26,9 @@ protocol MarkdownToolTarget: AnyObject {
     var selection: NSRange { get }
     /// Why the document can't be edited, or nil when it can.
     var readOnlyReason: String? { get }
+    /// The document's Markdown flavour. Slack mrkdwn has its own inline syntax (`*bold*`,
+    /// `_italic_`, `~strike~`, `<url|text>`), which the tools read and write.
+    var flavor: MarkdownFlavor { get }
     /// Replaces the whole Markdown as one undoable edit, then selects `selection`.
     func apply(markdown: String, selection: NSRange, actionName: String)
     /// Moves the selection.
@@ -203,9 +206,9 @@ final class MarkdownToolProvider {
 
     /// The leaf blocks of `text` (paragraphs, headings, code blocks, table cells…) with their
     /// source ranges, as `get_text {blocks: true}` returns them.
-    static func blocks(in text: String, overlapping range: NSRange? = nil) -> [JSONValue] {
+    static func blocks(in text: String, overlapping range: NSRange? = nil, flavor: MarkdownFlavor = .github) -> [JSONValue] {
         let ns = text as NSString
-        let document = MarkdownDocument.parse(text)
+        let document = MarkdownDocument.parse(text, flavor: flavor)
         var out: [JSONValue] = []
         func visit(_ node: MarkdownNode) {
             let type: String
@@ -278,8 +281,8 @@ final class MarkdownToolProvider {
             let format = args["format"]?.stringValue ?? "markdown"
             let content: String
             switch format {
-            case "html": content = MarkdownHTMLRenderer.render(MarkdownDocument.parse(text))
-            case "text": content = Self.plainText(text)
+            case "html": content = MarkdownHTMLRenderer.render(MarkdownDocument.parse(text, flavor: target.flavor))
+            case "text": content = Self.plainText(text, flavor: target.flavor)
             default: content = text
             }
             let ns = text as NSString
@@ -287,13 +290,13 @@ final class MarkdownToolProvider {
             if let reason = target.readOnlyReason {
                 result["readOnly"] = .string(reason)
             }
-            if args["blocks"]?.boolValue == true { result["blocks"] = .array(Self.blocks(in: text)) }
+            if args["blocks"]?.boolValue == true { result["blocks"] = .array(Self.blocks(in: text, flavor: target.flavor)) }
             return result
         }
     )
 
     /// The text of the leaf blocks without Markdown syntax, one block per line.
-    static func plainText(_ text: String) -> String {
+    static func plainText(_ text: String, flavor: MarkdownFlavor = .github) -> String {
         var lines: [String] = []
         func visit(_ node: MarkdownNode) {
             switch node.kind {
@@ -303,7 +306,7 @@ final class MarkdownToolProvider {
             default: for child in node.children where child.kind.isBlock { visit(child) }
             }
         }
-        visit(MarkdownDocument.parse(text).root)
+        visit(MarkdownDocument.parse(text, flavor: flavor).root)
         return lines.joined(separator: "\n")
     }
 
@@ -539,8 +542,8 @@ final class MarkdownToolProvider {
     private static let unsafeLink = try! NSRegularExpression(pattern: "^\\s*(javascript|data|vbscript):", options: [.caseInsensitive])
 
     /// Which inline formats are on a range: `true` on all of its text, `"partly"` on some.
-    static func formattingInfo(_ text: String, _ range: NSRange) -> JSONObject {
-        let formatting = MarkdownFormatting(text: text)
+    static func formattingInfo(_ text: String, _ range: NSRange, flavor: MarkdownFlavor = .github) -> JSONObject {
+        let formatting = MarkdownFormatting(text: text, flavor: flavor)
         var out = JSONObject()
         for entry in inlineFormats {
             if formatting.isActive(entry.format, selection: range) {
@@ -588,9 +591,14 @@ final class MarkdownToolProvider {
                 var text = original
                 for entry in Self.inlineFormats {
                     guard let wanted = args[entry.arg]?.boolValue else { continue }
-                    let formatting = MarkdownFormatting(text: text)
+                    let formatting = MarkdownFormatting(text: text, flavor: target.flavor)
                     if formatting.isActive(entry.format, selection: range) == wanted { continue }
-                    guard formatting.isEnabled(entry.command, selection: range), let edit = formatting.toggle(entry.format, selection: range) else {
+                    // Slack documents get Slack's delimiters (`*bold*`, not `**bold**`)
+                    let slack = target.flavor == .slack && entry.format != .code
+                    guard formatting.isEnabled(entry.command, selection: range),
+                          let edit = slack
+                            ? formatting.toggleSlack(entry.format, selection: range)
+                            : formatting.toggle(entry.format, selection: range) else {
                         throw MarkdownToolError("That text cannot be made \(entry.arg) here (for example inside a code block). Nothing was changed.")
                     }
                     text = edit.text
@@ -598,8 +606,8 @@ final class MarkdownToolProvider {
                 }
                 if let link = args["link"] {
                     let url = link.stringValue?.trimmingCharacters(in: .whitespaces)
-                    if url != nil || MarkdownFormatting(text: text).link(at: range) != nil {
-                        guard let edit = FormatCommandEdits.link(url, text: text, selection: range) else {
+                    if url != nil || MarkdownFormatting(text: text, flavor: target.flavor).link(at: range) != nil {
+                        guard let edit = FormatCommandEdits.link(url, text: text, selection: range, flavor: target.flavor) else {
                             throw MarkdownToolError("That text cannot be linked here (for example inside a code block). Nothing was changed.")
                         }
                         text = edit.text
@@ -610,7 +618,7 @@ final class MarkdownToolProvider {
                     target.apply(markdown: text, selection: Self.mapSelection(target.selection, from: original as NSString, to: text as NSString), actionName: "Format")
                 }
                 let ns = text as NSString
-                return ["range": Self.range(range), "text": .string(ns.substring(with: range)), "formatting": .object(Self.formattingInfo(text, range))]
+                return ["range": Self.range(range), "text": .string(ns.substring(with: range)), "formatting": .object(Self.formattingInfo(text, range, flavor: target.flavor))]
             }
         )
     }()
@@ -634,14 +642,14 @@ final class MarkdownToolProvider {
     }
 
     /// Takes the lines of `range` out of code blocks and quotes and makes them paragraphs.
-    private static func clearBlocks(_ text: inout String, _ range: inout NSRange) {
-        if MarkdownFormatting(text: text).codeBlock(containing: range) != nil {
-            step(&text, &range, FormatCommandEdits.edit(for: .codeBlock, text: text, selection: range))
+    private static func clearBlocks(_ text: inout String, _ range: inout NSRange, flavor: MarkdownFlavor) {
+        if MarkdownFormatting(text: text, flavor: flavor).codeBlock(containing: range) != nil {
+            step(&text, &range, FormatCommandEdits.edit(for: .codeBlock, text: text, selection: range, flavor: flavor))
         }
-        for _ in 0..<8 where MarkdownFormatting(text: text).isQuoted(selection: range) {
-            step(&text, &range, MarkdownFormatting(text: text).toggleBlock(.quote, selection: range))
+        for _ in 0..<8 where MarkdownFormatting(text: text, flavor: flavor).isQuoted(selection: range) {
+            step(&text, &range, MarkdownFormatting(text: text, flavor: flavor).toggleBlock(.quote, selection: range))
         }
-        let formatting = MarkdownFormatting(text: text)
+        let formatting = MarkdownFormatting(text: text, flavor: flavor)
         if formatting.activeBlockFormat(selection: range) != .paragraph {
             step(&text, &range, formatting.toggleBlock(.paragraph, selection: range))
         }
@@ -669,7 +677,8 @@ final class MarkdownToolProvider {
                 let original = target.markdown
                 var range = try Self.targetRange(args, target, size: (original as NSString).length, allowEmpty: true)
                 var text = original
-                let formatting = MarkdownFormatting(text: text)
+                let flavor = target.flavor
+                let formatting = MarkdownFormatting(text: text, flavor: flavor)
                 if formatting.isInTable(range) {
                     throw MarkdownToolError("Those lines cannot become \(type) here (they are in a table). Nothing was changed.")
                 }
@@ -683,23 +692,23 @@ final class MarkdownToolProvider {
                 let alreadyCode = type == "code_block" && formatting.codeBlock(containing: range) != nil
                 let alreadyThere = block.map { formatting.activeBlockFormat(selection: range) == $0 && !formatting.isQuoted(selection: range) && formatting.codeBlock(containing: range) == nil } ?? false
                 if !alreadyCode && !alreadyThere {
-                    Self.clearBlocks(&text, &range)
+                    Self.clearBlocks(&text, &range, flavor: flavor)
                     switch type {
                     case "blockquote":
-                        Self.step(&text, &range, MarkdownFormatting(text: text).toggleBlock(.quote, selection: range))
+                        Self.step(&text, &range, MarkdownFormatting(text: text, flavor: flavor).toggleBlock(.quote, selection: range))
                     case "code_block":
                         guard let edit = FormatCommandEdits.codeBlock(language: nil, text: text, selection: range) else {
                             throw MarkdownToolError("Those lines cannot become a code block here. Nothing was changed.")
                         }
                         Self.step(&text, &range, edit)
                     default:
-                        if let block { Self.step(&text, &range, MarkdownFormatting(text: text).toggleBlock(block, selection: range)) }
+                        if let block { Self.step(&text, &range, MarkdownFormatting(text: text, flavor: flavor).toggleBlock(block, selection: range)) }
                     }
                 }
                 if text != original {
                     target.apply(markdown: text, selection: Self.mapSelection(target.selection, from: original as NSString, to: text as NSString), actionName: "Block Type")
                 }
-                return ["type": .string(type), "range": Self.range(range), "blocks": .array(Self.blocks(in: text, overlapping: range))]
+                return ["type": .string(type), "range": Self.range(range), "blocks": .array(Self.blocks(in: text, overlapping: range, flavor: flavor))]
             }
         )
     }()
