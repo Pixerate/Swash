@@ -1,5 +1,12 @@
 # swash
 
+## 1.27.1
+
+### Patch Changes
+
+- 3bc8302: Releases now archive the iPhone and iPad app after the macOS release, and upload it to TestFlight when App Store Connect API secrets are set (see docs/RELEASING.md). Without them, the archive is an unsigned check that the iOS release build works.
+- 605175a: Agent tools now read and format Slack documents as Slack mrkdwn: `format_text` writes `*bold*`, `_italic_`, `~strike~` and `<url|text>` links instead of GitHub Markdown, and `get_text`'s plain text, HTML and blocks parse Slack syntax. Also removes unreachable string-based formatting code from the Mac editor.
+
 ## 1.27.0
 
 ### Minor Changes
