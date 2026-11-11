@@ -30,7 +30,10 @@ struct PreviewScrollView<Content: View>: NSViewRepresentable {
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
 
-        let hostingView = NSHostingView(rootView: content())
+        let coordinator = context.coordinator
+        let hostingView = NSHostingView(rootView: MeasuredContent(content: content()) { [weak coordinator] height in
+            coordinator?.contentHeightDidChange(height)
+        })
         hostingView.autoresizingMask = [.width]
         scrollView.documentView = hostingView
 
@@ -60,26 +63,32 @@ struct PreviewScrollView<Content: View>: NSViewRepresentable {
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         let coordinator = context.coordinator
         coordinator.scrollSync = scrollSync
-        guard let hostingView = nsView.documentView as? NSHostingView<Content> else { return }
+        guard let hostingView = nsView.documentView as? NSHostingView<MeasuredContent> else { return }
         let width = nsView.contentSize.width
         if contentKey == nil || contentKey != coordinator.lastContentKey {
-            hostingView.rootView = content()
+            hostingView.rootView = MeasuredContent(content: content(), onHeightChange: hostingView.rootView.onHeightChange)
             coordinator.lastContentKey = contentKey
         } else if width == coordinator.lastWidth {
             return
         }
         coordinator.lastWidth = width
-        Self.fit(hostingView, in: nsView)
+        Self.fit(hostingView, in: nsView, coordinator: coordinator)
     }
     
     /// Sizes the hosting view to its content at the scroll view's width (a synchronous layout of
     /// the whole preview, so it only runs when something changed).
-    static func fit(_ hostingView: NSView, in scrollView: NSScrollView) {
+    ///
+    /// The height is the one `MeasuredContent` reports after laying the content out at this width.
+    /// `fittingSize` can't be used: it measures SwiftUI content at its ideal width, where paragraphs
+    /// don't wrap, so the height came out short and the hosting view centred the overflowing
+    /// content, cutting off the start and end of the document.
+    static func fit(_ hostingView: NSView, in scrollView: NSScrollView, coordinator: Coordinator) {
         let currentWidth = scrollView.contentSize.width
         if currentWidth > 0 {
             hostingView.frame.size.width = currentWidth
         }
-        let targetHeight = hostingView.fittingSize.height
+        hostingView.layoutSubtreeIfNeeded()
+        let targetHeight = coordinator.contentHeight
         if hostingView.frame.height != targetHeight || hostingView.frame.width != currentWidth {
             hostingView.frame = NSRect(x: 0, y: 0, width: currentWidth, height: max(targetHeight, scrollView.contentSize.height))
         }
@@ -93,6 +102,20 @@ struct PreviewScrollView<Content: View>: NSViewRepresentable {
         coordinator.router = nil
     }
 
+    /// Lays the content out at the hosting view's width and its own height, top-aligned, and
+    /// reports that height so the hosting view can be sized to it.
+    struct MeasuredContent: View {
+        let content: Content
+        let onHeightChange: (CGFloat) -> Void
+
+        var body: some View {
+            content
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeightChange($0) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+    }
+
     @MainActor
     class Coordinator: NSObject {
         var scrollSync: ScrollSync?
@@ -100,6 +123,8 @@ struct PreviewScrollView<Content: View>: NSViewRepresentable {
         weak var scrollView: NSScrollView?
         var lastContentKey: AnyHashable?
         var lastWidth: CGFloat = -1
+        /// The content's height at the current width, as `MeasuredContent` last reported it.
+        var contentHeight: CGFloat = 0
         private var refitScheduled = false
 
         init(scrollSync: ScrollSync?) {
@@ -121,9 +146,17 @@ struct PreviewScrollView<Content: View>: NSViewRepresentable {
                 guard let self = self else { return }
                 self.refitScheduled = false
                 if let scrollView = self.scrollView, let hostingView = scrollView.documentView {
-                    PreviewScrollView.fit(hostingView, in: scrollView)
+                    PreviewScrollView.fit(hostingView, in: scrollView, coordinator: self)
                 }
             }
+        }
+        
+        /// Keeps the document as tall as the content, including when images or rendered formulas
+        /// change its height after the first layout.
+        func contentHeightDidChange(_ height: CGFloat) {
+            guard height != contentHeight else { return }
+            contentHeight = height
+            contentMayHaveResized()
         }
         
         @objc func clipViewFrameDidChange(_ notification: Notification) {
