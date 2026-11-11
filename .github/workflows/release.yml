@@ -20,6 +20,7 @@ jobs:
     env:
       # Secrets can't be read in a step's `if`, so expose only whether this one is set.
       HAS_PIXERATE_PACKAGES_TOKEN: ${{ secrets.PIXERATE_PACKAGES_TOKEN != '' }}
+      HAS_APP_STORE_CONNECT: ${{ secrets.APP_STORE_CONNECT_API_KEY != '' && secrets.APP_STORE_CONNECT_KEY_ID != '' && secrets.APP_STORE_CONNECT_ISSUER_ID != '' && secrets.APPLE_TEAM_ID != '' }}
 
     steps:
       - name: Checkout Code
@@ -279,9 +280,99 @@ jobs:
             Swash-macOS.zip
             appcast.xml
 
+      # iPhone and iPad. These run after the macOS release is published, so an iOS failure can't
+      # hold it up. Without App Store Connect secrets the archive is unsigned: it checks that the
+      # iOS release build works (with the real sticker pack when it was injected above). With them,
+      # Xcode signs automatically through the API key and the build is uploaded to TestFlight.
+      - name: Archive iOS App
+        if: steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch'
+        env:
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          VERSION="${{ env.VERSION }}"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+          BUILD_NUMBER="${{ github.run_number }}"
+          ARCHIVE_PATH="build/Swash-iOS.xcarchive"
+
+          if [ "$HAS_APP_STORE_CONNECT" = "true" ]; then
+            echo "Archiving a signed iOS build for TestFlight..."
+            API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+            echo "$APP_STORE_CONNECT_API_KEY" | base64 --decode -o "$API_KEY_PATH"
+            echo "API_KEY_PATH=$API_KEY_PATH" >> "$GITHUB_ENV"
+            xcodebuild archive -scheme Swash \
+              -destination 'generic/platform=iOS' \
+              -configuration Release \
+              -derivedDataPath build-ios \
+              -archivePath "$ARCHIVE_PATH" \
+              -allowProvisioningUpdates \
+              -authenticationKeyPath "$API_KEY_PATH" \
+              -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
+              -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID" \
+              CODE_SIGN_STYLE=Automatic \
+              DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+              MARKETING_VERSION="$VERSION" \
+              CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+          else
+            echo "App Store Connect secrets omitted. Archiving an unsigned iOS build as a check only."
+            xcodebuild archive -scheme Swash \
+              -destination 'generic/platform=iOS' \
+              -configuration Release \
+              -derivedDataPath build-ios \
+              -archivePath "$ARCHIVE_PATH" \
+              CODE_SIGNING_ALLOWED=NO \
+              MARKETING_VERSION="$VERSION" \
+              CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+          fi
+
+          PLUGINS="$ARCHIVE_PATH/Products/Applications/Swash.app/PlugIns"
+          ls "$PLUGINS"
+          # The sticker pack is embedded only when the real stickers package was injected (#62)
+          if [ "$HAS_PIXERATE_PACKAGES_TOKEN" = "true" ] && [ ! -d "$PLUGINS/SwashStickers.appex" ]; then
+            echo "::error::The stickers package was injected, but SwashStickers.appex is missing from the iOS app."
+            exit 1
+          fi
+
+      - name: Upload iOS App to TestFlight
+        if: (steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch') && env.HAS_APP_STORE_CONNECT == 'true'
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath build/Swash-iOS.xcarchive \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath build/Swash-iOS-export \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$API_KEY_PATH" \
+            -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
+            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
+          echo "Uploaded Swash v${{ env.VERSION }} (${{ github.run_number }}) to TestFlight."
+
       - name: Clean up Keychain
         if: always()
         run: |
           if [ -n "$KEYCHAIN_PATH" ] && [ -f "$KEYCHAIN_PATH" ]; then
             security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+          if [ -n "$API_KEY_PATH" ]; then
+            rm -f "$API_KEY_PATH"
           fi
