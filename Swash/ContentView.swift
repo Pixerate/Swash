@@ -154,7 +154,8 @@ struct ContentView: View {
     var body: some View {
         withLifecycle
         .modifier(AgentToolsHookup(text: $document.text, editor: editor, name: documentTitle,
-                                   readOnlyReason: isEditable ? nil : "the file is locked or can't be saved"))
+                                   readOnlyReason: isEditable ? nil : "the file is locked or can't be saved",
+                                   flavor: document.flavor))
         .onChange(of: window) { _, window in
             if window?.isKeyWindow == true { documentWindowBecameKey() }
         }
@@ -627,10 +628,10 @@ struct ContentView: View {
                     },
                     translatableText: cellSelectionRect == nil && bubbleContext != .codeBlock && bubbleContext != .image ? selectedPlainText : nil,
                     onReplaceWithTranslation: { replaceSelection(with: $0) },
-                    onSelectCalloutType: astFormatting == nil || document.flavor == .slack ? nil : { applyCalloutType($0) },
+                    onSelectCalloutType: document.flavor == .slack ? nil : { applyCalloutType($0) },
                     image: selectedImage?.source,
                     imageActions: selectedImage.map { imageMenuActions(range: $0.range, image: $0.source) },
-                    onInsertFootnote: astFormatting == nil || document.flavor == .slack || cellSelectionRect != nil ? nil : { insertFootnote() },
+                    onInsertFootnote: document.flavor == .slack || cellSelectionRect != nil ? nil : { insertFootnote() },
                     footnoteActions: cellSelectionRect == nil ? footnoteMenuActions() : nil
                 )
                 .background(
@@ -750,152 +751,23 @@ struct ContentView: View {
     
     // Determine active formats for current selection
     private func determineActiveFormats() -> Set<FormatAction> {
-        if let formatting = astFormatting, let range = selectedRange {
-            var active = Set<FormatAction>()
-            if formatting.isActive(.strong, selection: range) { active.insert(.bold) }
-            if formatting.isActive(.emphasis, selection: range) { active.insert(.italic) }
-            if formatting.isActive(.strikethrough, selection: range) { active.insert(.strikethrough) }
-            if determineActiveCodeFormat() != nil { active.insert(.code) }
-            switch formatting.activeBlockFormat(selection: range) {
-            case .bulletList?: active.insert(.bulletList)
-            case .numberedList?: active.insert(.numberedList)
-            case .heading(let level)?:
-                active.insert(.heading)
-                let levels: [FormatAction] = [.h1, .h2, .h3, .h4, .h5, .h6]
-                if (1...6).contains(level) { active.insert(levels[level - 1]) }
-            default: break
-            }
-            if formatting.isQuoted(selection: range) { active.insert(.quote) }
-            return active
-        }
-        guard let range = selectedRange,
-              let textRange = Range(inlineTargetRange(range), in: document.text) else { return [] }
-        
+        guard let range = selectedRange else { return [] }
+        let formatting = astFormatting
         var active = Set<FormatAction>()
-        let fullText = document.text
-        
-        // Multi-line selections: a format is active when every line segment carries it
-        let segments = inlineLineSegments(in: range)
-        if segments.count > 1 {
-            let nsText = fullText as NSString
-            for action in [FormatAction.bold, .italic, .strikethrough] {
-                let (prefix, suffix) = inlineMarkers(for: action, selectedText: "")
-                if segments.allSatisfy({ isSegment(nsText.substring(with: $0), wrappedBy: prefix, suffix) }) {
-                    active.insert(action)
-                }
-            }
+        if formatting.isActive(.strong, selection: range) { active.insert(.bold) }
+        if formatting.isActive(.emphasis, selection: range) { active.insert(.italic) }
+        if formatting.isActive(.strikethrough, selection: range) { active.insert(.strikethrough) }
+        if determineActiveCodeFormat() != nil { active.insert(.code) }
+        switch formatting.activeBlockFormat(selection: range) {
+        case .bulletList?: active.insert(.bulletList)
+        case .numberedList?: active.insert(.numberedList)
+        case .heading(let level)?:
+            active.insert(.heading)
+            let levels: [FormatAction] = [.h1, .h2, .h3, .h4, .h5, .h6]
+            if (1...6).contains(level) { active.insert(levels[level - 1]) }
+        default: break
         }
-        
-        // Helper to check if selection or surrounding is wrapped
-        func isWrapped(prefix: String, suffix: String) -> Bool {
-            let selectedText = String(fullText[textRange])
-            if selectedText.hasPrefix(prefix) && selectedText.hasSuffix(suffix) && selectedText.count >= (prefix.count + suffix.count) {
-                return true
-            }
-            
-            let startIdx = textRange.lowerBound
-            let endIdx = textRange.upperBound
-            if let prefixStart = fullText.index(startIdx, offsetBy: -prefix.count, limitedBy: fullText.startIndex),
-               let suffixEnd = fullText.index(endIdx, offsetBy: suffix.count, limitedBy: fullText.endIndex) {
-                let before = String(fullText[prefixStart..<startIdx])
-                let after = String(fullText[endIdx..<suffixEnd])
-                if before == prefix && after == suffix {
-                    return true
-                }
-            }
-            return false
-        }
-        
-        // 1. Bold
-        let boldPrefix = document.flavor == .slack ? "*" : "**"
-        let boldSuffix = document.flavor == .slack ? "*" : "**"
-        if isWrapped(prefix: boldPrefix, suffix: boldSuffix) {
-            active.insert(.bold)
-        }
-        
-        // 2. Italic
-        let italicPrefix = document.flavor == .slack ? "_" : "*"
-        let italicSuffix = document.flavor == .slack ? "_" : "*"
-        if document.flavor == .github || document.flavor == .commonMark || document.flavor == .original {
-            let selectedText = String(fullText[textRange])
-            let hasGithubItalic = (selectedText.hasPrefix("*") && !selectedText.hasPrefix("**") && selectedText.hasSuffix("*") && !selectedText.hasSuffix("**") && selectedText.count >= 2) ||
-                                  (selectedText.hasPrefix("_") && selectedText.hasSuffix("_") && selectedText.count >= 2)
-            
-            var surroundingGithubItalic = false
-            let startIdx = textRange.lowerBound
-            let endIdx = textRange.upperBound
-            if let prefixStart1 = fullText.index(startIdx, offsetBy: -1, limitedBy: fullText.startIndex),
-               let suffixEnd1 = fullText.index(endIdx, offsetBy: 1, limitedBy: fullText.endIndex) {
-                var hasPrevAsterisk = false
-                if let prefixStart2 = fullText.index(startIdx, offsetBy: -2, limitedBy: fullText.startIndex) {
-                    hasPrevAsterisk = fullText[prefixStart2] == "*"
-                }
-                var hasNextAsterisk = false
-                if let suffixEnd2 = fullText.index(endIdx, offsetBy: 2, limitedBy: fullText.endIndex) {
-                    hasNextAsterisk = fullText[suffixEnd2] == "*"
-                }
-                let before = String(fullText[prefixStart1..<startIdx])
-                let after = String(fullText[endIdx..<suffixEnd1])
-                if (before == "*" && after == "*" && !hasPrevAsterisk && !hasNextAsterisk) || (before == "_" && after == "_") {
-                    surroundingGithubItalic = true
-                }
-            }
-            if hasGithubItalic || surroundingGithubItalic {
-                active.insert(.italic)
-            }
-        } else {
-            if isWrapped(prefix: italicPrefix, suffix: italicSuffix) {
-                active.insert(.italic)
-            }
-        }
-        
-        // 3. Code (Inline or Block)
-        if determineActiveCodeFormat() != nil {
-            active.insert(.code)
-        }
-        
-        // 4. Strikethrough
-        let strikePrefix = document.flavor == .slack ? "~" : "~~"
-        let strikeSuffix = document.flavor == .slack ? "~" : "~~"
-        if isWrapped(prefix: strikePrefix, suffix: strikeSuffix) {
-            active.insert(.strikethrough)
-        }
-        
-        // 5. Line-based blocks
-        if let block = extractSelectedBlockLines(from: fullText, range: range) {
-            let lines = block.lines
-            let nonEmptyLines = lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-            let targetLines = nonEmptyLines.isEmpty ? lines : nonEmptyLines
-            
-            if !targetLines.isEmpty {
-                let infos = targetLines.map { parseLinePrefix($0) }
-                
-                if infos.allSatisfy({ $0.kind == .bulletList }) {
-                    active.insert(.bulletList)
-                }
-                if infos.allSatisfy({ $0.kind == .numberedList }) {
-                    active.insert(.numberedList)
-                }
-                if infos.allSatisfy({ $0.kind == .quote }) {
-                    active.insert(.quote)
-                }
-                if infos.allSatisfy({ if case .heading = $0.kind { return true }; return false }) {
-                    active.insert(.heading)
-                    if let firstKind = infos.first?.kind, infos.allSatisfy({ $0.kind == firstKind }) {
-                        switch firstKind {
-                        case .heading(1): active.insert(.h1)
-                        case .heading(2): active.insert(.h2)
-                        case .heading(3): active.insert(.h3)
-                        case .heading(4): active.insert(.h4)
-                        case .heading(5): active.insert(.h5)
-                        case .heading(6): active.insert(.h6)
-                        default: break
-                        }
-                    }
-                }
-            }
-        }
-        
+        if formatting.isQuoted(selection: range) { active.insert(.quote) }
         return active
     }
     
@@ -978,31 +850,10 @@ struct ContentView: View {
     }
     
     private func determineActiveHeadingLevel() -> Int? {
-        if let formatting = astFormatting, let range = selectedRange {
-            if case .heading(let level)? = formatting.activeBlockFormat(selection: range) { return level }
-            return nil
-        }
-        guard let range = selectedRange,
-              let block = extractSelectedBlockLines(from: document.text, range: range) else { return nil }
-        
-        let nonEmptyLines = block.lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        let targetLines = nonEmptyLines.isEmpty ? block.lines : nonEmptyLines
-        guard !targetLines.isEmpty else { return nil }
-        
-        var foundLevel: Int? = nil
-        for line in targetLines {
-            let info = parseLinePrefix(line)
-            if case .heading(let level) = info.kind {
-                if foundLevel == nil {
-                    foundLevel = level
-                } else if foundLevel != level {
-                    return nil
-                }
-            } else {
-                return nil
-            }
-        }
-        return foundLevel
+        guard let range = selectedRange else { return nil }
+        let formatting = astFormatting
+        if case .heading(let level)? = formatting.activeBlockFormat(selection: range) { return level }
+        return nil
     }
     
     private func determineSmartHeadingLevel() -> Int {
@@ -1031,92 +882,32 @@ struct ContentView: View {
         if determineActiveCodeFormat() != nil || isSelectionInsideCodeBlock().inside {
             return .codeBlock
         }
-        if let formatting = astFormatting, let range = selectedRange {
-            if formatting.isInTable(range) { return .tableCell }
-            let containers = formatting.inlineContainers(intersecting: range)
-            guard !containers.isEmpty else { return .standard }
-            func isHeading(_ n: MarkdownNode) -> Bool { if case .heading = n.kind { return true }; return false }
-            func inList(_ n: MarkdownNode) -> Bool { n.ancestors.contains { if case .listItem = $0.kind { return true }; return false } }
-            func inQuote(_ n: MarkdownNode) -> Bool {
-                n.ancestors.contains { switch $0.kind { case .blockQuote, .alert: return true; default: return false } }
-            }
-            if containers.allSatisfy(isHeading) { return .heading }
-            if containers.contains(where: inList) { return .listItem }
-            if containers.contains(where: isHeading) { return .heading }
-            if containers.contains(where: inQuote) {
-                if let type = formatting.alertType(at: range) { return .callout(type) }
-                return .blockquote
-            }
-            return .standard
+        guard let range = selectedRange else { return .standard }
+        let formatting = astFormatting
+        if formatting.isInTable(range) { return .tableCell }
+        let containers = formatting.inlineContainers(intersecting: range)
+        guard !containers.isEmpty else { return .standard }
+        func isHeading(_ n: MarkdownNode) -> Bool { if case .heading = n.kind { return true }; return false }
+        func inList(_ n: MarkdownNode) -> Bool { n.ancestors.contains { if case .listItem = $0.kind { return true }; return false } }
+        func inQuote(_ n: MarkdownNode) -> Bool {
+            n.ancestors.contains { switch $0.kind { case .blockQuote, .alert: return true; default: return false } }
         }
-        
-        guard let range = selectedRange,
-              let block = extractSelectedBlockLines(from: document.text, range: range) else { return .standard }
-        
-        let nonEmptyLines = block.lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        let targetLines = nonEmptyLines.isEmpty ? block.lines : nonEmptyLines
-        
-        if selectionTouchesTable(range) {
-            return .tableCell
-        }
-        
-        let kinds = targetLines.map { parseLinePrefix($0).kind }
-        if kinds.allSatisfy({ if case .heading = $0 { return true }; return false }) {
-            return .heading
-        }
-        if kinds.allSatisfy({ if case .quote = $0 { return true }; return false }) {
+        if containers.allSatisfy(isHeading) { return .heading }
+        if containers.contains(where: inList) { return .listItem }
+        if containers.contains(where: isHeading) { return .heading }
+        if containers.contains(where: inQuote) {
+            if let type = formatting.alertType(at: range) { return .callout(type) }
             return .blockquote
         }
-        if kinds.contains(where: { $0 == .bulletList || $0 == .numberedList || $0 == .taskList }) {
-            return .listItem
-        }
-        if kinds.contains(where: { if case .heading = $0 { return true }; return false }) {
-            return .heading
-        }
-        if kinds.contains(where: { if case .quote = $0 { return true }; return false }) {
-            return .blockquote
-        }
-        
         return .standard
     }
     
     private func applyHeadingLevel(_ level: Int) {
-        if let formatting = astFormatting, let range = selectedRange {
-            if let edit = formatting.toggleBlock(.heading(level), selection: range) {
-                commitEdit(edit.text, selection: edit.selection, actionName: "Heading \(level)")
-            }
-            return
+        guard let range = selectedRange else { return }
+        let formatting = astFormatting
+        if let edit = formatting.toggleBlock(.heading(level), selection: range) {
+            commitEdit(edit.text, selection: edit.selection, actionName: "Heading \(level)")
         }
-        guard let range = selectedRange,
-              let block = extractSelectedBlockLines(from: document.text, range: range) else { return }
-        
-        let fullText = document.text
-        let blockPrefix = String(repeating: "#", count: level) + " "
-        
-        var newLines: [String] = []
-        var firstLineShift = 0
-        for (index, line) in block.lines.enumerated() {
-            let info = parseLinePrefix(line)
-            newLines.append("\(info.leadingSpaces)\(blockPrefix)\(info.cleanLine)")
-            if index == 0 {
-                firstLineShift = blockPrefix.utf16.count - info.rawPrefix.utf16.count
-            }
-        }
-        
-        var formatted = newLines.joined(separator: "\n")
-        if block.hasTrailingNewline { formatted += "\n" }
-        
-        let newText = fullText.replacingCharacters(in: block.fullLineRange, with: formatted)
-        
-        let oldNSRange = NSRange(block.fullLineRange, in: fullText)
-        let newSelection: NSRange
-        if range.length == 0 {
-            newSelection = NSRange(location: max(0, range.location + firstLineShift), length: 0)
-        } else {
-            let newLen = (formatted as NSString).length - (block.hasTrailingNewline ? 1 : 0)
-            newSelection = NSRange(location: oldNSRange.location, length: max(0, newLen))
-        }
-        commitEdit(newText, selection: newSelection, actionName: "Heading \(level)")
     }
     
     private func convertSelectedTextToTableMarkdown(_ text: String) -> String {
@@ -1225,7 +1016,8 @@ struct ContentView: View {
         guard let range = selectedRange else { return }
         // Commands from the shared manifest use the same engine as the conformance corpus
         // (scripts/run_conformance_tests.sh), including its enabledWhen conditions.
-        if let formatting = astFormatting, command.manifestInvocation != nil, command != .link, command != .table {
+        if command.manifestInvocation != nil, command != .link, command != .table {
+            let formatting = astFormatting
             if let edit = FormatCommandEdits.edit(for: command, formatting: formatting, selection: range, flavor: document.flavor) {
                 commitEdit(edit.text, selection: edit.selection, actionName: command.label ?? "Format")
             }
@@ -1244,7 +1036,7 @@ struct ContentView: View {
         case .bulletList: applyFormatting(.bulletList)
         case .numberedList: applyFormatting(.numberedList)
         case .paragraph, .taskList:
-            guard let formatting = astFormatting else { return }
+            let formatting = astFormatting
             let format: MarkdownBlockFormat = command == .paragraph ? .paragraph : .taskList
             if let edit = formatting.toggleBlock(format, selection: range) {
                 commitEdit(edit.text, selection: edit.selection, actionName: command == .paragraph ? "Paragraph" : "To-do List")
@@ -1262,14 +1054,16 @@ struct ContentView: View {
     
     /// Makes the selection a callout of `type`, or a plain quote when nil.
     private func applyCalloutType(_ type: AlertType?) {
-        guard let formatting = astFormatting, let range = selectedRange ?? editor.currentRawSelection,
+        let formatting = astFormatting
+        guard let range = selectedRange ?? editor.currentRawSelection,
               let edit = formatting.setAlertType(type, selection: range) else { return }
         commitEdit(edit.text, selection: edit.selection, actionName: type.map { "\($0.title) Callout" } ?? "Plain Quote")
     }
     
     /// Adds a footnote after the selection and puts the caret in its definition.
     private func insertFootnote() {
-        guard let formatting = astFormatting, let range = editor.currentRawSelection ?? selectedRange,
+        let formatting = astFormatting
+        guard let range = editor.currentRawSelection ?? selectedRange,
               let edit = formatting.insertFootnote(selection: range) else { return }
         commitEdit(edit.text, selection: edit.selection, actionName: "Insert Footnote")
         editor.reveal(rawLocation: edit.selection.location)
@@ -1277,7 +1071,8 @@ struct ContentView: View {
     
     /// Jump and delete actions for the footnote the selection is on.
     private func footnoteMenuActions() -> FootnoteMenuActions? {
-        guard let formatting = astFormatting, let range = selectedRange,
+        let formatting = astFormatting
+        guard let range = selectedRange,
               let footnote = formatting.footnote(at: range) else { return nil }
         return FootnoteMenuActions(
             isDefinition: footnote.isDefinition,
@@ -1291,7 +1086,8 @@ struct ContentView: View {
     
     /// The image whose whole source is selected (a clicked image in the Formatted view).
     private func determineSelectedImage() -> (range: NSRange, source: MarkdownImageSource)? {
-        guard let formatting = astFormatting, let range = selectedRange, range.length > 0,
+        let formatting = astFormatting
+        guard let range = selectedRange, range.length > 0,
               formatting.image(exactly: range) != nil, NSMaxRange(range) <= (document.text as NSString).length,
               let image = MarkdownImageSource(markdown: (document.text as NSString).substring(with: range)) else { return nil }
         return (range, image)
@@ -1446,14 +1242,12 @@ struct ContentView: View {
     
     /// The parsed document, in the document's flavour (Slack mrkdwn has its own inline syntax,
     /// SlackMarkdown.swift).
-    private var astFormatting: MarkdownFormatting? {
+    private var astFormatting: MarkdownFormatting {
         editor.formatting(for: document.text, flavor: document.flavor)
     }
     
     private func determineActiveLink() -> DetectedLink? {
-        guard let formatting = astFormatting else {
-            return LinkDetector.findLink(at: selectedRange, in: document.text, flavor: document.flavor)
-        }
+        let formatting = astFormatting
         guard let range = selectedRange, let node = formatting.link(at: range),
               case .link(let destination, _, let kind) = node.kind, kind != .extendedAutolink else { return nil }
         let textRange = formatting.linkTextRange(node)
@@ -1576,43 +1370,11 @@ struct ContentView: View {
         }
     }
     
-    private func isSegment(_ text: String, wrappedBy prefix: String, _ suffix: String) -> Bool {
-        guard text.count >= prefix.count + suffix.count + 1, text.hasPrefix(prefix), text.hasSuffix(suffix) else { return false }
-        if prefix == "*" {
-            // `*x*` but not `**x**`
-            return !(text.hasPrefix("**") && text.hasSuffix("**"))
-        }
-        return true
-    }
-    
-    /// True when the selection overlaps a real GFM table (header row + delimiter row), as opposed
-    /// to prose that merely contains a `|` character.
-    private func selectionTouchesTable(_ range: NSRange) -> Bool {
-        let nsText = document.text as NSString
-        let lines = document.text.components(separatedBy: "\n")
-        let delimiterPattern = "^\\s*\\|?\\s*:?-+:?\\s*(\\|\\s*:?-+:?\\s*)*\\|?\\s*$"
-        func isDelimiter(_ i: Int) -> Bool {
-            i >= 0 && i < lines.count && lines[i].contains("-") &&
-                lines[i].range(of: delimiterPattern, options: .regularExpression) != nil
-        }
-        let firstLine = nsText.substring(to: min(range.location, nsText.length)).components(separatedBy: "\n").count - 1
-        let lastLine = nsText.substring(to: min(range.location + range.length, nsText.length)).components(separatedBy: "\n").count - 1
-        for index in firstLine...max(firstLine, lastLine) where index < lines.count && lines[index].contains("|") {
-            // Walk up through contiguous pipe rows looking for a header followed by a delimiter row
-            var k = index
-            while k >= 0 && lines[k].contains("|") {
-                if isDelimiter(k + 1) || isDelimiter(k) { return true }
-                k -= 1
-            }
-        }
-        return false
-    }
-    
     // Apply formatting or toggle it off if already active
     private func applyFormatting(_ action: FormatAction) {
         guard let range = selectedRange,
               Range(range, in: document.text) != nil else { return }
-        if let formatting = astFormatting, applyASTFormatting(action, formatting: formatting, range: range) {
+        if applyASTFormatting(action, formatting: astFormatting, range: range) {
             return
         }
         
@@ -1944,47 +1706,21 @@ struct ContentView: View {
     }
     
     private func applyLink(url: String, activeLink: DetectedLink?) {
-        if let formatting = astFormatting, let range = selectedRange {
-            let selection = activeLink?.fullRange ?? range
-            let edit = document.flavor == .slack ? formatting.setSlackLink(url, selection: selection) : formatting.setLink(url, selection: selection)
-            if let edit = edit {
-                commitEdit(edit.text, selection: edit.selection, actionName: activeLink == nil ? "Add Link" : "Edit Link")
-            }
-            return
-        }
-        let fullText = document.text
-        
-        if let link = activeLink {
-            // EDITING existing link
-            let updatedText = document.flavor == .slack ? "<\(url)|\(link.text)>" : "[\(link.text)](\(url))"
-            if let replaceRange = Range(link.fullRange, in: fullText) {
-                let newText = fullText.replacingCharacters(in: replaceRange, with: updatedText)
-                commitEdit(newText, selection: NSRange(location: link.fullRange.location, length: (updatedText as NSString).length), actionName: "Edit Link")
-            }
-        } else if let range = selectedRange {
-            // ADDING link to selected text
-            let inlineRange = trimmedInlineRange(range)
-            guard let textRange = Range(inlineRange, in: fullText) else { return }
-            let selectedText = String(fullText[textRange])
-            let displayText = selectedText.isEmpty ? url : selectedText
-            let insertedText = document.flavor == .slack ? "<\(url)|\(displayText)>" : "[\(displayText)](\(url))"
-            let newText = fullText.replacingCharacters(in: textRange, with: insertedText)
-            commitEdit(newText, selection: NSRange(location: inlineRange.location, length: (insertedText as NSString).length), actionName: "Add Link")
+        guard let range = selectedRange else { return }
+        let formatting = astFormatting
+        let selection = activeLink?.fullRange ?? range
+        let edit = document.flavor == .slack ? formatting.setSlackLink(url, selection: selection) : formatting.setLink(url, selection: selection)
+        if let edit = edit {
+            commitEdit(edit.text, selection: edit.selection, actionName: activeLink == nil ? "Add Link" : "Edit Link")
         }
     }
     
     private func removeLink(activeLink: DetectedLink?) {
-        if let formatting = astFormatting, let link = activeLink {
-            if let edit = formatting.removeLink(selection: link.fullRange) {
-                commitEdit(edit.text, selection: edit.selection, actionName: "Remove Link")
-            }
-            return
+        guard let link = activeLink else { return }
+        let formatting = astFormatting
+        if let edit = formatting.removeLink(selection: link.fullRange) {
+            commitEdit(edit.text, selection: edit.selection, actionName: "Remove Link")
         }
-        guard let link = activeLink,
-              let replaceRange = Range(link.fullRange, in: document.text) else { return }
-        
-        let newText = document.text.replacingCharacters(in: replaceRange, with: link.text)
-        commitEdit(newText, selection: NSRange(location: link.fullRange.location, length: (link.text as NSString).length), actionName: "Remove Link")
     }
     
     /// The selection as readers see it (Markdown syntax removed), for Translate.

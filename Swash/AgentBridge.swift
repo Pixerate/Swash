@@ -38,6 +38,9 @@ final class AgentDocumentSession: MarkdownToolTarget {
         didSet { if name != oldValue { AgentBridge.shared.reconnect(self) } }
     }
 
+    /// The document's flavour, so Slack documents are read and formatted as Slack mrkdwn.
+    var flavor: MarkdownFlavor = .github
+
     /// Why the document can't be edited; the write tools are hidden while it is set.
     var readOnlyReason: String? {
         didSet { if readOnlyReason != oldValue { registry.notifyListChanged() } }
@@ -173,6 +176,7 @@ struct AgentToolsHookup: ViewModifier {
     let editor: SwashEditorController
     let name: String
     let readOnlyReason: String?
+    let flavor: MarkdownFlavor
     @State private var session = AgentDocumentSession()
 
     func body(content: Content) -> some View {
@@ -184,6 +188,7 @@ struct AgentToolsHookup: ViewModifier {
             .onDisappear { AgentBridge.shared.detach(session) }
             .onChange(of: name) { configure() }
             .onChange(of: readOnlyReason) { configure() }
+            .onChange(of: flavor) { configure() }
     }
 
     private func configure() {
@@ -199,6 +204,7 @@ struct AgentToolsHookup: ViewModifier {
         }
         session.selectRange = { editor.select(rawRange: $0) }
         session.readOnlyReason = readOnlyReason
+        session.flavor = flavor
         session.name = name
     }
 }
