@@ -150,31 +150,39 @@ struct IOSContentView: View {
         IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
                            editor: editor, regularWidth: horizontalSizeClass == .regular)
         ToolbarItem(placement: .primaryAction) {
-            Picker("View", selection: $viewMode) {
-                ForEach(availableModes) { mode in
-                    Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+            // A glyph button, not a segmented control: iOS 26 toolbars squeeze segmented
+            // controls into one glass circle. Tap switches Source and Formatted; hold for every mode.
+            Menu {
+                Picker("View Mode", selection: $viewMode) {
+                    ForEach(availableModes) { mode in
+                        Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+                    }
                 }
+                .pickerStyle(.inline)
+            } label: {
+                Label("View Mode: \(effectiveMode.rawValue)", systemImage: effectiveMode.icon)
+            } primaryAction: {
+                viewMode = effectiveMode == .preview ? .edit : .preview
             }
-            .pickerStyle(.segmented)
             .accessibilityLabel("View Mode")
+            .accessibilityValue(effectiveMode.rawValue)
+            .accessibilityHint("Switches between Source and Formatted. Touch and hold for more modes.")
+        }
+        ToolbarSpacer(.fixed, placement: .primaryAction)
+        ToolbarItem(placement: .primaryAction) {
+            shareLink
         }
         ToolbarItem(placement: .secondaryAction) {
-            Picker(selection: flavorBinding) {
-                ForEach(MarkdownFlavor.allCases) { flavor in
-                    Text(flavor.rawValue).tag(flavor)
+            // A submenu, so the editor toolbar on iPad shows an icon, not the bare flavour name
+            Menu {
+                Picker("Markdown Flavor", selection: flavorBinding) {
+                    ForEach(MarkdownFlavor.allCases) { flavor in
+                        Text(flavor.rawValue).tag(flavor)
+                    }
                 }
+                .pickerStyle(.inline)
             } label: {
                 Label("Markdown Flavor", systemImage: "textformat")
-            }
-            .pickerStyle(.menu)
-        }
-        ToolbarItem(placement: .secondaryAction) {
-            // Not ShareLink: inside the collapsed overflow menu it presents a popover with no
-            // source view, which UIKit rejects (an uncaught exception)
-            Button {
-                presentShareSheet()
-            } label: {
-                Label("Share Markdown", systemImage: "square.and.arrow.up")
             }
         }
         ToolbarItem(placement: .secondaryAction) {
@@ -182,6 +190,23 @@ struct IOSContentView: View {
                 showingSettings = true
             } label: {
                 Label("Settings", systemImage: "gearshape")
+            }
+        }
+    }
+
+    /// Shares the document file, so the share sheet shows its thumbnail and name; an unsaved
+    /// document shares its Markdown. Its own toolbar item, never in the overflow menu, where a
+    /// share sheet has no source view to anchor to.
+    @ViewBuilder
+    private var shareLink: some View {
+        if let fileURL {
+            ShareLink(item: fileURL, subject: Text(documentTitle)) {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+        } else {
+            ShareLink(item: document.text, subject: Text(documentTitle),
+                      preview: SharePreview(documentTitle)) {
+                Label("Share", systemImage: "square.and.arrow.up")
             }
         }
     }
@@ -198,11 +223,6 @@ struct IOSContentView: View {
                 document = updated
             }
         )
-    }
-
-    /// The system share sheet for the Markdown, anchored at the top trailing corner on iPad.
-    private func presentShareSheet() {
-        IOSPresenter.share([document.text], subject: documentTitle)
     }
 
     private var exportSource: DocumentExporter.Source {
