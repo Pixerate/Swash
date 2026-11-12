@@ -275,6 +275,32 @@ final class StyledTextViewTests: XCTestCase {
         XCTAssertEqual(e.text, "Hello\t")
     }
 
+    // MARK: Edit menu and format panel (#72)
+
+    func testEditMenuOffersInlineFormatsDirectlyAndBlocksInFormat() throws {
+        let e = try editor("Some bold text")
+        e.select(raw: NSRange(location: 5, length: 4))
+        let menu = try XCTUnwrap(e.textView.editMenu(for: e.textView.selectedRange, suggestedActions: []))
+        let palette = try XCTUnwrap(menu.children.compactMap { $0 as? UIMenu }.first { $0.options.contains(.displayAsPalette) },
+                                    "inline formats are a palette of the menu itself, not a submenu")
+        let titles = palette.children.compactMap { ($0 as? UIAction)?.title }
+        XCTAssertTrue(titles.contains("Bold") && titles.contains("Italic"), "palette has the inline formats: \(titles)")
+        XCTAssertTrue(menu.children.contains { ($0 as? UIMenu)?.title == "Format" }, "block commands stay in Format")
+    }
+
+    func testFormatPanelReplacesTheKeyboardUntilEditingEnds() throws {
+        let e = try editor("Hello")
+        e.caret(after: "Hello")
+        XCTAssertFalse(e.textView.isShowingFormatPanel)
+        e.textView.toggleFormatPanel()
+        XCTAssertTrue(e.textView.isShowingFormatPanel, "Aa shows the panel in place of the keyboard")
+        e.textView.toggleFormatPanel()
+        XCTAssertFalse(e.textView.isShowingFormatPanel, "Aa again brings the keyboard back")
+        e.textView.toggleFormatPanel()
+        _ = e.textView.resignFirstResponder()
+        XCTAssertFalse(e.textView.isShowingFormatPanel, "the keyboard comes back the next time editing starts")
+    }
+
     // MARK: "/" block menu
 
     private func blockMenuButtons(in e: EditorHarness) -> [String: UIButton] {

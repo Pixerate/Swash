@@ -997,52 +997,21 @@ private final class BlockMenuViewController: UITableViewController, UIPopoverPre
     }
 }
 
-/// The "/" menu's block types as a scrolling bar above the keyboard (iPhone).
-private final class BlockMenuBar: UIInputView {
+/// The "/" menu's block types as a scrolling row of glass chips above the keyboard (iPhone).
+private final class BlockMenuBar: GlassAccessoryBar {
     init(choose: @escaping (MarkdownEditingCommands.BlockInsert) -> Void, close: @escaping () -> Void) {
-        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: 52), inputViewStyle: .keyboard)
-        autoresizingMask = .flexibleWidth
-        allowsSelfSizing = true
-
-        let stack = UIStackView()
-        stack.axis = .horizontal
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        for kind in MarkdownEditingCommands.BlockInsert.allCases {
-            var configuration = UIButton.Configuration.gray()
+        let chips = MarkdownEditingCommands.BlockInsert.allCases.map { kind -> UIView in
+            var configuration = UIButton.Configuration.glass()
             configuration.title = kind.title
             configuration.image = UIImage(systemName: kind.symbolName)
             configuration.imagePadding = 6
             configuration.cornerStyle = .capsule
-            configuration.buttonSize = .small
-            configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 12)
-            stack.addArrangedSubview(UIButton(configuration: configuration, primaryAction: UIAction { _ in choose(kind) }))
+            configuration.baseForegroundColor = .label
+            return UIButton(configuration: configuration, primaryAction: UIAction { _ in choose(kind) })
         }
-        let scroll = UIScrollView()
-        scroll.showsHorizontalScrollIndicator = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.addSubview(stack)
-
-        var closeConfiguration = UIButton.Configuration.plain()
-        closeConfiguration.image = UIImage(systemName: "xmark")
-        let closeButton = UIButton(configuration: closeConfiguration, primaryAction: UIAction { _ in close() })
-        closeButton.accessibilityLabel = "Close Block Menu"
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
-
-        addSubview(scroll)
-        addSubview(closeButton)
-        NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor),
-            scroll.topAnchor.constraint(equalTo: topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
-            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
-            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -12),
-            stack.centerYAnchor.constraint(equalTo: scroll.frameLayoutGuide.centerYAnchor),
-            heightAnchor.constraint(equalToConstant: 52),
-        ])
+        let closeButton = GlassAccessoryBar.trailingButton(symbol: "xmark", label: "Close Block Menu",
+                                                           action: UIAction { _ in close() })
+        super.init(items: chips, trailing: closeButton, groupedInCapsule: false)
     }
 
     required init?(coder: NSCoder) {

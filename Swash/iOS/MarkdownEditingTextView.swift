@@ -162,9 +162,11 @@ class MarkdownEditingTextView: UITextView {
         return url
     }
 
-    /// The edit menu's Format submenu, which `editMenu(for:suggestedActions:)` adds. As in the
-    /// Mac's bubble menu, it offers the manifest's `bubble` commands that apply to the selection
-    /// (`enabledWhen`), with the manifest's labels, groups and order.
+    /// The edit menu's formatting, which `editMenu(for:suggestedActions:)` adds. As in the Mac's
+    /// bubble menu, it offers the manifest's `bubble` commands that apply to the selection
+    /// (`enabledWhen`), with the manifest's labels, groups and order. Inline formats are actions of
+    /// the menu itself (a palette), not a submenu, so the system menu scrolls through them and
+    /// lists them when it expands, as in Notes (#72); block commands stay in Format.
     func formattingMenu(for range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
         guard formattingBarEnabled == true, range.length > 0 else { return nil }
         let selection = markdownSelection
@@ -173,11 +175,19 @@ class MarkdownEditingTextView: UITextView {
             $0.command.isAvailableOnIOS && formatting.isEnabled($0.command, selection: selection)
         }
         guard !entries.isEmpty else { return nil }
-        let sections = FormatManifestLayout.groups(entries).map { group in
-            UIMenu(options: .displayInline, children: menuElements(for: group))
+        var formatElements: [UIMenuElement] = []
+        let inline = entries.filter(\.command.isInlineFormat)
+        if !inline.isEmpty {
+            formatElements.append(UIMenu(options: [.displayInline, .displayAsPalette], children: inline.map(action)))
         }
-        let format = UIMenu(title: "Format", image: UIImage(systemName: "textformat"), children: sections)
-        return UIMenu(children: suggestedActions + [format])
+        let blocks = entries.filter { !$0.command.isInlineFormat }
+        if !blocks.isEmpty {
+            let sections = FormatManifestLayout.groups(blocks).map { group in
+                UIMenu(options: .displayInline, children: menuElements(for: group))
+            }
+            formatElements.append(UIMenu(title: "Format", image: UIImage(systemName: "textformat"), children: sections))
+        }
+        return UIMenu(children: suggestedActions + formatElements)
     }
 
     // MARK: Formatting bar
@@ -187,8 +197,39 @@ class MarkdownEditingTextView: UITextView {
         guard formattingBarEnabled != enabled else { return }
         formattingBarEnabled = enabled
         inputAccessoryView = enabled ? makeFormattingBar() : nil
+        if !enabled { inputView = nil }
         reloadInputViews()
     }
+
+    /// Whether the format panel is showing in place of the keyboard.
+    var isShowingFormatPanel: Bool { inputView is FormatPanelInputView }
+
+    /// Swaps the keyboard for the format panel (Aa), or back, as Notes does.
+    func toggleFormatPanel() {
+        if isShowingFormatPanel {
+            inputView = nil
+        } else {
+            inputView = FormatPanelInputView(
+                entries: FormatManifestLayout.keyboardBarEntries,
+                apply: { [weak self] command in self?.controller?.onFormatCommand?(command) },
+                close: { [weak self] in self?.toggleFormatPanel() })
+        }
+        formatPanelButton?.isSelected = isShowingFormatPanel
+        if !isFirstResponder { becomeFirstResponder() }
+        reloadInputViews()
+    }
+
+    /// The keyboard comes back the next time editing starts.
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned, isShowingFormatPanel {
+            inputView = nil
+            formatPanelButton?.isSelected = false
+        }
+        return resigned
+    }
+
+    private weak var formatPanelButton: UIButton?
 
     /// Puts the formatting bar back after another accessory (the "/" block menu) replaced it.
     func restoreFormattingBar() {
@@ -216,44 +257,47 @@ class MarkdownEditingTextView: UITextView {
         }
     }
 
-    /// Inline formats are buttons. Every other manifest group is a menu named after the group,
-    /// and a command's variants (Heading 1–3) get a menu of their own.
+    /// Aa opens the format panel; inline formats are buttons; every other manifest group is a
+    /// menu named after the group, and a command's variants (Heading 1–3) get a menu of their own.
+    /// The items scroll in a glass capsule (`GlassAccessoryBar`), so none is clipped (#72).
     private func makeFormattingBar() -> UIView {
-        let bar = UIToolbar(frame: CGRect(x: 0, y: 0, width: 320, height: 44))
-        bar.autoresizingMask = .flexibleWidth
-        var items: [UIBarButtonItem] = []
+        var items: [UIView] = []
+        let panel = GlassAccessoryBar.iconButton(symbol: "textformat", label: "Format",
+                                                 action: UIAction(title: "Format") { [weak self] _ in self?.toggleFormatPanel() })
+        panel.configurationUpdateHandler = { button in
+            var configuration = button.configuration
+            configuration?.baseForegroundColor = button.isSelected ? .tintColor : .label
+            button.configuration = configuration
+        }
+        panel.isSelected = isShowingFormatPanel
+        formatPanelButton = panel
+        items.append(panel)
         for group in FormatManifestLayout.groups(FormatManifestLayout.keyboardBarEntries) {
             if group.allSatisfy(\.command.isInlineFormat) {
                 for entry in group {
-                    let item = UIBarButtonItem(image: UIImage(systemName: entry.command.symbolName), primaryAction: action(entry))
-                    item.accessibilityLabel = entry.label
-                    items.append(item)
+                    items.append(GlassAccessoryBar.iconButton(symbol: entry.command.symbolName,
+                                                              label: entry.label.replacingOccurrences(of: "…", with: ""),
+                                                              action: action(entry)))
                 }
                 continue
             }
             let runs = FormatManifestLayout.commandRuns(group)
             for run in runs where run.count > 1 {
                 let title = run[0].command.definition?.label ?? run[0].label
-                let item = UIBarButtonItem(image: UIImage(systemName: run[0].command.variantsSymbolName),
-                                           menu: UIMenu(title: title, children: run.map(action)))
-                item.accessibilityLabel = title
-                items.append(item)
+                items.append(GlassAccessoryBar.iconButton(symbol: run[0].command.variantsSymbolName, label: title,
+                                                          menu: UIMenu(title: title, children: run.map(action))))
             }
             let rest = runs.filter { $0.count == 1 }.map { $0[0] }
             if let first = rest.first {
-                let item = UIBarButtonItem(image: UIImage(systemName: FormatManifestLayout.symbolName(forGroup: first.group)),
-                                           menu: UIMenu(title: first.group, children: rest.map(action)))
-                item.accessibilityLabel = first.group
-                items.append(item)
+                items.append(GlassAccessoryBar.iconButton(symbol: FormatManifestLayout.symbolName(forGroup: first.group), label: first.group,
+                                                          menu: UIMenu(title: first.group, children: rest.map(action))))
             }
         }
-        let dismiss = UIBarButtonItem(image: UIImage(systemName: "keyboard.chevron.compact.down"), primaryAction: UIAction(title: "Hide Keyboard") { [weak self] _ in
-            self?.resignFirstResponder()
+        let dismiss = GlassAccessoryBar.trailingButton(symbol: "keyboard.chevron.compact.down", label: "Hide Keyboard",
+                                                       action: UIAction(title: "Hide Keyboard") { [weak self] _ in
+            _ = self?.resignFirstResponder()
         })
-        dismiss.accessibilityLabel = "Hide Keyboard"
-        bar.items = items + [.flexibleSpace(), dismiss]
-        bar.sizeToFit()
-        return bar
+        return GlassAccessoryBar(items: items, trailing: dismiss, groupedInCapsule: true)
     }
 }
 
