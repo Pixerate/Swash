@@ -690,7 +690,8 @@ struct MarkdownBlockView: View, Equatable {
             InteractiveTableView(
                 tableData: MarkdownBlockView.tableData(node, alignments: alignments, source: context.document.source),
                 flavor: .github,
-                isEditable: false
+                isEditable: false,
+                fontSize: context.typography.tableFontSize
             )
             .padding(.vertical, 6)
             

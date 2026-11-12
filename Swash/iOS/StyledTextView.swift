@@ -309,6 +309,13 @@ struct StyledTextView: UIViewRepresentable {
             textView.isFirstResponder ? nil : defaultAction
         }
 
+        /// While editing, a tap on a link places the caret like any other text, so the edit menu's
+        /// Open Link is what the user gets. Without this, UIKit still shows the system link menu
+        /// even though the primary action is removed (#82).
+        func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem, defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
+            textView.isFirstResponder ? nil : UITextItem.MenuConfiguration(menu: defaultMenu)
+        }
+
         // MARK: Caret atomicity
 
         /// True when the character at `index` is a hidden syntax marker (collapsed font or clear colour).
@@ -923,6 +930,7 @@ final class StyledUITextView: MarkdownEditingTextView {
             } else {
                 host = UIHostingController(rootView: InteractiveTableView(
                     tableData: table.tableData, flavor: table.flavor, isEditable: true,
+                    fontSize: coordinator?.parent.typography.tableFontSize ?? CellTextField.defaultFontSize,
                     onChange: { [weak table] data in table?.onUpdate?(data) }))
                 host.view.backgroundColor = .clear
                 host.sizingOptions = []

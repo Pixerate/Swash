@@ -1987,7 +1987,8 @@ struct SwashTextView: NSViewRepresentable {
                     if validRange.length > 0 {
                         let tableData = MarkdownTableData(headers: headers, alignments: alignments, rows: rows)
                         var attachment: TableTextAttachment? = nil
-                        attachment = TableTextAttachment(tableData: tableData, flavor: parent.flavor, originalMarkdown: source) { [weak self, weak textView] updatedData in
+                        attachment = TableTextAttachment(tableData: tableData, flavor: parent.flavor, originalMarkdown: source,
+                                                         fontSize: parent.typography.tableFontSize) { [weak self, weak textView] updatedData in
                             guard let self = self, let textView = textView, let textStorage = textView.textStorage, let attachment = attachment else { return }
                             self.tableCellEdited(attachment, data: updatedData, in: textView, storage: textStorage)
                         }

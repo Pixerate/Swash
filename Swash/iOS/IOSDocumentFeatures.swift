@@ -223,6 +223,7 @@ struct IOSDocumentInfoView: View {
             }
             .monospacedDigit()
             .navigationTitle(title)
+            .sheetRootNavigation()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -501,6 +502,7 @@ struct IOSDocumentFeatures: ViewModifier {
                 }
                 .navigationTitle("Outline")
                 .navigationBarTitleDisplayMode(.inline)
+                .sheetRootNavigation()
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Done") { model.showingOutlineSheet = false }
@@ -541,6 +543,14 @@ struct IOSDocumentFeatures: ViewModifier {
             .background(Color(uiColor: .secondarySystemBackground))
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Outline")
+    }
+}
+extension View {
+    /// For the root view of a sheet's `NavigationStack`. The document scene's back (close) button
+    /// carries into sheets presented from the document, so without this a chevron appeared beside
+    /// the title that only dismissed the sheet, a second Done (#84).
+    func sheetRootNavigation() -> some View {
+        navigationBarBackButtonHidden(true)
     }
 }
 #endif
