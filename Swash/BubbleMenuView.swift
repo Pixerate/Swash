@@ -319,15 +319,7 @@ struct BubbleMenuView: View {
         .animation(.spring(response: 0.28, dampingFraction: 0.72), value: activeCodeFormat)
         .animation(.spring(response: 0.28, dampingFraction: 0.72), value: activeHeadingLevel)
         .animation(.spring(response: 0.28, dampingFraction: 0.72), value: context)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(.ultraThinMaterial)
-                .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 4)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
-        )
+        .modifier(BubbleMenuBackground())
         // The menu floats over the text view, whose I-beam would otherwise show through
         .onContinuousHover { phase in
             if case .active = phase { NSCursor.arrow.set() }
@@ -681,6 +673,26 @@ struct ImageAltTextPopoverView: View {
         .frame(width: 280)
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { isFocused = true }
+        }
+    }
+}
+
+/// Liquid Glass on macOS 26 and later (#72); the material and hairline before that.
+private struct BubbleMenuBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: .rect(cornerRadius: 12))
+        } else {
+            content
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(.ultraThinMaterial)
+                        .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 4)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
+                )
         }
     }
 }
