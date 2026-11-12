@@ -17,6 +17,19 @@ extension Notification.Name {
     static let applyCellFormatting = Notification.Name("applyCellFormatting")
 }
 
+/// Point size of table cell text. The table sets it for its cells from `InteractiveTableView`'s
+/// `fontSize`, which the editors and preview take from `EditorTypography.tableFontSize` (#83).
+private struct TableFontSizeKey: EnvironmentKey {
+    static let defaultValue: CGFloat = CellTextField.defaultFontSize
+}
+
+extension EnvironmentValues {
+    var tableFontSize: CGFloat {
+        get { self[TableFontSizeKey.self] }
+        set { self[TableFontSizeKey.self] = newValue }
+    }
+}
+
 struct InteractiveTableView: View {
     let initialData: MarkdownTableData
     let flavor: MarkdownFlavor
@@ -24,6 +37,8 @@ struct InteractiveTableView: View {
     var onChange: ((MarkdownTableData) -> Void)? = nil
     /// Called when a cell starts editing, so the editor can end its own selection.
     var onBeginEditing: (() -> Void)? = nil
+    /// Cell text size; follows Settings › Text Size (`EditorTypography.tableFontSize`).
+    var fontSize: CGFloat = CellTextField.defaultFontSize
 
     @State private var headers: [String]
     @State private var alignments: [TableAlignment]
@@ -39,10 +54,12 @@ struct InteractiveTableView: View {
         let col: Int
     }
 
-    init(tableData: MarkdownTableData, flavor: MarkdownFlavor, isEditable: Bool = true, onChange: ((MarkdownTableData) -> Void)? = nil, onBeginEditing: (() -> Void)? = nil) {
+    init(tableData: MarkdownTableData, flavor: MarkdownFlavor, isEditable: Bool = true, fontSize: CGFloat = CellTextField.defaultFontSize,
+         onChange: ((MarkdownTableData) -> Void)? = nil, onBeginEditing: (() -> Void)? = nil) {
         self.initialData = tableData
         self.flavor = flavor
         self.isEditable = isEditable
+        self.fontSize = fontSize
         self.onChange = onChange
         self.onBeginEditing = onBeginEditing
         
@@ -130,12 +147,13 @@ struct InteractiveTableView: View {
             alignments = newData.alignments
             rows = newData.rows
         }
+        .environment(\.tableFontSize, fontSize)
     }
 
     // MARK: - Column Sizing
     private var columnWidths: [CGFloat] {
-        let headerFont = PlatformFont.systemFont(ofSize: 13, weight: .bold)
-        let rowFont = PlatformFont.systemFont(ofSize: 13, weight: .regular)
+        let headerFont = PlatformFont.systemFont(ofSize: fontSize, weight: .bold)
+        let rowFont = PlatformFont.systemFont(ofSize: fontSize, weight: .regular)
         let cellPadding: CGFloat = 24 // 12 pt leading + 12 pt trailing
         let menuWidth: CGFloat = isEditable ? 18 : 0 // 14 pt menu button + 4 pt spacing
         let minColWidth: CGFloat = 110
@@ -290,9 +308,9 @@ struct InteractiveTableView: View {
         } else {
             InlineMarkdownText(text: text.isEmpty ? " " : text, flavor: flavor)
                 .equatable()
-                .font(.system(size: 13, weight: isHeader ? .bold : .regular))
+                .font(.system(size: fontSize, weight: isHeader ? .bold : .regular))
                 .foregroundColor(.primary)
-                .frame(height: CellTextField.lineHeight)
+                .frame(height: CellTextField.lineHeight(fontSize))
                 .contentShape(Rectangle())
                 .onTapGesture {
                     if isEditable {
@@ -444,13 +462,20 @@ struct CellTextField: View {
     var onNextCell: () -> Void
     var onPrevCell: () -> Void
     
-    /// Height of one line of 13 pt cell text. Display and edit cells both use it, so clicking into a
-    /// cell doesn't change the row height.
-    #if os(macOS)
-    static let lineHeight: CGFloat = ceil(NSLayoutManager().defaultLineHeight(for: NSFont.systemFont(ofSize: 13)))
-    #else
-    static let lineHeight: CGFloat = ceil(UIFont.systemFont(ofSize: 13).lineHeight)
-    #endif
+    @Environment(\.tableFontSize) private var fontSize
+
+    /// Cell text size at the default Text Size (the Mac's 13 pt).
+    static let defaultFontSize: CGFloat = 13
+
+    /// Height of one line of cell text at `fontSize`. Display and edit cells both use it, so
+    /// clicking into a cell doesn't change the row height.
+    static func lineHeight(_ fontSize: CGFloat) -> CGFloat {
+        #if os(macOS)
+        ceil(NSLayoutManager().defaultLineHeight(for: NSFont.systemFont(ofSize: fontSize)))
+        #else
+        ceil(UIFont.systemFont(ofSize: fontSize).lineHeight)
+        #endif
+    }
 
     var body: some View {
         #if os(macOS)
@@ -459,21 +484,23 @@ struct CellTextField: View {
             flavor: flavor,
             isHeader: isHeader,
             alignment: alignment,
+            fontSize: fontSize,
             onCommit: onCommit,
             onNextCell: onNextCell,
             onPrevCell: onPrevCell
         )
-        .frame(height: Self.lineHeight)
+        .frame(height: Self.lineHeight(fontSize))
         #else
         IOSCellTextView(
             text: $text,
             isHeader: isHeader,
             alignment: alignment,
+            fontSize: fontSize,
             onCommit: onCommit,
             onNextCell: onNextCell,
             onPrevCell: onPrevCell
         )
-        .frame(height: Self.lineHeight)
+        .frame(height: Self.lineHeight(fontSize))
         #endif
     }
 }
@@ -484,7 +511,7 @@ struct CellTextField: View {
 /// bold, italic and links are shown formatted and their syntax is hidden. The Mac and iOS cell
 /// editors share it.
 enum CellMarkdownStyler {
-    static func style(_ textStorage: NSTextStorage, isHeader: Bool, alignment: TableAlignment) {
+    static func style(_ textStorage: NSTextStorage, isHeader: Bool, alignment: TableAlignment, fontSize: CGFloat = CellTextField.defaultFontSize) {
         let fullRange = NSRange(location: 0, length: textStorage.length)
         guard fullRange.length > 0 else { return }
         let string = textStorage.string
@@ -498,7 +525,7 @@ enum CellMarkdownStyler {
         case .right: paragraph.alignment = .right
         case .left, .defaultAlignment: paragraph.alignment = .left
         }
-        let baseFont = PlatformFont.systemFont(ofSize: 13, weight: isHeader ? .bold : .regular)
+        let baseFont = PlatformFont.systemFont(ofSize: fontSize, weight: isHeader ? .bold : .regular)
         #if os(macOS)
         let codeColor = NSColor.labelColor
         let linkColor = NSColor.linkColor
@@ -527,7 +554,7 @@ enum CellMarkdownStyler {
         // Inline code pills: `code`
         for match in matches("`([^`]+)`") {
             let contentRange = match.range(at: 1)
-            textStorage.addAttribute(.font, value: PlatformFont.monospacedSystemFont(ofSize: 12, weight: .regular), range: contentRange)
+            textStorage.addAttribute(.font, value: PlatformFont.monospacedSystemFont(ofSize: fontSize - 1, weight: .regular), range: contentRange)
             textStorage.addAttribute(.foregroundColor, value: codeColor, range: contentRange)
             textStorage.addAttribute(.backgroundColor, value: PlatformColor.textColor.withAlphaComponent(0.06), range: match.range)
             hideRange(NSRange(location: match.range.location, length: 1))
@@ -536,7 +563,7 @@ enum CellMarkdownStyler {
 
         // Bold: **text**
         for match in matches("\\*\\*([^*]+)\\*\\*") {
-            textStorage.addAttribute(.font, value: PlatformFont.systemFont(ofSize: 13, weight: .bold), range: match.range(at: 1))
+            textStorage.addAttribute(.font, value: PlatformFont.systemFont(ofSize: fontSize, weight: .bold), range: match.range(at: 1))
             hideRange(NSRange(location: match.range.location, length: 2))
             hideRange(NSRange(location: match.range.location + match.range.length - 2, length: 2))
         }
@@ -569,6 +596,7 @@ private struct IOSCellTextView: UIViewRepresentable {
     @Binding var text: String
     var isHeader: Bool
     var alignment: TableAlignment
+    var fontSize: CGFloat
     var onCommit: () -> Void
     var onNextCell: () -> Void
     var onPrevCell: () -> Void
@@ -606,7 +634,7 @@ private struct IOSCellTextView: UIViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: CellUITextView, context: Context) -> CGSize? {
-        CGSize(width: proposal.width ?? 120, height: proposal.height ?? CellTextField.lineHeight)
+        CGSize(width: proposal.width ?? 120, height: proposal.height ?? CellTextField.lineHeight(fontSize))
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -642,9 +670,9 @@ private struct IOSCellTextView: UIViewRepresentable {
         func style(_ textView: UITextView) {
             guard textView.markedTextRange == nil else { return }
             let selection = textView.selectedRange
-            CellMarkdownStyler.style(textView.textStorage, isHeader: parent.isHeader, alignment: parent.alignment)
+            CellMarkdownStyler.style(textView.textStorage, isHeader: parent.isHeader, alignment: parent.alignment, fontSize: parent.fontSize)
             textView.typingAttributes = [
-                .font: UIFont.systemFont(ofSize: 13, weight: parent.isHeader ? .bold : .regular),
+                .font: UIFont.systemFont(ofSize: parent.fontSize, weight: parent.isHeader ? .bold : .regular),
                 .foregroundColor: UIColor.label,
             ]
             textView.selectedRange = selection
@@ -701,6 +729,7 @@ struct CellTextView: NSViewRepresentable {
     var flavor: MarkdownFlavor
     var isHeader: Bool = false
     var alignment: TableAlignment = .defaultAlignment
+    var fontSize: CGFloat = CellTextField.defaultFontSize
     var onCommit: () -> Void
     var onNextCell: () -> Void
     var onPrevCell: () -> Void
@@ -723,7 +752,7 @@ struct CellTextView: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
-        textView.font = NSFont.systemFont(ofSize: 13, weight: isHeader ? .bold : .regular)
+        textView.font = NSFont.systemFont(ofSize: fontSize, weight: isHeader ? .bold : .regular)
         textView.textColor = NSColor.textColor
         textView.textContainerInset = NSSize(width: 0, height: 0)
         textView.focusRingType = .none
@@ -989,7 +1018,7 @@ struct CellTextView: NSViewRepresentable {
 
         func highlightCellText(in textView: NSTextView) {
             guard let textStorage = textView.textStorage else { return }
-            CellMarkdownStyler.style(textStorage, isHeader: parent.isHeader, alignment: parent.alignment)
+            CellMarkdownStyler.style(textStorage, isHeader: parent.isHeader, alignment: parent.alignment, fontSize: parent.fontSize)
         }
 
 
@@ -1048,10 +1077,12 @@ final class TableAttachmentCell: NSTextAttachmentCell {
     var tableData: MarkdownTableData
     var flavor: MarkdownFlavor
     var onUpdate: ((MarkdownTableData) -> Void)?
+    let fontSize: CGFloat
     
-    init(tableData: MarkdownTableData, flavor: MarkdownFlavor, onUpdate: ((MarkdownTableData) -> Void)?) {
+    init(tableData: MarkdownTableData, flavor: MarkdownFlavor, fontSize: CGFloat = CellTextField.defaultFontSize, onUpdate: ((MarkdownTableData) -> Void)?) {
         self.tableData = tableData
         self.flavor = flavor
+        self.fontSize = fontSize
         self.onUpdate = onUpdate
         super.init(textCell: "")
     }
@@ -1086,6 +1117,7 @@ final class TableAttachmentCell: NSTextAttachmentCell {
             tableData: tableData,
             flavor: flavor,
             isEditable: true,
+            fontSize: fontSize,
             onChange: { [weak self] newTableData in
                 DispatchQueue.main.async {
                     guard let self = self else { return }
@@ -1174,14 +1206,15 @@ final class TableTextAttachment: NSTextAttachment, RawMarkdownAttachment {
         return markdown
     }
 
-    init(tableData: MarkdownTableData, flavor: MarkdownFlavor, originalMarkdown: String? = nil, onUpdate: ((MarkdownTableData) -> Void)?) {
+    init(tableData: MarkdownTableData, flavor: MarkdownFlavor, originalMarkdown: String? = nil, fontSize: CGFloat = CellTextField.defaultFontSize,
+         onUpdate: ((MarkdownTableData) -> Void)?) {
         self.tableData = tableData
         self.flavor = flavor
         self.onUpdate = onUpdate
         self.originalMarkdown = originalMarkdown
         self.originalTableData = tableData
         
-        let cell = TableAttachmentCell(tableData: tableData, flavor: flavor, onUpdate: onUpdate)
+        let cell = TableAttachmentCell(tableData: tableData, flavor: flavor, fontSize: fontSize, onUpdate: onUpdate)
         self.cell = cell
         
         super.init(data: nil, ofType: Self.fileTypeIdentifier)

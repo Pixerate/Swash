@@ -930,6 +930,7 @@ final class StyledUITextView: MarkdownEditingTextView {
             } else {
                 host = UIHostingController(rootView: InteractiveTableView(
                     tableData: table.tableData, flavor: table.flavor, isEditable: true,
+                    fontSize: coordinator?.parent.typography.tableFontSize ?? CellTextField.defaultFontSize,
                     onChange: { [weak table] data in table?.onUpdate?(data) }))
                 host.view.backgroundColor = .clear
                 host.sizingOptions = []

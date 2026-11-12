@@ -161,6 +161,12 @@ struct EditorTypography: Hashable {
     /// The plain body font (and the default for text the styler does not touch).
     var bodyFont: PlatformFont { font(ofSize: textSize) }
 
+    /// Table cell text size: 13 pt at the default text size on the Mac, in the same ratio to body
+    /// text everywhere, so tables scale with Settings › Text Size (and Dynamic Type on iOS) (#83).
+    var tableFontSize: CGFloat {
+        (textSize * MarkdownEditorStyler.fontScale * CellTextField.defaultFontSize / Self.defaultTextSize).rounded()
+    }
+
     /// Source (Edit Markdown) mode stays monospaced; only its size follows the setting.
     var sourceFont: PlatformFont { PlatformFont.monospacedSystemFont(ofSize: scaled(13.5), weight: .regular) }
 
