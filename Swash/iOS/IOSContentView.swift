@@ -17,6 +17,8 @@ struct IOSContentView: View {
     let fileURL: URL?
 
     @SceneStorage("viewMode") private var viewMode: ViewMode = .preview
+    /// Whether the iPad split view shows the outline sidebar; the system sidebar button sets it.
+    @SceneStorage("outlineColumnVisible") private var outlineVisible = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var editor = IOSEditorController()
     @State private var scrollSync = ScrollSync()
@@ -53,24 +55,8 @@ struct IOSContentView: View {
     }
 
     var body: some View {
-        // The editors fill the window, so text scrolls under the navigation bar and gets its
-        // scroll-edge effect; the banner joins that bar instead of pushing the editor down
-        ZStack {
-            // Where the safe area (bar and banner) ends; the editor below starts at the window top
-            Color.clear
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { safeAreaTop = $0 }
-            content(topInset: max(0, safeAreaTop - editorTop))
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { editorTop = $0 }
-                .ignoresSafeArea(.container, edges: [.top, .bottom])
-        }
-        .safeAreaBar(edge: .top) {
-            if let folderURL = unreadableFolderURL {
-                folderAccessBanner(for: folderURL)
-            }
-        }
+        documentLayout
         .modifier(IOSDocumentFeatures(model: features, text: document.text, editor: editor))
-        .toolbar { toolbar }
-        .toolbarRole(.editor)
         .sheet(isPresented: $showingSettings) {
             IOSSettingsView()
         }
@@ -99,6 +85,48 @@ struct IOSContentView: View {
         .onChange(of: document.flavor) { _, flavor in
             editor.flavor = flavor
         }
+    }
+
+    /// At regular width (iPad) the outline is the sidebar of a system split view, with the
+    /// system's sidebar button; in compact width it's a sheet from the toolbar's Outline button.
+    @ViewBuilder
+    private var documentLayout: some View {
+        if horizontalSizeClass == .regular {
+            NavigationSplitView(columnVisibility: Binding(
+                get: { outlineVisible ? .all : .detailOnly },
+                set: { outlineVisible = $0 != .detailOnly }
+            )) {
+                IOSOutlineSidebar(model: features, text: document.text, editor: editor, isVisible: outlineVisible)
+            } detail: {
+                documentScreen
+            }
+            // DocumentGroup's own bar would sit above the columns' bars; the detail column's
+            // bar already carries the document's back button and title menu
+            .background(DocumentBarHider())
+        } else {
+            documentScreen
+        }
+    }
+
+    /// The editor with its toolbar; the detail column on iPad.
+    private var documentScreen: some View {
+        // The editors fill the window, so text scrolls under the navigation bar and gets its
+        // scroll-edge effect; the banner joins that bar instead of pushing the editor down
+        ZStack {
+            // Where the safe area (bar and banner) ends; the editor below starts at the window top
+            Color.clear
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { safeAreaTop = $0 }
+            content(topInset: max(0, safeAreaTop - editorTop))
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { editorTop = $0 }
+                .ignoresSafeArea(.container, edges: [.top, .bottom])
+        }
+        .safeAreaBar(edge: .top) {
+            if let folderURL = unreadableFolderURL {
+                folderAccessBanner(for: folderURL)
+            }
+        }
+        .toolbar { toolbar }
+        .toolbarRole(.editor)
     }
 
     /// The editors ignore the top safe area so text scrolls under the bar; `topInset` is the
@@ -307,6 +335,41 @@ struct IOSContentView: View {
         var url: String
         let isEditing: Bool
         let selection: NSRange
+    }
+}
+
+/// Hides the bar of the navigation controller DocumentGroup puts the document in, while the
+/// iPad split view is on screen. SwiftUI repeats the document's back button and title menu in
+/// the detail column's bar, but ignores `.toolbar(.hidden, for: .navigationBar)` for its own
+/// bar, so both showed (GOTCHAS #76). Removing the view (compact width) brings the bar back.
+private struct DocumentBarHider: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) { controller.hideBar() }
+    static func dismantleUIViewController(_ controller: Controller, coordinator: ()) { controller.restoreBar() }
+
+    final class Controller: UIViewController {
+        private weak var hiddenIn: UINavigationController?
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            parent == nil ? restoreBar() : hideBar()
+        }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            hideBar()
+        }
+
+        func hideBar() {
+            guard let navigation = navigationController else { return }
+            hiddenIn = navigation
+            if !navigation.isNavigationBarHidden { navigation.setNavigationBarHidden(true, animated: false) }
+        }
+
+        func restoreBar() {
+            hiddenIn?.setNavigationBarHidden(false, animated: false)
+            hiddenIn = nil
+        }
     }
 }
 

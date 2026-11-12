@@ -288,11 +288,10 @@ enum IOSPresenter {
 // MARK: - Toolbar, sheets and the outline column
 
 /// State shared by the toolbar items (in IOSContentView's toolbar) and the sheets and outline
-/// column around the content (`IOSDocumentFeatures`). A second `.toolbar` inside the content
+/// sidebar around the content (`IOSDocumentFeatures`). A second `.toolbar` inside the content
 /// isn't merged into the document's toolbar on iOS, so the items live in the main one.
 @MainActor @Observable
 final class IOSDocumentFeaturesModel {
-    var outlineColumnVisible = false
     var showingOutlineSheet = false
     var info: InfoSnapshot?
     var outline = MarkdownOutline(text: "")
@@ -309,14 +308,10 @@ final class IOSDocumentFeaturesModel {
 
     // MARK: Outline
 
-    /// The toolbar button: a column at regular width (iPad), a sheet otherwise.
-    func showOutline(text: String, editor: IOSEditorController, regularWidth: Bool) {
+    /// The toolbar's Outline button in compact width (iPad has the sidebar button instead).
+    func showOutlineSheet(text: String, editor: IOSEditorController) {
         refreshOutline(text: text, editor: editor)
-        if regularWidth {
-            withAnimation(.easeInOut(duration: 0.25)) { outlineColumnVisible.toggle() }
-        } else {
-            showingOutlineSheet = true
-        }
+        showingOutlineSheet = true
     }
 
     func refreshOutline(text: String, editor: IOSEditorController) {
@@ -401,7 +396,7 @@ final class IOSDocumentFeaturesModel {
     }
 }
 
-/// The Outline button (primary) and the Document Info and Export items (overflow).
+/// The Outline button (primary, compact width) and the Document Info and Export items (overflow).
 struct IOSDocumentToolbar: ToolbarContent {
     let model: IOSDocumentFeaturesModel
     let text: String
@@ -410,13 +405,15 @@ struct IOSDocumentToolbar: ToolbarContent {
     let regularWidth: Bool
 
     var body: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                model.showOutline(text: text, editor: editor, regularWidth: regularWidth)
-            } label: {
-                Label("Outline", systemImage: "list.bullet.indent")
+        if !regularWidth {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    model.showOutlineSheet(text: text, editor: editor)
+                } label: {
+                    Label("Outline", systemImage: "list.bullet.indent")
+                }
+                .accessibilityHint("Shows the list of headings")
             }
-            .accessibilityHint(regularWidth ? "Shows or hides the list of headings" : "Shows the list of headings")
         }
         ToolbarItem(placement: .secondaryAction) {
             Button {
@@ -461,39 +458,14 @@ struct IOSDocumentToolbar: ToolbarContent {
     }
 }
 
-/// The outline column (iPad), the outline and Document Info sheets, export progress and errors.
+/// The outline and Document Info sheets, export progress and errors.
 struct IOSDocumentFeatures: ViewModifier {
     @Bindable var model: IOSDocumentFeaturesModel
     let text: String
     let editor: IOSEditorController
 
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @SceneStorage("outlineColumnVisible") private var storedColumnVisible = false
-
-    private var showsOutlineColumn: Bool { horizontalSizeClass == .regular && model.outlineColumnVisible }
-
     func body(content: Content) -> some View {
-        HStack(spacing: 0) {
-            if showsOutlineColumn {
-                outlineColumn
-                    .frame(width: 280)
-                    .transition(.move(edge: .leading))
-                Divider()
-                    .ignoresSafeArea(.container, edges: .bottom)
-            }
-            content
-        }
-        .onAppear {
-            if storedColumnVisible != model.outlineColumnVisible { model.outlineColumnVisible = storedColumnVisible }
-        }
-        .onChange(of: model.outlineColumnVisible) { _, visible in storedColumnVisible = visible }
-        .task(id: showsOutlineColumn ? text : nil) {
-            // Keeps the column current while typing, a moment after the typing stops
-            guard showsOutlineColumn else { return }
-            try? await Task.sleep(for: .milliseconds(model.outline.headings.isEmpty ? 0 : 300))
-            guard !Task.isCancelled else { return }
-            model.refreshOutline(text: text, editor: editor)
-        }
+        content
         .sheet(isPresented: $model.showingOutlineSheet) {
             NavigationStack {
                 IOSOutlineList(outline: model.outline, currentIndex: model.currentHeading) { index in
@@ -537,14 +509,31 @@ struct IOSDocumentFeatures: ViewModifier {
         }
     }
 
-    private var outlineColumn: some View {
+}
+
+/// The outline as the sidebar of the iPad split view. While it's shown it follows the text,
+/// a moment after typing stops.
+struct IOSOutlineSidebar: View {
+    @Bindable var model: IOSDocumentFeaturesModel
+    let text: String
+    let editor: IOSEditorController
+    let isVisible: Bool
+
+    var body: some View {
         IOSOutlineList(outline: model.outline, currentIndex: model.currentHeading) { model.choose($0, editor: editor) }
             .listStyle(.sidebar)
-            .background(Color(uiColor: .secondarySystemBackground))
+            .navigationTitle("Outline")
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Outline")
+            .task(id: isVisible ? text : nil) {
+                guard isVisible else { return }
+                try? await Task.sleep(for: .milliseconds(model.outline.headings.isEmpty ? 0 : 300))
+                guard !Task.isCancelled else { return }
+                model.refreshOutline(text: text, editor: editor)
+            }
     }
 }
+
 extension View {
     /// For the root view of a sheet's `NavigationStack`. The document scene's back (close) button
     /// carries into sheets presented from the document, so without this a chevron appeared beside
