@@ -221,7 +221,7 @@
 
 ## 55. ShareLink in a Collapsed Toolbar Menu Crashes on iPhone
 - **Issue**: A `ShareLink` in a `.secondaryAction` toolbar item, which collapses into the overflow menu on iPhone, presents `UIActivityViewController` as a popover with no source view. UIKit throws an uncaught `NSGenericException`.
-- **Solution**: Use a `Button` that presents `UIActivityViewController` itself with `popoverPresentationController.sourceView`/`sourceRect` set (`IOSContentView.presentShareSheet()`).
+- **Solution**: Keep the document's `ShareLink` in a `.primaryAction` item (`IOSContentView.shareLink`, #73). When a long title squeezes it into the overflow menu on iPhone, it still presents correctly (checked on iOS 26.5); only `.secondaryAction` placement crashed. Share the file URL, not the text, so the sheet shows the document's thumbnail and name. Generated exports still go through `IOSPresenter.share`, which sets `sourceView`/`sourceRect` itself.
 
 ## 56. Opening Documents From Code on iOS
 - **Issue**: SwiftUI's `openDocument` and `newDocument` environment actions are macOS-only. On iOS, `onOpenURL` on a document view doesn't fire while the document browser is showing, and the browser is a presented card on the launch screen but absent from the hierarchy once a document is open.
