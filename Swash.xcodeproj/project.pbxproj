@@ -1466,7 +1466,7 @@
 			repositoryURL = "https://github.com/Pixerate/editor";
 			requirement = {
 				kind = upToNextMinorVersion;
-				minimumVersion = 0.9.0;
+				minimumVersion = 0.67.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
