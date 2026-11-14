@@ -48,7 +48,7 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
     case contraction
     /// A capital letter to start a sentence.
     case sentenceCase
-    /// A full stop or question mark at the end of a paragraph.
+    /// A full stop or question mark at the end of a line.
     case terminalPunctuation
 
     var title: String {
@@ -119,6 +119,7 @@ nonisolated enum PunctuateVoice {
         boundary: Int,
         document: MarkdownDocument,
         flavor: MarkdownFlavor,
+        enterEndedLine: Bool? = nil,
         isActive: (PunctuationRule) -> Bool = { _ in true }
     ) -> [PunctuationEdit] {
         let ns = text as NSString
@@ -126,15 +127,7 @@ nonisolated enum PunctuateVoice {
         let typed = ns.character(at: boundary)
         var edits: [PunctuationEdit] = []
 
-        if typed == newline {
-            // A blank line ends the paragraph above: give it a full stop or a question mark
-            if boundary > 0, ns.character(at: boundary - 1) == newline, flavor != .slack, isActive(.terminalPunctuation),
-               let edit = terminalPunctuation(ns: ns, paragraphEnd: boundary - 1, document: document) {
-                edits.append(edit)
-            }
-            return edits
-        }
-        guard isWordBoundary(typed) else { return [] }
+        guard isWordBoundary(typed) || typed == newline else { return [] }
 
         // The word just finished: letters and apostrophes before the boundary
         var start = boundary
@@ -159,6 +152,11 @@ nonisolated enum PunctuateVoice {
         }
         if !rules.isEmpty, replacement != word {
             edits.append(PunctuationEdit(range: wordRange, replacement: replacement, rules: rules))
+        }
+        // Enter at the end of a line ends its sentence: give it a full stop or a question mark
+        if typed == newline, flavor != .slack, isActive(.terminalPunctuation),
+           let edit = terminalPunctuation(ns: ns, lineEnd: boundary, document: document, enterEndedLine: enterEndedLine) {
+            edits.append(edit)
         }
         return edits
     }
@@ -297,7 +295,10 @@ nonisolated enum PunctuateVoice {
                 break
             }
         }
-        guard i < start, i > 0, ns.character(at: i - 1) != newline else { return false }
+        guard i > 0 else { return false }
+        // Swash shows each line on its own, so a word that starts a line starts a sentence
+        if ns.character(at: i - 1) == newline { return true }
+        guard i < start else { return false }
         let end = ns.character(at: i - 1)
         // Closing quotes and brackets after the stop: "Done." or (done.)
         var stop = i - 1
@@ -347,11 +348,17 @@ nonisolated enum PunctuateVoice {
         "wouldn't", "shouldn't", "couldn't",
     ]
 
-    /// A full stop or question mark after a finished paragraph of at least four words that ends
-    /// in a letter or digit. Not for headings, list items, quotes' callouts or table cells.
-    static func terminalPunctuation(ns: NSString, paragraphEnd: Int, document: MarkdownDocument) -> PunctuationEdit? {
-        guard paragraphEnd > 0 else { return nil }
-        let last = paragraphEnd - 1
+    /// A full stop or question mark for the line just ended with Enter at `lineEnd` (the newline):
+    /// four or more words of prose ending in a letter or digit, in a paragraph (not a heading, list
+    /// item, callout, footnote or table). Only when Enter was pressed at the end of the line, not to
+    /// split it.
+    /// `enterEndedLine` says whether Enter was pressed at the end of the line, when the caller saw
+    /// it happen; otherwise the text after the newline decides.
+    static func terminalPunctuation(ns: NSString, lineEnd: Int, document: MarkdownDocument, enterEndedLine: Bool? = nil) -> PunctuationEdit? {
+        guard lineEnd > 0 else { return nil }
+        let endedLine = enterEndedLine ?? (lineEnd + 1 >= ns.length || ns.character(at: lineEnd + 1) == newline)
+        guard endedLine else { return nil } // Enter split a line
+        let last = lineEnd - 1
         let lastChar = ns.character(at: last)
         guard let scalar = Unicode.Scalar(lastChar), CharacterSet.alphanumerics.contains(scalar) else { return nil }
         let text = node(at: last, in: document)
@@ -361,7 +368,7 @@ nonisolated enum PunctuateVoice {
             if current.kind.isBlock { return nil }
             paragraph = current.parent
         }
-        guard let paragraph, NSMaxRange(paragraph.range) == paragraphEnd else { return nil }
+        guard let paragraph else { return nil }
         var ancestor = paragraph.parent
         while let current = ancestor {
             switch current.kind {
@@ -369,13 +376,15 @@ nonisolated enum PunctuateVoice {
             default: ancestor = current.parent
             }
         }
-        // One line only: lines broken by hand are often poetry or addresses
-        let source = ns.substring(with: paragraph.range)
-        guard !source.contains("\n") else { return nil }
-        let words = source.split(whereSeparator: { $0 == " " || $0 == "\t" })
-        guard words.count >= 4, isProse(NSRange(location: last, length: 1), ns: ns, document: document) else { return nil }
-        let first = words[0].lowercased().trimmingCharacters(in: CharacterSet.letters.inverted.subtracting(CharacterSet(charactersIn: "'")))
+        guard isProse(NSRange(location: last, length: 1), ns: ns, document: document),
+              !insideUnclosedSpan(before: last, ns: ns) else { return nil }
+        var lineStart = lineEnd
+        while lineStart > 0, ns.character(at: lineStart - 1) != newline { lineStart -= 1 }
+        let line = ns.substring(with: NSRange(location: lineStart, length: lineEnd - lineStart))
+        let words = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard words.count >= 4 else { return nil }
+        let first = words[0].lowercased().trimmingCharacters(in: CharacterSet.letters.inverted.subtracting(CharacterSet(charactersIn: "'’")))
         let mark = questionWords.contains(first) ? "?" : "."
-        return PunctuationEdit(range: NSRange(location: paragraphEnd, length: 0), replacement: mark, rules: [.terminalPunctuation])
+        return PunctuationEdit(range: NSRange(location: lineEnd, length: 0), replacement: mark, rules: [.terminalPunctuation])
     }
 }

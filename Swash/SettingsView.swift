@@ -278,15 +278,14 @@ private struct WritingPartnerSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Fix punctuation as I type", selection: $mode) {
-                    ForEach(WritingPartnerMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
+                Toggle("Fix punctuation as I type", isOn: Binding(
+                    get: { mode == .automatic },
+                    set: { mode = $0 ? .automatic : .off }
+                ))
             } header: {
                 Text("Writing Partner")
             } footer: {
-                Text("When you finish a word, Swash gives it a capital or an apostrophe it needs (i → I, dont → don't, a capital to start a sentence), and a blank line after a sentence adds its full stop or question mark. Each fix is its own step: press ⌘Z to undo it. Code, math, links' addresses and tables are never changed, and nothing leaves this Mac.")
+                Text("When you finish a word, Swash gives it a capital or an apostrophe it needs (i → I, dont → don't, a capital to start a sentence), and pressing Return at the end of a sentence adds its full stop or question mark. Each fix is its own step: press ⌘Z to undo it. Code, math, links' addresses and tables are never changed, and nothing leaves this Mac.")
                     .settingsFooterStyle()
             }
 
