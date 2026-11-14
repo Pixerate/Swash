@@ -695,6 +695,54 @@ struct InteractionRunner {
              pb.clearContents()
              try? FileManager.default.removeItem(at: folder); try? FileManager.default.removeItem(at: outside) }
 
+        // Writing partner (#61): fixes as you type, each its own undo step
+        do { let defaults = UserDefaults.standard
+             let savedMode = defaults.string(forKey: WritingPartnerDefaults.mode)
+             let savedStats = defaults.data(forKey: WritingPartnerDefaults.stats)
+             defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+             func typeEach(_ text: String, into tv: NSTextView) {
+                 for ch in text { tv.insertText(String(ch), replacementRange: tv.selectedRange()); pump(0.05) }
+                 pump(0.2)
+             }
+             for styled in [true, false] {
+                 let mode = styled ? "styled" : "source"
+                 defaults.set(WritingPartnerMode.off.rawValue, forKey: WritingPartnerDefaults.mode)
+                 let off = TextBox(""); let tvOff = makeEditor(off, styled: styled)
+                 typeEach("so i dont know ", into: tvOff)
+                 log("writing-partner-off-\(mode)", "", off.text, expect: "so i dont know ")
+
+                 defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+                 let b = TextBox(""); let tv = makeEditor(b, styled: styled)
+                 typeEach("so i dont know. it works ", into: tv)
+                 log("writing-partner-types-\(mode)", "", b.text, expect: "So I don't know. It works ")
+                 let caret = tv.selectedRange().location == (tv.string as NSString).length
+                 log("writing-partner-caret-\(mode)", "", "atEnd=\(caret)", expect: "atEnd=true")
+                 // Undo straight after a fix undoes only the fix, and the caret goes back to the end
+                 typeEach("then i ", into: tv)
+                 tv.undoManager?.undo(); pump(0.3)
+                 typeEach("x", into: tv)
+                 log("writing-partner-undo-\(mode)", "", b.text, expect: "So I don't know. It works then i x")
+
+                 let code = TextBox("Text\n\n```\n```"); let tvCode = makeEditor(code, styled: styled)
+                 caretAfter("```\n", in: tvCode)
+                 typeEach("dont i ", into: tvCode)
+                 log("writing-partner-skips-code-\(mode)", "", "\(code.text.contains("dont i ")) \(code.text.contains("don't") || code.text.contains(" I "))",
+                     expect: "true false")
+             }
+             // Two undos in a row stop a rule
+             defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+             defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+             let learn = TextBox(""); let tvLearn = makeEditor(learn, styled: false)
+             typeEach("I dont ", into: tvLearn); tvLearn.undoManager?.undo(); pump()
+             typeEach("dont ", into: tvLearn); tvLearn.undoManager?.undo(); pump()
+             typeEach("dont ", into: tvLearn)
+             let stats = WritingPartnerStats.load()
+             log("writing-partner-learns", "", "\(learn.text) contraction=\(stats.isActive(.contraction))",
+                 expect: "I dont dont dont  contraction=false")
+             if let savedMode { defaults.set(savedMode, forKey: WritingPartnerDefaults.mode) } else { defaults.removeObject(forKey: WritingPartnerDefaults.mode) }
+             if let savedStats { defaults.set(savedStats, forKey: WritingPartnerDefaults.stats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.stats) }
+        }
+
         try? out.write(toFile: CommandLine.arguments[1], atomically: true, encoding: .utf8)
         print(out)
         print(failures.isEmpty ? "INTERACTION: all expectations passed" : "INTERACTION FAILURES:\n" + failures.joined(separator: "\n"))

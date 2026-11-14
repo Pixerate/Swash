@@ -64,6 +64,9 @@ jobs:
       - name: Pixerate account tests (sign-in and the request gate)
         run: scripts/run_account_tests.sh
 
+      - name: Writing partner tests (the Punctuate voice)
+        run: scripts/run_writing_partner_tests.sh
+
       - name: MacAppKitExtras package tests
         run: swift test --package-path Packages/MacAppKitExtras
 
