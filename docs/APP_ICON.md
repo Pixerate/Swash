@@ -1,6 +1,6 @@
 # App Icon Prompt & Generation Guide
 
-This document records the brand palette, prompts, and rendering pipeline used to create the Swash app icon (`Swash/Assets.xcassets/AppIcon.appiconset`), aligned with the Pixerate family visual identity (`JazzPaint/docs/APP_ICON.md`).
+This document records the brand palette, prompts, and rendering pipeline used to create the Swash app icon (`Swash/Assets.xcassets/AppIcon.appiconset`) and social media avatar (`brand/swash-avatar-1024.png`), aligned with the Pixerate family visual identity (`JazzPaint/docs/APP_ICON.md`).
 
 ## 1. Pixerate Brand Palette
 
@@ -114,5 +114,73 @@ MainActor.assumeIsolated {
         try! pngData.write(to: URL(fileURLWithPath: "\(outDir)/\(item.name)"))
     }
 }
+'
+```
+
+## 5. Social Media Avatar (`brand/swash-avatar-1024.png`)
+
+- **Purpose**: 1024×1024 full-bleed PNG for social media profile avatars (X/Twitter, Discord, Instagram, GitHub, YouTube, TikTok). The artwork from `icon_ios_1024.png` is inset with extra background padding so the calligraphic "S", swash flourish, and glowing pixels stay comfortably inside circular avatar crops.
+- **Generation**:
+
+```bash
+swift -e '
+import AppKit
+import CoreImage
+
+let srcPath = "Swash/Assets.xcassets/AppIcon.appiconset/icon_ios_1024.png"
+let outPath = "brand/swash-avatar-1024.png"
+guard let ciInput = CIImage(contentsOf: URL(fileURLWithPath: srcPath)) else {
+    fatalError("Could not load \(srcPath)")
+}
+
+let pad: CGFloat = 84
+let trim: CGFloat = 16
+let extent = ciInput.extent
+let trimmed = ciInput.cropped(to: extent.insetBy(dx: trim, dy: trim))
+let paddedExtent = CGRect(
+    x: extent.origin.x - pad,
+    y: extent.origin.y - pad,
+    width: extent.width + pad * 2,
+    height: extent.height + pad * 2
+)
+
+let bg = trimmed
+    .clampedToExtent()
+    .applyingGaussianBlur(sigma: 24)
+    .cropped(to: paddedExtent)
+
+let maskRect = trimmed.extent
+let feather: CGFloat = 32
+let maskImg = CIFilter(name: "CIRoundedRectangleGenerator", parameters: [
+    "inputExtent": CIVector(cgRect: maskRect.insetBy(dx: feather, dy: feather)),
+    "inputRadius": 24.0,
+    "inputColor": CIColor.white
+])!.outputImage!
+    .applyingGaussianBlur(sigma: feather * 0.5)
+    .cropped(to: paddedExtent)
+
+let blended = CIFilter(name: "CIBlendWithMask", parameters: [
+    kCIInputImageKey: trimmed,
+    kCIInputBackgroundImageKey: bg,
+    kCIInputMaskImageKey: maskImg
+])!.outputImage!
+    .cropped(to: paddedExtent)
+    .transformed(by: CGAffineTransform(translationX: pad, y: pad))
+
+let scale = 1024.0 / paddedExtent.width
+let scaled = blended.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+let finalExtent = CGRect(x: 0, y: 0, width: 1024, height: 1024)
+
+let context = CIContext()
+guard let cgImage = context.createCGImage(scaled, from: finalExtent) else {
+    fatalError("Failed to render \(outPath)")
+}
+
+let rep = NSBitmapImageRep(cgImage: cgImage)
+rep.size = NSSize(width: 1024, height: 1024)
+guard let pngData = rep.representation(using: .png, properties: [:]) else {
+    fatalError("Failed to encode \(outPath)")
+}
+try! pngData.write(to: URL(fileURLWithPath: outPath))
 '
 ```
