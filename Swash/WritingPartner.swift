@@ -33,8 +33,17 @@ nonisolated enum WritingPartnerMode: String, CaseIterable, Identifiable, Sendabl
 nonisolated enum WritingPartnerDefaults {
     static let mode = "writingPartnerMode"
     static let stats = "writingPartnerStats"
+    /// Whether the partner corrects spelling. Unset, it follows the system's "Correct spelling
+    /// automatically" (the editor's own autocorrect is off while the partner is on).
+    static let spelling = "writingPartnerSpelling"
     /// The undo action name of the partner's edits.
     static let actionName = "Punctuation"
+
+    /// Whether the partner corrects spelling: the stored choice, else `systemDefault` (the system's
+    /// "Correct spelling automatically").
+    static func spelling(_ defaults: UserDefaults = .standard, systemDefault: Bool) -> Bool {
+        defaults.object(forKey: spelling) == nil ? systemDefault : defaults.bool(forKey: spelling)
+    }
 
     static func mode(_ defaults: UserDefaults = .standard) -> WritingPartnerMode {
         defaults.string(forKey: mode).flatMap(WritingPartnerMode.init(rawValue:)) ?? .off
@@ -51,6 +60,8 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
     case sentenceCase
     /// A full stop or question mark at the end of a line.
     case terminalPunctuation
+    /// A misspelt word, as the system's spell checker would autocorrect it (`becuase` → `because`).
+    case spelling
 
     var title: String {
         switch self {
@@ -58,6 +69,7 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
         case .contraction: return "Apostrophes"
         case .sentenceCase: return "Capitals at the start of sentences"
         case .terminalPunctuation: return "Full stops and question marks"
+        case .spelling: return "Spelling"
         }
     }
 }
@@ -121,7 +133,8 @@ nonisolated enum PunctuateVoice {
         document: MarkdownDocument,
         flavor: MarkdownFlavor,
         enterEndedLine: Bool? = nil,
-        isActive: (PunctuationRule) -> Bool = { _ in true }
+        isActive: (PunctuationRule) -> Bool = { _ in true },
+        spellingCorrection: ((_ word: String, _ range: NSRange, _ text: String) -> String?)? = nil
     ) -> [PunctuationEdit] {
         let ns = text as NSString
         guard boundary >= 0, boundary < ns.length else { return [] }
@@ -143,6 +156,12 @@ nonisolated enum PunctuateVoice {
         if let fixed = fixedWord(word, flavor: flavor, isActive: isActive) {
             replacement = fixed.word
             rules.append(fixed.rule)
+        } else if isActive(.spelling), let spellingCorrection, (word as NSString).length > 2,
+                  !word.contains(where: { $0.isUppercase }) || word.first?.isUppercase == true && !word.dropFirst().contains(where: { $0.isUppercase }),
+                  let corrected = spellingCorrection(word, wordRange, text), corrected != word,
+                  !corrected.contains(" ") {
+            replacement = corrected
+            rules.append(.spelling)
         }
         if flavor != .slack, isActive(.sentenceCase),
            let first = replacement.unicodeScalars.first, CharacterSet.lowercaseLetters.contains(first),

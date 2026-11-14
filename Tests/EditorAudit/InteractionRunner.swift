@@ -758,6 +758,28 @@ struct InteractionRunner {
                  log("writing-partner-cursor", "so i ", "during=\(during > 0) unchangedYet=\(textDuring == "so i ") afterwards=\(afterwards) text=\(v.text)",
                      expect: "during=true unchangedYet=true afterwards=0 text=So I ")
              }
+             // The partner takes over autocorrect: spelling fixes come from the system spell checker,
+             // through the partner, and the text view's own autocorrect is off while it's on
+             for styled in [true, false] {
+                 let mode = styled ? "styled" : "source"
+                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+                 defaults.set(true, forKey: WritingPartnerDefaults.spelling)
+                 let sp = TextBox(""); let tvSp = makeEditor(sp, styled: styled)
+                 tvSp.isAutomaticSpellingCorrectionEnabled = true
+                 typeEach("teh dog came becuase i said so\n", into: tvSp)
+                 log("writing-partner-spelling-\(mode)", "", "\(sp.text) systemAutocorrect=\(tvSp.isAutomaticSpellingCorrectionEnabled)",
+                     expect: "The dog came because I said so.\n systemAutocorrect=false")
+                 // Undoing a spelling fix leaves that word alone from then on
+                 typeEach("then hte ", into: tvSp); tvSp.undoManager?.undo(); pump(0.3)
+                 typeEach("x hte ", into: tvSp)
+                 log("writing-partner-spelling-undo-\(mode)", "", sp.text, expect: "The dog came because I said so.\nThen hte x hte ")
+                 // Off, the text view's own autocorrect comes back
+                 defaults.set(WritingPartnerMode.off.rawValue, forKey: WritingPartnerDefaults.mode)
+                 typeEach("a", into: tvSp)
+                 log("writing-partner-autocorrect-restored-\(mode)", "", "\(tvSp.isAutomaticSpellingCorrectionEnabled)", expect: "true")
+                 defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+                 defaults.removeObject(forKey: WritingPartnerDefaults.spelling)
+             }
              // Two undos in a row stop a rule
              defaults.removeObject(forKey: WritingPartnerDefaults.stats)
              defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)

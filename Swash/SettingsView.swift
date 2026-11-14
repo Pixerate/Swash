@@ -274,6 +274,7 @@ private struct UpdatesSettingsView: View {
 private struct WritingPartnerSettingsView: View {
     @AppStorage(WritingPartnerDefaults.mode) private var mode: WritingPartnerMode = .off
     @State private var stats = WritingPartnerStats.load()
+    @State private var spellingOn = WritingPartnerDefaults.spelling(systemDefault: NSSpellChecker.isAutomaticSpellingCorrectionEnabled)
 
     var body: some View {
         Form {
@@ -282,15 +283,20 @@ private struct WritingPartnerSettingsView: View {
                     get: { mode == .automatic },
                     set: { mode = $0 ? .automatic : .off }
                 ))
+                Toggle("Correct spelling", isOn: Binding(
+                    get: { spellingOn },
+                    set: { UserDefaults.standard.set($0, forKey: WritingPartnerDefaults.spelling); spellingOn = $0 }
+                ))
+                .disabled(mode != .automatic)
             } header: {
                 Text("Writing Partner")
             } footer: {
-                Text("When you finish a word, Swash gives it a capital or an apostrophe it needs (i → I, dont → don't, a capital to start a sentence), and pressing Return at the end of a sentence adds its full stop or question mark. Each fix is its own step: press ⌘Z to undo it. Code, math, links' addresses and tables are never changed, and nothing leaves this Mac.")
+                Text("When you finish a word, Swash gives it a capital or an apostrophe it needs (i → I, dont → don't, a capital to start a sentence), and pressing Return at the end of a sentence adds its full stop or question mark. With Correct spelling on, it also fixes misspellings as macOS's autocorrect would, in place of it (it starts out matching your Mac’s “Correct spelling automatically”). Each fix is its own step: press ⌘Z to undo it, and an undone spelling fix leaves that word alone. Code, math, links' addresses and tables are never changed, and nothing leaves this Mac.")
                     .settingsFooterStyle()
             }
 
             Section {
-                ForEach(PunctuationRule.allCases, id: \.self) { rule in
+                ForEach(PunctuationRule.allCases.filter { $0 != .spelling }, id: \.self) { rule in
                     LabeledContent(rule.title) {
                         if stats.isActive(rule) {
                             Text("On")
