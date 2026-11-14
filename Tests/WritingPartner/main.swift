@@ -9,8 +9,14 @@ var passes = 0
 
 /// Types `typed` at the end of `prefix` one character at a time, applying every fix as the editor
 /// would, and returns the text with the rules that fired.
+/// A stand-in for the system spell checker's autocorrection.
+let fakeSpelling: (String, NSRange, String) -> String? = { word, _, _ in
+    ["becuase": "because", "teh": "the", "happenign": "happening", "Becuase": "Because"][word]
+}
+
 func type(_ typed: String, after prefix: String = "", suffix: String = "", flavor: MarkdownFlavor = .github,
-          isActive: (PunctuationRule) -> Bool = { _ in true }) -> (text: String, rules: [PunctuationRule]) {
+          isActive: (PunctuationRule) -> Bool = { _ in true },
+          spelling: ((String, NSRange, String) -> String?)? = nil) -> (text: String, rules: [PunctuationRule]) {
     var text = prefix
     var rules: [PunctuationRule] = []
     for character in typed {
@@ -18,7 +24,8 @@ func type(_ typed: String, after prefix: String = "", suffix: String = "", flavo
         let boundary = (text as NSString).length - (String(character) as NSString).length
         let full = text + suffix
         let document = MarkdownDocument.parse(full, flavor: flavor)
-        let edits = PunctuateVoice.edits(text: full, boundary: boundary, document: document, flavor: flavor, isActive: isActive)
+        let edits = PunctuateVoice.edits(text: full, boundary: boundary, document: document, flavor: flavor, isActive: isActive,
+                                         spellingCorrection: spelling)
         var updated = full as NSString
         for edit in edits.sorted(by: { $0.range.location > $1.range.location }) {
             updated = updated.replacingCharacters(in: edit.range, with: edit.replacement) as NSString
@@ -127,6 +134,19 @@ do {
     check(checked("see `code` ", 10) == nil, "not code")
     check(checked("https://x.y/dont ", 16) == nil, "not a URL")
     check(checked("\n", 0) == nil && checked("a\n\n", 2) == nil, "not an empty line")
+}
+
+// Spelling, through the system spell checker (faked here)
+do {
+    let result = type("teh dog was there becuase i said so\n", spelling: fakeSpelling)
+    check(result.text == "The dog was there because I said so.\n", "spelling: \(result.text)")
+    check(result.rules.contains(.spelling), "spelling rule fired")
+    check(type("becuase ", spelling: fakeSpelling).text == "Because ", "spelling, then a capital")
+    check(type("see `becuase` ", spelling: fakeSpelling).text == "See `becuase` ", "no spelling in code")
+    check(type("teh ", isActive: { $0 != .spelling }, spelling: fakeSpelling).text == "Teh ", "spelling off")
+    check(type("ab ", spelling: { _, _, _ in "an" }).text == "Ab ", "no spelling for two-letter words")
+    check(type("McDonlads ", spelling: { _, _, _ in "McDonalds" }).text == "McDonlads ", "no spelling for mixed case")
+    check(type("hte ", spelling: { _, _, _ in "the end" }).text == "Hte ", "no corrections that split a word")
 }
 
 // Rules can be turned off

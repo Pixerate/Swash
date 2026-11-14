@@ -21,6 +21,10 @@ final class WritingPartnerSession {
     private var isScheduled = false
     /// The rules of the last fix, until the person types on (kept) or undoes it (undone).
     private var lastApplied: [PunctuationRule] = []
+    /// The misspellings the last fix corrected: undoing it tells the spell checker they're words.
+    private var lastSpellingWords: [String] = []
+    /// The text view's own autocorrect, saved while the partner has it off.
+    private var savedAutocorrect: Bool?
     /// Where the caret was (raw offset) before the last fix, to put it back if the fix is undone.
     private var caretBeforeFix: Int?
     private weak var textView: NSTextView?
@@ -50,15 +54,32 @@ final class WritingPartnerSession {
             for rule in lastApplied { stats.kept(rule) }
             stats.save(defaults)
             lastApplied = []
+            lastSpellingWords = []
         }
         let isOn = WritingPartnerDefaults.mode(defaults) == .automatic
-        // macOS's inline predictions also write at the caret; the two together corrupt words
+        // macOS's inline predictions and autocorrect also write at the caret, and the two together
+        // lose or corrupt fixes: while the partner is on it does the autocorrecting itself
         let predictions: NSTextInputTraitType = isOn ? .no : .default
         if textView.inlinePredictionType != predictions { textView.inlinePredictionType = predictions }
+        if isOn, savedAutocorrect == nil {
+            savedAutocorrect = textView.isAutomaticSpellingCorrectionEnabled
+            textView.isAutomaticSpellingCorrectionEnabled = false
+        } else if !isOn, let saved = savedAutocorrect {
+            textView.isAutomaticSpellingCorrectionEnabled = saved
+            savedAutocorrect = nil
+        }
         guard isOn, let string, (string as NSString).length == 1, range.length == 0,
               textView.selectedRange().length == 0, !textView.hasMarkedText() else {
-            // Anything but a typed character (a paste, a deletion) moves text under the pending offsets
-            pendingBoundaries = []
+            // Anything else (a paste, a deletion, macOS's text replacement) moves the text under the
+            // pending offsets: move them with it, and drop any it replaced
+            let raw = coordinator.rawRange(forStorage: range, in: textView)
+            let delta = ((string ?? "") as NSString).length - raw.length
+            let move = { (location: Int) -> Int? in
+                if location >= NSMaxRange(raw) { return location + delta }
+                return location < raw.location ? location : nil
+            }
+            pendingBoundaries = pendingBoundaries.compactMap { pending in move(pending.location).map { ($0, pending.enterEndedLine) } }
+            if fixInFlight != nil { changesSinceFix.append((raw, delta)) }
             return
         }
         let c = (string as NSString).character(at: 0)
@@ -96,11 +117,18 @@ final class WritingPartnerSession {
         var before: [NSRange]
         var after: [NSRange]
         var rules: [PunctuationRule]
+        var spellingWords: [String]
+        /// The boundaries it was worked out for, to work it out again if macOS changed the text first.
+        var boundaries: [(location: Int, enterEndedLine: Bool?)]
+        var isRetry: Bool
     }
 
     private var fixInFlight: Fix?
+    /// Changes that weren't the person's typing (macOS's text replacement, say) while a fix was on
+    /// its way: (raw range replaced, change in length).
+    private var changesSinceFix: [(range: NSRange, delta: Int)] = []
 
-    private func punctuate(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+    private func punctuate(in textView: NSTextView, coordinator: SwashTextView.Coordinator, isRetry: Bool = false) {
         let boundaries = pendingBoundaries
         pendingBoundaries = []
         guard WritingPartnerDefaults.mode(defaults) == .automatic, !textView.hasMarkedText(),
@@ -109,8 +137,16 @@ final class WritingPartnerSession {
         let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
         guard selection.length == 0 else { return }
         let stats = WritingPartnerStats.load(defaults)
+        let spellingOn = WritingPartnerDefaults.spelling(defaults, systemDefault: NSSpellChecker.isAutomaticSpellingCorrectionEnabled)
+        let isActive: (PunctuationRule) -> Bool = { $0 == .spelling ? spellingOn : stats.isActive($0) }
+        let checker = NSSpellChecker.shared
+        let tag = textView.spellCheckerDocumentTag
+        let spellingCorrection: (String, NSRange, String) -> String? = { _, range, text in
+            checker.correction(forWordRange: range, in: text, language: checker.language(), inSpellDocumentWithTag: tag)
+        }
         let flavor = coordinator.parent.flavor
         let overlay = WritingPartnerOverlay.overlay(for: textView)
+        var spellingWords: [String] = []
 
         // Each boundary in order, on the text as the earlier ones left it
         var working = raw as NSString
@@ -129,8 +165,10 @@ final class WritingPartnerSession {
                 checked.append(range)
             }
             let edits = PunctuateVoice.edits(text: text, boundary: boundary, document: document, flavor: flavor,
-                                             enterEndedLine: pending.enterEndedLine, isActive: stats.isActive)
+                                             enterEndedLine: pending.enterEndedLine, isActive: isActive,
+                                             spellingCorrection: spellingCorrection)
             for edit in edits.sorted(by: { $0.range.location > $1.range.location }) {
+                if edit.rules.contains(.spelling) { spellingWords.append(working.substring(with: edit.range)) }
                 working = working.replacingCharacters(in: edit.range, with: edit.replacement) as NSString
                 let delta = (edit.replacement as NSString).length - edit.range.length
                 if edit.range.location < caret { caret += delta }
@@ -145,8 +183,10 @@ final class WritingPartnerSession {
         // The partner selects whole words, as a person would before retyping one
         let before = changedBefore.map { Self.word(around: $0, in: raw as NSString) }
         let after = changedAfter.map { Self.word(around: $0, in: working) }
-        let fix = Fix(raw: raw, caret: selection.location, fixed: working as String, before: before, after: after, rules: rules)
+        let fix = Fix(raw: raw, caret: selection.location, fixed: working as String, before: before, after: after, rules: rules,
+                      spellingWords: spellingWords, boundaries: boundaries, isRetry: isRetry)
         fixInFlight = fix
+        changesSinceFix = []
         overlay.select(before.map { coordinator.storageRange(forRaw: $0, in: textView) }, in: textView)
         let apply = { [weak self, weak textView, weak coordinator] in
             guard let self else { return }
@@ -173,6 +213,22 @@ final class WritingPartnerSession {
         guard WritingPartnerDefaults.mode(defaults) == .automatic, !textView.hasMarkedText(),
               current.length >= fix.caret, selection.length == 0, selection.location >= fix.caret,
               current.substring(to: fix.caret) == raw.substring(to: fix.caret) else {
+            // macOS may have changed the word first (text replacement turns "teh" into "the" while
+            // the cursor is on its way): work the fix out again, once, on the text as it is now
+            if !fix.isRetry, WritingPartnerDefaults.mode(defaults) == .automatic, selection.length == 0, !textView.hasMarkedText() {
+                var moved = fix.boundaries
+                for change in changesSinceFix {
+                    moved = moved.compactMap { pending in
+                        if pending.location >= NSMaxRange(change.range) { return (pending.location + change.delta, pending.enterEndedLine) }
+                        return pending.location < change.range.location ? pending : nil
+                    }
+                }
+                changesSinceFix = []
+                pendingBoundaries = moved + pendingBoundaries
+                overlay.cancel()
+                punctuate(in: textView, coordinator: coordinator, isRetry: true)
+                return
+            }
             overlay.cancel()
             return
         }
@@ -188,6 +244,7 @@ final class WritingPartnerSession {
         // Boundaries typed after the caret moved with the fix
         pendingBoundaries = pendingBoundaries.map { ($0.location >= fix.caret ? $0.location + delta : $0.location, $0.enterEndedLine) }
         lastApplied = fix.rules
+        lastSpellingWords = fix.spellingWords
         caretBeforeFix = selection.location
         self.textView = textView
         self.coordinator = coordinator
@@ -259,10 +316,17 @@ final class WritingPartnerSession {
         ) { [weak self] notification in
             guard let self, !self.lastApplied.isEmpty,
                   (notification.object as? UndoManager)?.redoActionName == WritingPartnerDefaults.actionName else { return }
+            // Undoing a spelling fix says the word is right: the spell checker leaves it alone in this
+            // document. Other rules learn to fix less.
             var stats = WritingPartnerStats.load(self.defaults)
-            for rule in self.lastApplied { stats.undone(rule) }
+            for rule in self.lastApplied where rule != .spelling { stats.undone(rule) }
             stats.save(self.defaults)
+            if let textView = self.textView {
+                let tag = textView.spellCheckerDocumentTag
+                for word in self.lastSpellingWords { NSSpellChecker.shared.ignoreWord(word, inSpellDocumentWithTag: tag) }
+            }
             self.lastApplied = []
+            self.lastSpellingWords = []
             // Undo selects the restored word; put the caret back where the person was typing, after
             // the editor has restyled the change
             guard let caret = self.caretBeforeFix else { return }
