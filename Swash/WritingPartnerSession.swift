@@ -73,9 +73,10 @@ final class WritingPartnerSession {
     }
 
     /// The person's change landed. Fixes run on the next turn of the run loop, after the editor has
-    /// published and styled the change.
+    /// published and styled the change, and one at a time: while the partner's cursor is on its way
+    /// to a fix, new boundaries wait for it.
     func didChange(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
-        guard !pendingBoundaries.isEmpty, !isScheduled else { return }
+        guard !pendingBoundaries.isEmpty, !isScheduled, fixInFlight == nil else { return }
         isScheduled = true
         DispatchQueue.main.async { [weak self, weak textView, weak coordinator] in
             guard let self else { return }
@@ -84,6 +85,20 @@ final class WritingPartnerSession {
             self.punctuate(in: textView, coordinator: coordinator)
         }
     }
+
+    /// A fix the partner's cursor is selecting, applied when it gets there.
+    private struct Fix {
+        /// The raw Markdown and caret it was worked out on.
+        var raw: String
+        var caret: Int
+        /// The fixed text, and where the fixes are in the raw text (before) and the fixed text (after).
+        var fixed: String
+        var before: [NSRange]
+        var after: [NSRange]
+        var rules: [PunctuationRule]
+    }
+
+    private var fixInFlight: Fix?
 
     private func punctuate(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
         let boundaries = pendingBoundaries
@@ -95,12 +110,14 @@ final class WritingPartnerSession {
         guard selection.length == 0 else { return }
         let stats = WritingPartnerStats.load(defaults)
         let flavor = coordinator.parent.flavor
+        let overlay = WritingPartnerOverlay.overlay(for: textView)
 
         // Each boundary in order, on the text as the earlier ones left it
         var working = raw as NSString
         var caret = selection.location
         var shift = 0
         var rules: [PunctuationRule] = []
+        var checked: [NSRange] = []
         for pending in boundaries.sorted(by: { $0.location < $1.location }) {
             let boundary = pending.location + shift
             guard boundary >= 0, boundary < working.length, boundary < caret else { continue }
@@ -108,6 +125,9 @@ final class WritingPartnerSession {
             guard PunctuateVoice.isWordBoundary(c) || c == 0x0A else { continue }
             let text = working as String
             let document = working == raw as NSString ? coordinator.formatting(for: text).document : MarkdownDocument.parse(text, flavor: flavor)
+            if shift == 0, let range = PunctuateVoice.checkedRange(text: text, boundary: boundary, document: document) {
+                checked.append(range)
+            }
             let edits = PunctuateVoice.edits(text: text, boundary: boundary, document: document, flavor: flavor,
                                              enterEndedLine: pending.enterEndedLine, isActive: stats.isActive)
             for edit in edits.sorted(by: { $0.range.location > $1.range.location }) {
@@ -118,17 +138,115 @@ final class WritingPartnerSession {
                 rules += edit.rules
             }
         }
+        overlay.sweep(checked.flatMap { WritingPartnerOverlay.rects(for: coordinator.storageRange(forRaw: $0, in: textView), in: textView) })
         guard !rules.isEmpty else { return }
 
+        let (changedBefore, changedAfter) = Self.changedRanges(from: raw as NSString, to: working)
+        // The partner selects whole words, as a person would before retyping one
+        let before = changedBefore.map { Self.word(around: $0, in: raw as NSString) }
+        let after = changedAfter.map { Self.word(around: $0, in: working) }
+        let fix = Fix(raw: raw, caret: selection.location, fixed: working as String, before: before, after: after, rules: rules)
+        fixInFlight = fix
+        overlay.select(before.map { coordinator.storageRange(forRaw: $0, in: textView) }, in: textView)
+        let apply = { [weak self, weak textView, weak coordinator] in
+            guard let self else { return }
+            self.fixInFlight = nil
+            guard let textView, let coordinator else { return }
+            self.apply(fix, in: textView, coordinator: coordinator, overlay: overlay)
+            // Boundaries typed while the cursor was on its way
+            if !self.pendingBoundaries.isEmpty { self.didChange(in: textView, coordinator: coordinator) }
+        }
+        let delay = WritingPartnerOverlay.selectDuration
+        if delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: apply)
+        } else {
+            apply()
+        }
+    }
+
+    /// Applies `fix` if the text up to the caret it was worked out at hasn't changed since: the person
+    /// may have typed on after the caret, which is kept.
+    private func apply(_ fix: Fix, in textView: NSTextView, coordinator: SwashTextView.Coordinator, overlay: WritingPartnerOverlay) {
+        let current = coordinator.rawText(of: textView) as NSString
+        let raw = fix.raw as NSString
+        let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        guard WritingPartnerDefaults.mode(defaults) == .automatic, !textView.hasMarkedText(),
+              current.length >= fix.caret, selection.length == 0, selection.location >= fix.caret,
+              current.substring(to: fix.caret) == raw.substring(to: fix.caret) else {
+            overlay.cancel()
+            return
+        }
+        let fixed = fix.fixed as NSString
+        let delta = fixed.length - raw.length
+        let newText = fixed.substring(to: fix.caret + delta) + current.substring(from: fix.caret)
+        let newCaret = selection.location + delta
+
         textView.breakUndoCoalescing()
-        coordinator.applyEdit(in: textView, newRawText: working as String, rawSelection: NSRange(location: caret, length: 0),
+        coordinator.applyEdit(in: textView, newRawText: newText, rawSelection: NSRange(location: newCaret, length: 0),
                               actionName: WritingPartnerDefaults.actionName)
         textView.breakUndoCoalescing()
-        lastApplied = rules
+        // Boundaries typed after the caret moved with the fix
+        pendingBoundaries = pendingBoundaries.map { ($0.location >= fix.caret ? $0.location + delta : $0.location, $0.enterEndedLine) }
+        lastApplied = fix.rules
         caretBeforeFix = selection.location
         self.textView = textView
         self.coordinator = coordinator
         observeUndo(textView.undoManager)
+        // Show where the fix landed once the editor has restyled it
+        DispatchQueue.main.async { [weak textView, weak coordinator] in
+            guard let textView, let coordinator else { return }
+            overlay.landed(fix.after.map { coordinator.storageRange(forRaw: $0, in: textView) }, in: textView)
+        }
+    }
+
+    /// `range` widened to the whole words it touches (a full stop added after a word takes the word).
+    static func word(around range: NSRange, in text: NSString) -> NSRange {
+        var start = range.location
+        var end = NSMaxRange(range)
+        while start > 0, PunctuateVoice.isWordCharacter(text.character(at: start - 1)) { start -= 1 }
+        while end < text.length, PunctuateVoice.isWordCharacter(text.character(at: end)) { end += 1 }
+        return NSRange(location: start, length: end - start)
+    }
+
+    /// Where `new` differs from `old`: each run of changed characters, as ranges in both.
+    static func changedRanges(from old: NSString, to new: NSString) -> (before: [NSRange], after: [NSRange]) {
+        // Trim the common prefix and suffix, then diff what's left character by character
+        let limit = min(old.length, new.length)
+        var prefix = 0
+        while prefix < limit, old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
+        var suffix = 0
+        while suffix < limit - prefix, old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
+        let oldMiddle = (0..<(old.length - prefix - suffix)).map { old.character(at: prefix + $0) }
+        let newMiddle = (0..<(new.length - prefix - suffix)).map { new.character(at: prefix + $0) }
+        let difference = newMiddle.difference(from: oldMiddle)
+        var removed = IndexSet()
+        var inserted = IndexSet()
+        for change in difference {
+            switch change {
+            case .remove(let offset, _, _): removed.insert(offset)
+            case .insert(let offset, _, _): inserted.insert(offset)
+            }
+        }
+        // Pair each run of changes in the old text with the run at the same place in the new one
+        var before: [NSRange] = []
+        var after: [NSRange] = []
+        var oldIndex = 0
+        var newIndex = 0
+        while oldIndex < oldMiddle.count || newIndex < newMiddle.count {
+            if !removed.contains(oldIndex) && !inserted.contains(newIndex), oldIndex < oldMiddle.count, newIndex < newMiddle.count {
+                oldIndex += 1
+                newIndex += 1
+                continue
+            }
+            let oldStart = oldIndex
+            let newStart = newIndex
+            while removed.contains(oldIndex) { oldIndex += 1 }
+            while inserted.contains(newIndex) { newIndex += 1 }
+            if oldIndex == oldStart && newIndex == newStart { break }
+            before.append(NSRange(location: prefix + oldStart, length: oldIndex - oldStart))
+            after.append(NSRange(location: prefix + newStart, length: newIndex - newStart))
+        }
+        return (before, after)
     }
 
     /// Undoing the partner's step straight away counts against its rules.

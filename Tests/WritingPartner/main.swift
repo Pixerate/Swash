@@ -53,6 +53,16 @@ expect("Dont go ", "Don't go ")
 expect("DONT STOP ", "DON'T STOP ")
 expect("Well im here ", "Well I'm here ")
 expect("Its fine, well see ", "Its fine, well see ") // real words without an apostrophe stay
+expect("its really interesting ", "It's really interesting ")
+expect("I think its a good day ", "I think it's a good day ")
+expect("its going well ", "It's going well ")
+expect("Its not fine ", "It's not fine ")
+expect("I know its me ", "I know it's me ")
+expect("The dog wagged its tail ", "The dog wagged its tail ")
+expect("Its colour is red ", "Its colour is red ")
+expect("in its own way ", "In its own way ")
+expect("its about time ", "Its about time ")
+expect("See `its really` ", "See `its really` ")
 expect("The wont of it ", "The wont of it ")
 expect("iPhone is here ", "iPhone is here ")
 expect("Ask McDonalds now ", "Ask McDonalds now ")
@@ -105,6 +115,19 @@ expect("ok so i dont know\n\n", "ok so I don't know\n\n", flavor: .slack)
 // The rest of the document is untouched
 expect("so i ", "Intro.\n\nSo I ", after: "Intro.\n\n")
 expect("dont ", "Para one.\n\nDon't \n\nPara two.", after: "Para one.\n\n", suffix: "\n\nPara two.")
+
+// What is shown as being checked
+do {
+    func checked(_ text: String, _ boundary: Int) -> String? {
+        let document = MarkdownDocument.parse(text, flavor: .github)
+        return PunctuateVoice.checkedRange(text: text, boundary: boundary, document: document).map { (text as NSString).substring(with: $0) }
+    }
+    check(checked("so i dont ", 9) == "dont", "the word before a space")
+    check(checked("hello there\n", 11) == "hello there", "the line before a newline")
+    check(checked("see `code` ", 10) == nil, "not code")
+    check(checked("https://x.y/dont ", 16) == nil, "not a URL")
+    check(checked("\n", 0) == nil && checked("a\n\n", 2) == nil, "not an empty line")
+}
 
 // Rules can be turned off
 do {

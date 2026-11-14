@@ -744,6 +744,20 @@ struct InteractionRunner {
                  pump(0.5)
                  log("writing-partner-fast-\(mode)", lines, fast.text, expect: linesFixed)
              }
+             // The partner's cursor and selection show while a fix is on its way, and go afterwards
+             do {
+                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+                 let v = TextBox(""); let tvV = makeEditor(v, styled: true)
+                 for ch in "so i " { tvV.insertText(String(ch), replacementRange: tvV.selectedRange()) }
+                 pump(0.08)
+                 let overlay = tvV.subviews.compactMap { $0 as? WritingPartnerOverlay }.first
+                 let during = overlay?.layer?.sublayers?.count ?? 0
+                 let textDuring = v.text
+                 pump(1.2)
+                 let afterwards = overlay?.layer?.sublayers?.count ?? 0
+                 log("writing-partner-cursor", "so i ", "during=\(during > 0) unchangedYet=\(textDuring == "so i ") afterwards=\(afterwards) text=\(v.text)",
+                     expect: "during=true unchangedYet=true afterwards=0 text=So I ")
+             }
              // Two undos in a row stop a rule
              defaults.removeObject(forKey: WritingPartnerDefaults.stats)
              defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
