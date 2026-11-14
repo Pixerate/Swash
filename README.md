@@ -53,7 +53,8 @@
 - **Preview in Finder.** Press Space on any Markdown file for a formatted Quick Look preview, and see real thumbnails of your notes.
 - **Capture from anywhere.** Send selected text from any app to a new Swash note with the Services menu, or create notes and count words with Shortcuts.
 - **A real Mac app.** Light and Dark Mode, autosave and version history, iCloud Drive with help sorting out conflicting edits, VoiceOver, system spellcheck (kept out of your code blocks), undo everything, and automatic updates.
-- **Private by design.** No account and no tracking. Your files stay where you put them.
+- **Private by design.** No tracking, and no account needed: everything above works without one. Your files stay where you put them.
+- **Optional Pixerate account.** Sign in with a Pixerate account in Settings › Account to let the coming writing partner use Pixerate's model when you pause. Nothing is sent unless you're signed in and the writing partner is on. Then Swash sends only the paragraph you're writing and a little context around it, never the whole document, code blocks, math or tables. Pixerate doesn't keep your text, and each request uses Fuel from your Pixerate team.
 
 ---
 
