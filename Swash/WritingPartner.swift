@@ -13,6 +13,7 @@
 //
 
 import Foundation
+import NaturalLanguage
 import PixerateMarkdown
 
 nonisolated enum WritingPartnerMode: String, CaseIterable, Identifiable, Sendable {
@@ -153,12 +154,41 @@ nonisolated enum PunctuateVoice {
         if !rules.isEmpty, replacement != word {
             edits.append(PunctuationEdit(range: wordRange, replacement: replacement, rules: rules))
         }
+        // `its` before an adverb, article, verb or pronoun ("its really", "its a") is "it's"
+        if isActive(.contraction), let edit = itsBefore(word: word, at: start, ns: ns, document: document) {
+            edits.append(edit)
+        }
         // Enter at the end of a line ends its sentence: give it a full stop or a question mark
         if typed == newline, flavor != .slack, isActive(.terminalPunctuation),
            let edit = terminalPunctuation(ns: ns, lineEnd: boundary, document: document, enterEndedLine: enterEndedLine) {
             edits.append(edit)
         }
         return edits
+    }
+
+    /// What the voice looks at for the boundary at `boundary`: the word before it, or the line it
+    /// ends when it's a newline. Nil when that isn't prose (code, math, a URL…), so there's nothing
+    /// to show as being checked.
+    static func checkedRange(text: String, boundary: Int, document: MarkdownDocument) -> NSRange? {
+        let ns = text as NSString
+        guard boundary > 0, boundary < ns.length else { return nil }
+        let typed = ns.character(at: boundary)
+        if typed == newline {
+            var lineStart = boundary
+            while lineStart > 0, ns.character(at: lineStart - 1) != newline { lineStart -= 1 }
+            let line = NSRange(location: lineStart, length: boundary - lineStart)
+            guard line.length > 0, !(ns.substring(with: line).trimmingCharacters(in: .whitespaces).isEmpty) else { return nil }
+            var last = boundary - 1
+            while last > lineStart, ns.character(at: last) == 0x20 { last -= 1 }
+            guard isProse(NSRange(location: last, length: 1), ns: ns, document: document) else { return nil }
+            return line
+        }
+        guard isWordBoundary(typed) else { return nil }
+        var start = boundary
+        while start > 0, isWordCharacter(ns.character(at: start - 1)) { start -= 1 }
+        let word = NSRange(location: start, length: boundary - start)
+        guard word.length > 0, isProse(word, ns: ns, document: document), !insideUnclosedSpan(before: start, ns: ns) else { return nil }
+        return word
     }
 
     // MARK: Words
@@ -204,6 +234,31 @@ nonisolated enum PunctuateVoice {
         if word == word.uppercased() { return (fixed.uppercased(), .contraction) }
         if word == word.prefix(1).uppercased() + word.dropFirst() { return (fixed.prefix(1).uppercased() + fixed.dropFirst(), .contraction) }
         return nil // mixed case: a name or a code word
+    }
+
+    /// `its` is right before a noun or adjective ("its colour", "its own") and wrong before an
+    /// adverb, article, verb or pronoun ("its really", "its a", "its going", "its me"). Once the
+    /// word after it is finished, the tagger says which, from the line so far. "its about" can go
+    /// either way and stays.
+    static func itsBefore(word: String, at start: Int, ns: NSString, document: MarkdownDocument) -> PunctuationEdit? {
+        guard start >= 2, ns.character(at: start - 1) == 0x20 else { return nil }
+        var previousStart = start - 1
+        while previousStart > 0, isWordCharacter(ns.character(at: previousStart - 1)) { previousStart -= 1 }
+        let previousRange = NSRange(location: previousStart, length: start - 1 - previousStart)
+        guard previousRange.length == 3 else { return nil }
+        let previous = ns.substring(with: previousRange)
+        guard previous.lowercased() == "its", isProse(previousRange, ns: ns, document: document) else { return nil }
+        var lineStart = previousStart
+        while lineStart > 0, ns.character(at: lineStart - 1) != newline { lineStart -= 1 }
+        let line = ns.substring(with: NSRange(location: lineStart, length: start + (word as NSString).length - lineStart))
+        let tagger = NLTagger(tagSchemes: [.lexicalClass])
+        tagger.string = line
+        let wordStart = line.index(line.endIndex, offsetBy: -word.count)
+        let (tag, _) = tagger.tag(at: wordStart, unit: .word, scheme: .lexicalClass)
+        guard let tag, [.adverb, .determiner, .verb, .pronoun].contains(tag) else { return nil }
+        let fixed: String
+        if previous == "its" { fixed = "it's" } else if previous == "ITS" { fixed = "IT'S" } else if previous == "Its" { fixed = "It's" } else { return nil }
+        return PunctuationEdit(range: previousRange, replacement: fixed, rules: [.contraction])
     }
 
     // MARK: Where prose is
