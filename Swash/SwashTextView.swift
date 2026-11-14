@@ -1648,7 +1648,7 @@ struct SwashTextView: NSViewRepresentable {
         
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
             if !isApplyingEdit, !isHighlighting, !isUpdatingFromSwiftUI, !isWritingToolsActive {
-                writingPartner.willType(replacementString, in: affectedCharRange, textView: textView)
+                writingPartner.willType(replacementString, in: affectedCharRange, textView: textView, coordinator: self)
             }
             if (replacementString == "{" || replacementString == "}"), !isApplyingEdit, !isHighlighting, !isUpdatingFromSwiftUI,
                let storage = textView.textStorage {

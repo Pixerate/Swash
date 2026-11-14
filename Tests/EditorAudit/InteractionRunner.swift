@@ -729,6 +729,21 @@ struct InteractionRunner {
                  log("writing-partner-skips-code-\(mode)", "", "\(code.text.contains("dont i ")) \(code.text.contains("don't") || code.text.contains(" I "))",
                      expect: "true false")
              }
+             // Each line is a sentence, at normal speed and typed faster than the run loop turns
+             let lines = "It's really interesting becuase I dont know how to do this any more\nwhat could be happenign here\nthis should be capitilised but isnt\n"
+             let linesFixed = "It's really interesting becuase I don't know how to do this any more.\nWhat could be happenign here?\nThis should be capitilised but isn't.\n"
+             for styled in [true, false] {
+                 let mode = styled ? "styled" : "source"
+                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+                 let normal = TextBox(""); let tvNormal = makeEditor(normal, styled: styled)
+                 typeEach(lines, into: tvNormal)
+                 log("writing-partner-lines-\(mode)", lines, normal.text, expect: linesFixed)
+                 log("writing-partner-no-inline-predictions-\(mode)", "", "\(tvNormal.inlinePredictionType == .no)", expect: "true")
+                 let fast = TextBox(""); let tvFast = makeEditor(fast, styled: styled)
+                 for ch in lines { tvFast.insertText(String(ch), replacementRange: tvFast.selectedRange()) }
+                 pump(0.5)
+                 log("writing-partner-fast-\(mode)", lines, fast.text, expect: linesFixed)
+             }
              // Two undos in a row stop a rule
              defaults.removeObject(forKey: WritingPartnerDefaults.stats)
              defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)

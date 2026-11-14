@@ -65,7 +65,7 @@ expect("It costs 3.50 today ", "It costs 3.50 today ")
 expect("Wait... and then ", "Wait... and then ")
 expect("Ask J. smith ", "Ask J. smith ")
 expect("He said \"done.\" then left ", "He said \"done.\" Then left ")
-expect("first line\nsecond line ", "First line\nsecond line ") // a soft break doesn't start a sentence
+expect("first line\nsecond line ", "First line\nSecond line ") // Swash shows each line on its own
 expect("# hello there ", "# Hello there ")
 expect("- buy milk ", "- Buy milk ")
 expect("> quoted text ", "> Quoted text ")
@@ -83,12 +83,17 @@ expect("A file_dont name ", "A file_dont name ")
 expect("<span>dont</span> ", "<span>dont</span> ")
 expect("| a | b |\n|---|---|\n| dont | i |", "| a | b |\n|---|---|\n| dont | i |")
 
-// Full stops and question marks after a finished paragraph (a blank line)
+// Full stops and question marks when Enter ends a line
+expect("this is a whole sentence\n", "This is a whole sentence.\n")
 expect("this is a whole sentence\n\n", "This is a whole sentence.\n\n")
-expect("how does this work then\n\n", "How does this work then?\n\n")
+expect("how does this work then\n", "How does this work then?\n")
 expect("Too short\n\n", "Too short\n\n")
 expect("Already done here, really.\n\n", "Already done here, really.\n\n")
-expect("roses are red\nviolets are blue now\n\n", "Roses are red\nviolets are blue now\n\n") // more than one line
+expect("roses are red\nviolets are blue now\n", "Roses are red\nViolets are blue now.\n")
+expect("It's really interesting becuase I dont know how to do this any more\nwhat could be happenign here\nthis should be capitilised but isnt\n",
+       "It's really interesting becuase I don't know how to do this any more.\nWhat could be happenign here?\nThis should be capitilised but isn't.\n")
+expect("ends in isnt\n", "Ends in isn't\n") // three words: no full stop, but the last word is still fixed
+expect("\n", "Split this line here and\n there", after: "Split this line here and", suffix: " there") // Enter that splits a line adds nothing
 expect("- a list item with words\n\n", "- A list item with words\n\n")
 expect("# A heading with four words\n\n", "# A heading with four words\n\n")
 expect("Ends with a `code span`\n\n", "Ends with a `code span`\n\n")

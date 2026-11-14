@@ -140,10 +140,18 @@ final class AgentBridge {
             token: token,
             onStatus: { [weak self, weak session] status, detail in
                 session?.status = status
-                if let detail { self?.detail = detail } else if status == .connected { self?.detail = nil }
+                if let detail { self?.detail = AgentBridge.explain(detail, url: url) } else if status == .connected { self?.detail = nil }
                 self?.refresh()
             }
         ))
+    }
+
+    /// "Could not connect to the server" means nothing is listening at the URL: the bridge isn't
+    /// running, or runs on another port. Say how to start it.
+    static func explain(_ detail: String, url: URL) -> String {
+        let lower = detail.lowercased()
+        guard lower.contains("could not connect") || lower.contains("connection refused") else { return detail }
+        return "Nothing is listening at \(url.absoluteString). Start the bridge in Terminal with npx pixerate-mcp-bridge --token <secret>, using the same token as here, then press Reconnect."
     }
 
     private func disconnect(_ session: AgentDocumentSession) {
