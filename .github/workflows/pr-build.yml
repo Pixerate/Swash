@@ -61,6 +61,9 @@ jobs:
       - name: Agent tools tests (MCP bridge tools through a PixerateCore ToolRegistry)
         run: scripts/run_agent_tools_tests.sh
 
+      - name: Pixerate account tests (sign-in and the request gate)
+        run: scripts/run_account_tests.sh
+
       - name: MacAppKitExtras package tests
         run: swift test --package-path Packages/MacAppKitExtras
 

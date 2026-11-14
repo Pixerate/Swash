@@ -10,7 +10,7 @@ import PixerateCore
 
 struct SettingsView: View {
     private enum Tab: Hashable {
-        case general, appearance, agents, updates
+        case general, appearance, agents, account, updates
     }
 
     @State private var selection: Tab = .general
@@ -28,6 +28,10 @@ struct SettingsView: View {
             AgentSettingsView()
                 .tabItem { Label("Agents", systemImage: "sparkles") }
                 .tag(Tab.agents)
+
+            AccountSettingsView()
+                .tabItem { Label("Account", systemImage: "person.crop.circle") }
+                .tag(Tab.account)
 
             UpdatesSettingsView()
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
@@ -327,6 +331,20 @@ private struct AgentSettingsView: View {
                         .disabled(!enabled)
                 }
             }
+        }
+        .formStyle(.grouped)
+        .scrollDisabled(true)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+// MARK: - Account
+
+/// The opt-in Pixerate account for the writing partner's server features (#60).
+private struct AccountSettingsView: View {
+    var body: some View {
+        Form {
+            PixerateAccountSections()
         }
         .formStyle(.grouped)
         .scrollDisabled(true)

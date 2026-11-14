@@ -25,6 +25,7 @@ struct IOSSettingsView: View {
                     }
                 }
                 IOSTypographySettingsSections()
+                PixerateAccountSections()
                 if StickerCatalog.isAvailable {
                     StickerSetsSection()
                 }

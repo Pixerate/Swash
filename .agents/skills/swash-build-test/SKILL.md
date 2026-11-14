@@ -75,6 +75,7 @@ The Format menu, shortcuts, bubble-menu labels and code languages come from the 
 ./scripts/run_paste_tests.sh       # Swash's paste additions to the engine (Confluence/Jira images)
 ./scripts/run_slack_tests.sh       # Slack mrkdwn parsing (Edit Text) and formatting with Slack delimiters
 ./scripts/run_agent_tools_tests.sh # agent tools (#49) called through a PixerateCore ToolRegistry
+./scripts/run_account_tests.sh     # Pixerate account (#60): sign-in and the request gate, against a fake server
 xcodebuild test -scheme Swash -destination "platform=iOS Simulator,name=iPhone 17" CODE_SIGNING_ALLOWED=NO  # iOS Edit Text editor (Tests/SwashiOSTests)
 ```
 
