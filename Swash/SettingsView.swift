@@ -10,7 +10,7 @@ import PixerateCore
 
 struct SettingsView: View {
     private enum Tab: Hashable {
-        case general, appearance, agents, account, updates
+        case general, appearance, writing, agents, account, updates
     }
 
     @State private var selection: Tab = .general
@@ -24,6 +24,10 @@ struct SettingsView: View {
             AppearanceSettingsView()
                 .tabItem { Label("Appearance", systemImage: "textformat.size") }
                 .tag(Tab.appearance)
+
+            WritingPartnerSettingsView()
+                .tabItem { Label("Writing", systemImage: "character.cursor.ibeam") }
+                .tag(Tab.writing)
 
             AgentSettingsView()
                 .tabItem { Label("Agents", systemImage: "sparkles") }
@@ -261,6 +265,61 @@ private struct UpdatesSettingsView: View {
         .formStyle(.grouped)
         .scrollDisabled(true)
         .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+// MARK: - Writing partner
+
+/// Punctuation and capitals as you type (#61).
+private struct WritingPartnerSettingsView: View {
+    @AppStorage(WritingPartnerDefaults.mode) private var mode: WritingPartnerMode = .off
+    @State private var stats = WritingPartnerStats.load()
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Fix punctuation as I type", selection: $mode) {
+                    ForEach(WritingPartnerMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+            } header: {
+                Text("Writing Partner")
+            } footer: {
+                Text("When you finish a word, Swash gives it a capital or an apostrophe it needs (i → I, dont → don't, a capital to start a sentence), and a blank line after a sentence adds its full stop or question mark. Each fix is its own step: press ⌘Z to undo it. Code, math, links' addresses and tables are never changed, and nothing leaves this Mac.")
+                    .settingsFooterStyle()
+            }
+
+            Section {
+                ForEach(PunctuationRule.allCases, id: \.self) { rule in
+                    LabeledContent(rule.title) {
+                        if stats.isActive(rule) {
+                            Text("On")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Stopped after you undid it")
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+            } header: {
+                Text("What It Has Learned")
+            } footer: {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Undoing a fix straight away makes its kind less likely; undo it twice in a row and it stops.")
+                        .settingsFooterStyle()
+                    Button("Reset") {
+                        UserDefaults.standard.removeObject(forKey: WritingPartnerDefaults.stats)
+                        stats = WritingPartnerStats()
+                    }
+                    .disabled(stats.rules.isEmpty)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollDisabled(true)
+        .fixedSize(horizontal: false, vertical: true)
+        .onAppear { stats = WritingPartnerStats.load() }
     }
 }
 

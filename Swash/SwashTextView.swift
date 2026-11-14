@@ -1105,6 +1105,8 @@ struct SwashTextView: NSViewRepresentable {
         var parent: SwashTextView
         var isUpdatingFromSwiftUI = false
         var isHighlighting = false
+        /// Punctuation and capitals as you type (#61).
+        let writingPartner = WritingPartnerSession()
         var didAutoSelect = false
         
         var lastStyledText: String? = nil
@@ -1475,6 +1477,9 @@ struct SwashTextView: NSViewRepresentable {
                     // storage per keystroke would invalidate the entire layout
                     schedulePlainCodeBlockRefresh(in: textView)
                 }
+                if !isApplyingEdit {
+                    writingPartner.didChange(in: textView, coordinator: self)
+                }
             }
         }
         
@@ -1642,6 +1647,9 @@ struct SwashTextView: NSViewRepresentable {
         }
         
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+            if !isApplyingEdit, !isHighlighting, !isUpdatingFromSwiftUI, !isWritingToolsActive {
+                writingPartner.willType(replacementString, in: affectedCharRange, textView: textView)
+            }
             if (replacementString == "{" || replacementString == "}"), !isApplyingEdit, !isHighlighting, !isUpdatingFromSwiftUI,
                let storage = textView.textStorage {
                 // Brace pairing inside math (in every mode)
