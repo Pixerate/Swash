@@ -910,19 +910,23 @@ struct InteractionRunner {
                      "afterFirst=\(layersAfterFirstEsc) text=\(escB.text) active=\(escStats.isActive(.contraction)) thirdOffered=\(!escCoord.writingPartner.suggestions.isEmpty)",
                      expect: "afterFirst=0 text=I dont dont dont  active=false thirdOffered=false")
 
-                 // 4. Typing past a suggestion dismisses it and counts against its rule
+                 // 4. Typing on keeps a suggestion on offer; typing well past it (more than
+                 //    `suggestionReach` characters) dismisses it and counts against its rule
                  defaults.removeObject(forKey: WritingPartnerDefaults.stats)
                  let pastB = TextBox(""); let tvPast = makeEditor(pastB, styled: styled)
+                 let filler = "know what to do about this whole thing now "
                  typeEach("I dont ", into: tvPast)
                  typeEach("know ", into: tvPast)
-                 typeEach("dont ", into: tvPast)
-                 typeEach("know ", into: tvPast)
-                 typeEach("dont ", into: tvPast)
                  let pastCoord = tvPast.delegate as! SwashTextView.Coordinator
+                 let stillOffered = !pastCoord.writingPartner.suggestions.isEmpty
+                 typeEach(String(filler.dropFirst(5)), into: tvPast)
+                 typeEach("dont ", into: tvPast)
+                 typeEach(filler, into: tvPast)
+                 typeEach("dont ", into: tvPast)
                  let pastStats = WritingPartnerStats.load()
-                 log("writing-partner-suggest-dismiss-typing-past-\(mode)", "keep typing past 'dont' twice",
-                     "text=\(pastB.text) active=\(pastStats.isActive(.contraction)) thirdOffered=\(!pastCoord.writingPartner.suggestions.isEmpty)",
-                     expect: "text=I dont know dont know dont  active=false thirdOffered=false")
+                 log("writing-partner-suggest-dismiss-typing-past-\(mode)", "keep typing well past 'dont' twice",
+                     "stillOfferedAfterAWord=\(stillOffered) text=\(pastB.text) active=\(pastStats.isActive(.contraction)) thirdOffered=\(!pastCoord.writingPartner.suggestions.isEmpty)",
+                     expect: "stillOfferedAfterAWord=true text=I dont \(filler)dont \(filler)dont  active=false thirdOffered=false")
 
                  // 5. Editing the suggested word makes the suggestion disappear without penalising the rule
                  defaults.removeObject(forKey: WritingPartnerDefaults.stats)
