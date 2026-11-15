@@ -9,8 +9,8 @@
   //
   // The partner's look is Flair's `ribbon-curl` text treatment, the same kind of treatment the
   // app's partner can draw with: its caret (with no name tag, as in the app), the selection, the word typed over the
-  // old one, and a ribbon curling away under what changed. Until Flair has loaded (or if it
-  // can't), the fixes are shown with plain CSS instead.
+  // old one, and a ribbon curling away under what changed. The demo waits for Flair to load before
+  // it starts; if it can't load, or takes too long, the fixes are shown with plain CSS instead.
 
   type Status = 'plain' | 'selected' | 'typing' | 'fixed';
   interface Word {
@@ -61,7 +61,29 @@
   let page: HTMLElement;
 
   let overlay: TextTreatmentOverlay | null = null;
+  /**
+   * A second overlay that plays only the `typing` stage, in `soft-sweep`. That stage is the same as
+   * `ribbon-curl`'s (the old word covered, a tint, the typed word, the caret) without the wisp of
+   * ribbon that trails the caret: the ribbon should arrive when the fix has landed, not while the
+   * word is still changing.
+   */
+  let typingOverlay: TextTreatmentOverlay | null = null;
   let flair: typeof import('@pixerate/flair/embed') | null = null;
+  /** Flair once it has loaded, waiting to be used from the start of the next run. */
+  let arrived: typeof import('@pixerate/flair/embed') | null = null;
+  /** Settles when Flair has loaded, has failed to, or has taken too long for the first run to wait. */
+  let flairSettled: Promise<void> = Promise.resolve();
+
+  /**
+   * Takes Flair into use. Only between runs: a run that began with the plain CSS fixes finishes
+   * with them, so the two looks are never on screen together.
+   */
+  function adopt() {
+    if (!arrived || overlay) return;
+    flair = arrived;
+    overlay = arrived.mountTextTreatment(page, TREATMENT, { values: treatmentValues() as never });
+    typingOverlay = arrived.mountTextTreatment(page, 'soft-sweep', { values: typingValues() as never });
+  }
 
   let run = 0;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -71,6 +93,7 @@
   const cssColor = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   /** The treatment's values for the page's theme: the partner's colour, and its frost for light or dark pages. */
   const treatmentValues = () => ({ color: cssColor('--partner'), darkTheme: isDark(), sparkles: 6, nameTag: false });
+  const typingValues = () => ({ color: cssColor('--partner'), nameTag: false });
 
   /** The partner's fix, drawn by the treatment over the word's own text. */
   async function fixWithTreatment(word: Word, l: number, w: number, alive: () => boolean) {
@@ -102,7 +125,7 @@
 
     // The new word is drawn over the old one, letter by letter, and only then written into the text.
     let typed = '';
-    const typing = overlay.play('typing', () => {
+    const typing = (typingOverlay ?? overlay).play('typing', () => {
       const line = rects()[0];
       return {
         lines: rects(),
@@ -147,7 +170,12 @@
     const mine = ++run;
     const alive = () => mine === run;
     while (alive()) {
+      // The first run waits for Flair (a moment, on a first visit), showing the finished text
+      await flairSettled;
+      if (!alive()) return;
+      adopt();
       overlay?.clear();
+      typingOverlay?.clear();
       lines = fresh(false);
       fixes = 0;
       // The partner works through its fixes one at a time, behind the typing.
@@ -193,15 +221,18 @@
     }
     let gone = false;
     // Flair is fetched once the demo is on screen; the first fixes may play in CSS before it arrives.
-    import('@pixerate/flair/embed')
+    const loading = import('@pixerate/flair/embed')
       .then((module) => {
-        if (gone) return;
-        flair = module;
-        overlay = module.mountTextTreatment(page, TREATMENT, { values: treatmentValues() as never });
+        if (!gone) arrived = module;
       })
       .catch((err) => console.warn('Swash: Flair not loaded, showing fixes without the treatment.', err));
+    // On a slow connection the demo starts without it after a few seconds, and takes it up on a later run
+    flairSettled = Promise.race([loading, sleep(4000)]);
 
-    const themeWatch = new MutationObserver(() => overlay?.setValues(treatmentValues() as never));
+    const themeWatch = new MutationObserver(() => {
+      overlay?.setValues(treatmentValues() as never);
+      typingOverlay?.setValues(typingValues() as never);
+    });
     themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
     // Starts when it scrolls into view, and stops when it leaves.
@@ -211,6 +242,7 @@
         else {
           run++;
           overlay?.clear();
+          typingOverlay?.clear();
           lines = fresh(true);
           caret = null;
         }
@@ -224,6 +256,7 @@
       watch.disconnect();
       themeWatch.disconnect();
       overlay?.dispose();
+      typingOverlay?.dispose();
     };
   });
 </script>
