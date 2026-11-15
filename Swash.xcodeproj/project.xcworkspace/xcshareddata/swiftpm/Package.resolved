@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Pixerate/editor",
       "state" : {
-        "revision" : "5b186665fe8eab6502100eb29018f6aca0c3c52d",
-        "version" : "0.76.0"
+        "revision" : "fca4c0f229a6c6e4b81a7f231114cc7e583a402f",
+        "version" : "0.77.0"
       }
     },
     {

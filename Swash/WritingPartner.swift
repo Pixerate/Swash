@@ -38,6 +38,8 @@ nonisolated enum WritingPartnerDefaults {
     /// steps and learn from undo, so it doesn't follow macOS's "Correct spelling automatically",
     /// which people often turn off for being hard to undo (#98).
     static let spelling = "writingPartnerSpelling"
+    /// Typography switches (#104). Off unless turned on: Swash has never curled quotes in a
+    /// Markdown source, so turning it on by default would change how people's files are written.
     static let curlyQuotes = "writingPartnerCurlyQuotes"
     static let dashes = "writingPartnerDashes"
     static let ellipses = "writingPartnerEllipses"
@@ -61,15 +63,15 @@ nonisolated enum WritingPartnerDefaults {
     }
 
     static func curlyQuotes(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: curlyQuotes) == nil ? true : defaults.bool(forKey: curlyQuotes)
+        defaults.bool(forKey: curlyQuotes)
     }
 
     static func dashes(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: dashes) == nil ? true : defaults.bool(forKey: dashes)
+        defaults.bool(forKey: dashes)
     }
 
     static func ellipses(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: ellipses) == nil ? true : defaults.bool(forKey: ellipses)
+        defaults.bool(forKey: ellipses)
     }
 
     static func isRuleEnabled(_ rule: PunctuationRule, _ defaults: UserDefaults = .standard) -> Bool {
@@ -115,6 +117,9 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
     case dashes
     /// `...` becomes an ellipsis (`…`).
     case ellipses
+
+    /// Curly quotes, dashes and ellipses: each has its own switch, off unless turned on.
+    var isTypography: Bool { self == .curlyQuotes || self == .dashes || self == .ellipses }
 
     var title: String {
         switch self {
@@ -271,6 +276,9 @@ nonisolated extension PunctuationRule {
         case .capitals: self = .capitals
         case .clauseComma: self = .clauseComma
         case .spelling: self = .spelling
+        case .curlyQuotes: self = .curlyQuotes
+        case .dashes: self = .dashes
+        case .ellipses: self = .ellipses
         }
     }
 }
