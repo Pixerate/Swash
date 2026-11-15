@@ -4,7 +4,7 @@ import Base from '../layouts/Base.astro';
 import HeroVideo from '../components/HeroVideo.svelte';
 import PartnerDemo from '../components/PartnerDemo.svelte';
 import FlairStage from '../components/FlairStage.svelte';
-import FlairText from '../components/FlairText.svelte';
+import SwashHeadline from '../components/SwashHeadline.svelte';
 import Shot from '../components/Shot.astro';
 import icon from '../assets/icon.png';
 import editorLight from '../assets/screenshots/editor-light.png';
@@ -79,23 +79,8 @@ const showcase = [
       <HeroVideo client:load />
       <div class="relative z-10 mx-auto max-w-4xl text-center">
         <p class="eyebrow">Markdown editor for Mac <span class="text-muted">· iPhone and iPad coming soon</span></p>
-        <h1 class="mt-5 font-serif text-[clamp(3.25rem,10vw,7rem)] font-bold leading-[0.95] tracking-tight">
-          <FlairText
-            client:load
-            effect="stroke-draw-text"
-            text="Just write."
-            width={5.62}
-            ratio={7.8}
-            values={{
-              text: 'Just write.',
-              font: "'New York', ui-serif, 'Iowan Old Style', Georgia, serif",
-              weight: 700,
-              outline: '--ink',
-              fill: '--ink',
-              width: 1.2,
-              inline: true,
-            }}
-          />
+        <h1 class="mt-8 font-serif text-[clamp(3.25rem,10vw,7rem)] font-bold leading-[0.95] tracking-tight">
+          <SwashHeadline client:load text="Just write." />
         </h1>
         <p class="mx-auto mt-5 max-w-2xl font-serif text-[clamp(1.4rem,3.4vw,2.1rem)] italic leading-snug text-ink">
           Swash dots the i’s and crosses the t’s.

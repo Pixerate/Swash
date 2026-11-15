@@ -4,7 +4,8 @@
 
   // A re-enactment of the writing partner (Swash/WritingPartner.swift): someone types without
   // looking back, and the partner's cursor follows a few words behind, fixing what they left.
-  // Only fixes the app makes today are shown.
+  // It shows every kind of fix on the page: spelling, capitals, apostrophes and full stops, and
+  // grammar (#111), formatting (#113) and typography (#104), which are on their way.
   //
   // The partner's look is Flair's `ribbon-curl` text treatment, the same kind of treatment the
   // app's partner can draw with: its caret (with no name tag, as in the app), the selection, the word typed over the
@@ -23,10 +24,20 @@
 
   const TREATMENT = 'ribbon-curl';
 
+  /**
+   * Each line as typed, word by word, with what the partner leaves where that differs. The first
+   * line is typed as plain words: the partner works out that it is the heading and makes it one
+   * (shown formatted, with no `#`, as Swash draws headings).
+   */
   const SCRIPT: [raw: string, fix?: string][][] = [
+    // Formatting: the title line becomes a heading.
+    [['field', 'Field'], ['notes']],
+    // Capitals, an apostrophe and a full stop.
     [['i', 'I'], ['started'], ['writing'], ['and'], ['didnt', 'didn’t'], ['look'], ['back', 'back.']],
-    [['its', 'It’s'], ['liek', 'like'], ['having'], ['an'], ['editor'], ['who'], ['never'], ['interupts', 'interrupts.']],
-    [['so', 'So'], ['i', 'I'], ['just'], ['keep'], ['going', 'going.']],
+    // Spelling, and grammar: "an" before a vowel.
+    [['its', 'It’s'], ['liek', 'like'], ['having'], ['a', 'an'], ['editor'], ['who'], ['never'], ['interupts', 'interrupts.']],
+    // Typography: a real dash.
+    [['so', 'So'], ['i', 'I'], ['just'], ['keep'], ['going'], ['--', '—'], ['no'], ['stopping', 'stopping.']],
   ];
 
   /** The script before typing starts, or (`final`) as the partner leaves it, with its fixes marked or not. */
@@ -44,6 +55,8 @@
   /** Where the person's caret is: the line and word being typed. */
   let caret = $state<{ line: number; word: number } | null>(null);
   let fixes = $state(0);
+  /** The first line is a heading once the partner has been over it. */
+  const titled = $derived(lines[0]?.[0]?.shown === SCRIPT[0]![0]![1]);
   let host: HTMLElement;
   let page: HTMLElement;
 
@@ -218,7 +231,7 @@
   <!-- The animation is decoration: the caption below says what it shows. -->
   <div bind:this={page} class="page" aria-hidden="true">
     {#each lines as line, l}
-      <p>
+      <p class:heading={l === 0 && titled}>
         {#each line as word, w}
           {#if word.shown || word.status === 'typing'}
             <span class="word {word.status}" data-word="{l}-{w}">{word.shown}</span>{#if word.status === 'selected' || word.status === 'typing'}<span class="partner"></span>{/if}{#if caret && caret.line === l && caret.word === w}<span class="caret"></span>{/if}{' '}
@@ -230,8 +243,8 @@
     {/each}
   </div>
   <figcaption>
-    You type “i started writing and didnt look back”. Swash follows a few words behind and leaves “I started
-    writing and didn’t look back.”
+    You type “its liek having a editor who never interupts”. Swash follows a few words behind and leaves “It’s like
+    having an editor who never interrupts.” It also makes the first line a heading and turns two hyphens into a dash.
   </figcaption>
 </figure>
 
@@ -278,13 +291,21 @@
   .page {
     position: relative;
     padding: 2rem 1.5rem 1.25rem;
-    min-height: 12.5rem;
+    min-height: 15.5rem;
     font-size: clamp(1.05rem, 0.9rem + 0.8vw, 1.35rem);
     line-height: 1.75;
   }
   .page p {
     position: relative;
     margin: 0 0 0.45em;
+  }
+  .page p {
+    transition: font-size 0.45s cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  .page p.heading {
+    font-size: 1.35em;
+    font-weight: 700;
+    letter-spacing: -0.01em;
   }
   .word {
     border-radius: 4px;
