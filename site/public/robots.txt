@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://swash.pixerate.com/sitemap.xml

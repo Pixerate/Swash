@@ -15,12 +15,10 @@ if [ ! -d "$APP" ]; then
 fi
 
 for appearance in light dark; do
-    style=(-NSRequiresAquaSystemAppearance YES)
-    [ "$appearance" = dark ] && style=(-AppleInterfaceStyle Dark)
     # Opened through Launch Services so the sandboxed app may read the file; the arguments
     # override the app's defaults for this launch only
     open -n -a "$APP" "$SAMPLE" --args -showOutline YES -NSQuitAlwaysKeepsWindows NO \
-        -suppressDefaultAppPrompt YES "${style[@]}"
+        -suppressDefaultAppPrompt YES -appearance "$appearance"
     sleep 8
     pid="$(pgrep -n -f "$APP/Contents/MacOS/Swash")"
     id="$(swift "$ROOT/scripts/get_window_id.swift" "$pid")"

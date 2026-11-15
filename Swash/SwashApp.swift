@@ -15,6 +15,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = servicesProvider
+        // `-appearance light|dark` on the command line fixes the app's appearance for one launch
+        // (the screenshot scripts; GOTCHAS #40). `-AppleInterfaceStyle Dark` stopped working in macOS 27.
+        if let name = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)["appearance"] as? String {
+            NSApp.appearance = NSAppearance(named: name == "dark" ? .darkAqua : .aqua)
+        }
         GlobalHotKey.shared.register(QuickCaptureShortcut.current)
         DispatchQueue.main.async {
             DefaultAppManager.shared.checkAndPromptIfNecessary()
