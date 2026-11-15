@@ -68,5 +68,24 @@ const jsonLd = {
   </head>
   <body>
     <slot />
+    {/* Entry and exit animations for [data-reveal] elements (global.css). */}
+    <script is:inline>
+      (() => {
+        if (!('IntersectionObserver' in window) || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        document.documentElement.classList.add('reveal-on');
+        const watch = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              const el = entry.target;
+              el.classList.toggle('in', entry.isIntersecting);
+              // Out of view above the viewport: it has left. Below: it has yet to arrive.
+              el.classList.toggle('gone', !entry.isIntersecting && entry.boundingClientRect.top < 0);
+            }
+          },
+          { threshold: 0.12, rootMargin: '0px 0px -6% 0px' },
+        );
+        for (const el of document.querySelectorAll('[data-reveal]')) watch.observe(el);
+      })();
+    </script>
   </body>
 </html>

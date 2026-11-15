@@ -3,8 +3,9 @@
   import type { MountedEffect } from '@pixerate/flair/embed';
 
   // The closing section's backdrop and wordmark, drawn live by Flair: a soft grain backdrop in the
-  // page's theme, and "Swash" in iridescent lettering. Both mount when the section nears the
-  // viewport. Without WebGL2 the CSS gradient and the plain word stay.
+  // page's theme, and "Swash" written on by a pen, with a flourish under it (a swash). Both mount
+  // when the section nears the viewport. Without WebGL2 the CSS gradient stays, and under Reduce
+  // Motion the plain word does.
 
   type Theme = 'light' | 'dark';
   const BACKDROP = 'noise-grain-bg';
@@ -28,13 +29,6 @@
     },
   };
 
-  /** The wordmark as the effect's text input: white letters on transparent, in an italic serif. */
-  const WORDMARK =
-    'data:image/svg+xml;charset=utf-8,' +
-    encodeURIComponent(
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 256" width="640" height="256"><text x="320" y="128" dy="0.33em" text-anchor="middle" font-family="'New York', 'Iowan Old Style', Georgia, 'Times New Roman', serif" font-style="italic" font-weight="800" font-size="190" fill="#fff">Swash</text></svg>`,
-    );
-
   let { children }: { children?: Snippet } = $props();
 
   let host: HTMLElement;
@@ -53,6 +47,9 @@
     let gone = false;
     const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+    /** The page's ink colour as channels 0 to 1. */
+    const ink = () =>
+      getComputedStyle(titleHost).color.match(/[\d.]+/g)?.slice(0, 3).map((n) => Number(n) / 255) ?? [0, 0, 0];
     const backdropValues = () => ({ ...BACKDROP_VALUES[pageTheme()], ...(still ? { uSpeed: 0 } : {}) });
 
     async function mount() {
@@ -77,12 +74,15 @@
         console.warn('Swash: no WebGL2, keeping the still backdrop.', err);
         return;
       }
+      if (still) return;
       try {
-        const effect = await loadEffect('iridescent-text');
+        // The word as one pen stroke, in Flair's joined-up handwriting.
+        const { textPath } = await import('@pixerate/flair/vector');
         if (gone) return;
-        title = mountEffect(titleHost, effect, {
-          values: { uText: WORDMARK, uSize: 0.96, uHalo: 0.4, ...(still ? { uSpeed: 0 } : {}) },
+        title = mountEffect(titleHost, 'signature', {
+          values: { path: textPath('Swash', { font: 'script' }), ink: ink(), width: 2.4 } as never,
           className: 'absolute inset-0 h-full w-full',
+          loop: false,
         });
         await title.ready();
         titleShown = true;
@@ -103,6 +103,7 @@
 
     const themeWatch = new MutationObserver(() => {
       backdrop?.setValues(backdropValues());
+      title?.setValues({ ink: ink() } as never);
     });
     themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
@@ -171,6 +172,7 @@
   .live {
     position: absolute;
     inset: 0;
+    color: var(--ink);
     transition: opacity 0.7s ease;
   }
   .plain {
@@ -178,13 +180,10 @@
     place-items: center;
     font-family: 'New York', ui-serif, 'Iowan Old Style', Georgia, serif;
     font-style: italic;
-    font-weight: 800;
+    font-weight: 600;
     font-size: clamp(4rem, 16vw, 8.5rem);
     line-height: 1;
-    background: linear-gradient(100deg, #ee1d7e, #e12afb 45%, #8e51ff 75%, #4338ca);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
+    color: var(--ink);
   }
   .plain.hidden,
   .live {
