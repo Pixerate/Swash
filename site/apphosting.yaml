@@ -1,0 +1,18 @@
+# Settings for Cloud Run via Firebase App Hosting (backend "swash-web", root directory "site")
+runConfig:
+  minInstances: 0
+  maxInstances: 10
+  concurrency: 80
+  cpu: 1
+  memoryMiB: 512
+
+env:
+  - variable: HOST
+    value: "0.0.0.0"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: PORT
+    value: "8080"
+    availability:
+      - RUNTIME

@@ -1,0 +1,28 @@
+{
+  "name": "swash-site",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The marketing site for Swash, published at swash.pixerate.com.",
+  "scripts": {
+    "dev": "astro dev",
+    "start": "node dist/server/entry.mjs",
+    "build": "astro build",
+    "typecheck": "astro sync && tsc --noEmit",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@apphosting/astro-adapter": "^0.0.2",
+    "@astrojs/node": "^11.1.9",
+    "@astrojs/svelte": "^9.1.2",
+    "@pixerate/flair": "^0.132.0",
+    "@slopmachine/svelte": "^0.9.0",
+    "astro": "^7.4.4",
+    "svelte": "^5.57.2",
+    "tailwindcss": "^3.4.17"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^5.7.0"
+  }
+}
