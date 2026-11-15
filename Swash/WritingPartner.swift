@@ -128,6 +128,15 @@ nonisolated enum WritingPartnerDefaults {
         }
     }
 
+    /// Whether Quick Note offers a tidy-up on pause or save (#108), with Pixerate. Unset, it's on.
+    static let quickNoteTidy = "writingPartnerQuickNoteTidy"
+    /// The undo action name of an accepted Quick Note tidy-up (#108).
+    static let tidyActionName = "Tidy"
+
+    static func quickNoteTidy(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: quickNoteTidy) == nil ? true : defaults.bool(forKey: quickNoteTidy)
+    }
+
     static func mode(_ defaults: UserDefaults = .standard) -> WritingPartnerMode {
         defaults.string(forKey: mode).flatMap(WritingPartnerMode.init(rawValue:)) ?? .off
     }

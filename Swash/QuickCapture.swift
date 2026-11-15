@@ -26,6 +26,8 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
 
     /// The most recently focused document, set by `ContentView`.
     var target: QuickCaptureTarget?
+    /// Active tidy session for the currently displayed Quick Note panel.
+    private(set) var session: QuickNoteTidySession?
     private var panel: NSPanel?
 
     var isVisible: Bool { panel?.isVisible == true }
@@ -38,8 +40,11 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
         let panel = self.panel ?? makePanel()
         self.panel = panel
         let targetTitle = target?.window != nil ? target?.title : nil
+        let session = QuickNoteTidySession()
+        self.session = session
         panel.contentView = NSHostingView(rootView: QuickCaptureView(
             targetTitle: targetTitle,
+            session: session,
             onCreate: { [weak self] text in
                 self?.close()
                 NSApp.activate()
@@ -99,19 +104,41 @@ struct QuickCaptureView: View {
     let onAppend: (String) -> Void
     let onCancel: () -> Void
 
-    @State private var text = ""
-    @FocusState private var focused: Bool
+    @State private var session: QuickNoteTidySession
 
-    private var isEmpty: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    init(
+        targetTitle: String?,
+        session: QuickNoteTidySession? = nil,
+        onCreate: @escaping (String) -> Void,
+        onAppend: @escaping (String) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.targetTitle = targetTitle
+        self.onCreate = onCreate
+        self.onAppend = onAppend
+        self.onCancel = onCancel
+        let resolvedSession = session ?? QuickNoteTidySession()
+        resolvedSession.onCreate = onCreate
+        resolvedSession.onAppend = onAppend
+        _session = State(initialValue: resolvedSession)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Quick Note", systemImage: "square.and.pencil")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.secondary)
+            HStack {
+                Label("Quick Note", systemImage: "square.and.pencil")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.secondary)
+                Spacer()
+                if session.isChecking {
+                    Label("Tidying…", systemImage: "sparkles")
+                        .font(.system(size: 11))
+                        .foregroundColor(.purple.opacity(0.85))
+                }
+            }
 
             ZStack(alignment: .topLeading) {
-                if text.isEmpty {
+                if session.text.isEmpty {
                     Text("Write in Markdown…")
                         .font(.system(size: 14))
                         .foregroundColor(.secondary.opacity(0.7))
@@ -119,36 +146,179 @@ struct QuickCaptureView: View {
                         .padding(.leading, 5)
                         .allowsHitTesting(false)
                 }
-                TextEditor(text: $text)
-                    .font(.system(size: 14))
-                    .scrollContentBackground(.hidden)
-                    .focused($focused)
+                QuickNoteTextView(session: session)
+            }
+
+            if let proposal = session.proposal {
+                QuickNoteTidyPromptView(
+                    proposal: proposal,
+                    onAccept: { session.acceptProposal() },
+                    onDismiss: { session.dismissProposal() }
+                )
             }
 
             HStack {
-                Text("esc to dismiss")
+                Text(session.proposal == nil ? "esc to dismiss" : "esc to dismiss tidy")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                 Spacer()
                 if let title = targetTitle {
-                    Button("Add to “\(title)”") { onAppend(text) }
-                        .keyboardShortcut(.return, modifiers: [.command, .option])
-                        .disabled(isEmpty)
-                        .help("Append the note to the end of \(title) (⌥⌘↩)")
+                    Button("Add to “\(title)”") {
+                        Task { await session.save(.appendToTarget) }
+                    }
+                    .keyboardShortcut(.return, modifiers: [.command, .option])
+                    .disabled(session.isEmpty)
+                    .help("Append the note to the end of \(title) (⌥⌘↩)")
                 }
-                Button("New Document") { onCreate(text) }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isEmpty)
-                    .help("Open the note as a new document (⌘↩)")
+                Button("New Document") {
+                    Task { await session.save(.createDocument) }
+                }
+                .keyboardShortcut(.return, modifiers: .command)
+                .buttonStyle(.borderedProminent)
+                .disabled(session.isEmpty)
+                .help("Open the note as a new document (⌘↩)")
             }
         }
         .padding(16)
         .padding(.top, 6)
-        .frame(width: 520, height: 240)
+        .frame(width: 520, height: session.proposal == nil ? 240 : 320)
         .background(.regularMaterial)
-        .onExitCommand(perform: onCancel)
-        .onAppear { focused = true }
+        .onExitCommand {
+            if session.proposal != nil {
+                session.dismissProposal()
+            } else {
+                onCancel()
+            }
+        }
+    }
+}
+
+/// Inline "Tidy" prompt shown when a Quick Note is paused or saved (#108).
+/// Previews the proposed changes as a diff, never applying them silently.
+/// Accept applies all changes as one undo step ("Tidy"); Dismiss leaves the note alone.
+struct QuickNoteTidyPromptView: View {
+    let proposal: QuickNoteTidyProposal
+    let onAccept: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Label("Tidy", systemImage: "sparkles")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.purple)
+                Text(proposal.why)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Button("Dismiss", action: onDismiss)
+                    .controlSize(.small)
+                    .accessibilityLabel("Dismiss tidy-up")
+                Button("Accept", action: onAccept)
+                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
+                    .tint(.purple)
+                    .accessibilityLabel("Accept tidy-up")
+            }
+
+            ScrollView(.vertical) {
+                diffText
+                    .font(.system(size: 12))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 54)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.purple.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.purple.opacity(0.28), lineWidth: 1)
+                )
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Tidy proposal: \(proposal.why)")
+    }
+
+    private var diffText: Text {
+        var combined = Text("")
+        for segment in proposal.diff {
+            switch segment.kind {
+            case .unchanged:
+                combined = combined + Text(segment.text).foregroundColor(.primary)
+            case .removed:
+                combined = combined + Text(segment.text).strikethrough().foregroundColor(.secondary)
+            case .inserted:
+                combined = combined + Text(segment.text).bold().foregroundColor(.purple)
+            }
+        }
+        return combined
+    }
+}
+
+/// AppKit text view for Quick Note that shares `QuickNoteTidySession.undoManager` so accepting
+/// a tidy-up proposal is always one undo step (⌘Z).
+struct QuickNoteTextView: NSViewRepresentable {
+    let session: QuickNoteTidySession
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(session: session)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollablePlainDocumentContentTextView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        if let textView = scrollView.documentView as? NSTextView {
+            textView.drawsBackground = false
+            textView.font = .systemFont(ofSize: 14)
+            textView.textColor = .labelColor
+            textView.isRichText = false
+            textView.allowsUndo = true
+            textView.isAutomaticQuoteSubstitutionEnabled = false
+            textView.isAutomaticDashSubstitutionEnabled = false
+            textView.textContainerInset = NSSize(width: 0, height: 1)
+            textView.string = session.text
+            textView.delegate = context.coordinator
+            session.textView = textView
+            DispatchQueue.main.async {
+                textView.window?.makeFirstResponder(textView)
+            }
+        }
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        context.coordinator.session = session
+        guard let textView = nsView.documentView as? NSTextView else { return }
+        session.textView = textView
+        if textView.string != session.text {
+            textView.string = session.text
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var session: QuickNoteTidySession
+
+        init(session: QuickNoteTidySession) {
+            self.session = session
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            MainActor.assumeIsolated {
+                session.userDidEditText(textView.string)
+            }
+        }
+
+        func undoManager(for view: NSTextView) -> UndoManager? {
+            MainActor.assumeIsolated {
+                session.undoManager
+            }
+        }
     }
 }
 

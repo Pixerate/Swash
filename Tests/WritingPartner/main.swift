@@ -842,5 +842,113 @@ do {
     }
 }
 
+// Quick Note tidy-up (#108): the tidy-up comes from Pixerate (stubbed here with fixed answers); Swash
+// proposes it on pause or save, previews it, applies it as one undo step, or leaves the note alone
+do {
+    nonisolated final class ManualClock: @unchecked Sendable {
+        var now = Date(timeIntervalSince1970: 1_700_000_000)
+        func advance(_ seconds: TimeInterval) { now = now.addingTimeInterval(seconds) }
+    }
+    /// A server that tidies the notes it knows (by their whole text) and leaves others alone.
+    func server(_ tidied: [String: String]) -> StubWritingBandleader {
+        StubWritingBandleader { request in
+            guard let result = tidied[request.paragraph] else { return nil }
+            return JazzTextLeadResponse(
+                genre: .notes, palette: [],
+                suggestions: [JazzTextSuggestion(kind: .list, range: JazzTextRange(start: 0, end: (request.paragraph as NSString).length),
+                                                 replacement: result, why: "Tidy")],
+                why: "A rough note")
+        }
+    }
+
+    let defaults = UserDefaults(suiteName: "swash-quick-note-tidy-tests")!
+    defaults.removePersistentDomain(forName: "swash-quick-note-tidy-tests")
+
+    // 1. Settings: on by default, and it can be turned off on its own
+    check(WritingPartnerDefaults.quickNoteTidy(defaults), "Quick Note tidy-up is on by default")
+    defaults.set(false, forKey: WritingPartnerDefaults.quickNoteTidy)
+    check(!WritingPartnerDefaults.quickNoteTidy(defaults), "Quick Note tidy-up can be turned off")
+    defaults.removeObject(forKey: WritingPartnerDefaults.quickNoteTidy)
+
+    // 2. Without Pixerate there's no tidy-up: no local rules (the subscription's, #61)
+    check(WritingBandleaderFactory.currentBandleader() is NoneWritingBandleader, "No Pixerate, no tidy-up")
+
+    // 3. The proposal and its diff preview
+    let rough = "launch checklist\nbuy coffee"
+    let tidy = "# Launch checklist\n- [ ] Buy coffee"
+    let response = JazzTextLeadResponse(genre: .notes, palette: [],
+                                        suggestions: [JazzTextSuggestion(kind: .list, range: JazzTextRange(start: 0, end: (rough as NSString).length), replacement: tidy, why: "Tidy")],
+                                        why: "")
+    if let proposal = QuickNoteTidyProposal.from(originalText: rough, response: response) {
+        check(proposal.tidiedText == tidy, "The proposal applies the server's suggestion: \(proposal.tidiedText)")
+        check(proposal.diff.filter { $0.kind != .inserted }.map(\.text).joined() == rough, "The diff reconstructs the note")
+        check(proposal.diff.filter { $0.kind != .removed }.map(\.text).joined() == tidy, "The diff reconstructs the tidied note")
+    } else {
+        check(false, "Expected a proposal")
+    }
+
+    // 4. Pause: shown, never applied silently; accept is one undo step
+    let clock = ManualClock()
+    let note = "sprint notes\nbuy milk\ncall alex at 4pm"
+    let tidied = "# Sprint notes\n- [ ] Buy milk\n- [ ] Call alex at 4:00 PM"
+    let stub = server([note: tidied])
+    let session = QuickNoteTidySession(bandleader: stub, defaults: defaults, pauseDelay: 1.2, clock: { clock.now })
+    session.type("sprint notes\nbuy milk")
+    clock.advance(0.6)
+    check(await session.checkPause() == nil, "No proposal before the pause")
+    session.type(note)
+    clock.advance(0.8)
+    check(await session.checkPause() == nil, "Typing backs off the pause")
+    clock.advance(0.5)
+    check(await session.checkPause() != nil && session.proposal != nil, "A pause brings a proposal")
+    check(stub.requests.count == 1, "Pixerate is asked once")
+    check(session.text == note, "The proposal is shown, never applied silently")
+    session.acceptProposal()
+    check(session.proposal == nil && session.text == tidied, "Accept applies the tidy-up: \(session.text)")
+    check(session.canUndo && session.undoActionName == WritingPartnerDefaults.tidyActionName, "Accept is one Tidy undo step")
+    session.undo()
+    check(session.text == note, "One undo takes the whole tidy-up back")
+    check(session.canUndo && session.undoActionName == "Typing", "The typing before it is its own step")
+    session.redo()
+    check(session.text == tidied, "One redo puts it back")
+
+    // 5. Save: a proposal first; dismiss leaves the note alone and doesn't ask again
+    let untidied = "todo: send invoice\nreview pr at 2pm"
+    let saveStub = server([untidied: "- [ ] Send invoice\n- [ ] Review PR at 2:00 PM"])
+    var created: [String] = []
+    let saveSession = QuickNoteTidySession(bandleader: saveStub, defaults: defaults, pauseDelay: 1.2, clock: { clock.now })
+    saveSession.onCreate = { created.append($0) }
+    saveSession.type(untidied)
+    check(!(await saveSession.save(.createDocument)) && created.isEmpty && saveSession.proposal != nil, "Save shows the proposal before saving")
+    saveSession.dismissProposal()
+    check(saveSession.proposal == nil && saveSession.text == untidied, "Dismiss leaves the note alone")
+    check(saveSession.undoActionName != WritingPartnerDefaults.tidyActionName, "Dismiss adds no Tidy step")
+    check(await saveSession.save(.createDocument) && created == [untidied], "Saving again keeps the note as it was")
+    check(saveStub.requests.count == 1, "A dismissed note isn't sent again")
+
+    // 6. Save after accept appends the tidied note
+    var appended: [String] = []
+    let appendSession = QuickNoteTidySession(bandleader: server(["first item\nsecond item": "- First item\n- Second item"]), defaults: defaults,
+                                             pauseDelay: 1.2, clock: { clock.now })
+    appendSession.onAppend = { appended.append($0) }
+    appendSession.type("first item\nsecond item")
+    check(!(await appendSession.save(.appendToTarget)) && appendSession.proposal != nil, "Append save shows the proposal")
+    appendSession.acceptProposal()
+    check(await appendSession.save(.appendToTarget) && appended == ["- First item\n- Second item"], "Append saves the tidied note")
+
+    // 7. Off in Settings: pause and save never ask Pixerate
+    defaults.set(false, forKey: WritingPartnerDefaults.quickNoteTidy)
+    let offStub = server([:])
+    var createdOff: [String] = []
+    let offSession = QuickNoteTidySession(bandleader: offStub, defaults: defaults, pauseDelay: 1.2, clock: { clock.now })
+    offSession.onCreate = { createdOff.append($0) }
+    offSession.type("todo: buy milk")
+    clock.advance(2.0)
+    check(await offSession.checkPause() == nil, "No tidy-up on pause when it's off")
+    check(await offSession.save(.createDocument) && createdOff == ["todo: buy milk"], "Save goes straight through when it's off")
+    check(offStub.requests.isEmpty, "Pixerate is never asked when it's off")
+    defaults.removePersistentDomain(forName: "swash-quick-note-tidy-tests")
+}
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
