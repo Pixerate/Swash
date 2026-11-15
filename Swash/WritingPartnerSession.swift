@@ -258,7 +258,7 @@ final class WritingPartnerSession {
         let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
         guard selection.length == 0 else { return }
         let stats = WritingPartnerStats.load(defaults)
-        let spellingOn = WritingPartnerDefaults.spelling(defaults, systemDefault: NSSpellChecker.isAutomaticSpellingCorrectionEnabled)
+        let spellingOn = WritingPartnerDefaults.spelling(defaults)
         let isActive: (PunctuationRule) -> Bool = { $0 == .spelling ? spellingOn : stats.isActive($0) }
         let checker = NSSpellChecker.shared
         let tag = textView.spellCheckerDocumentTag

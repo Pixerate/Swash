@@ -274,7 +274,7 @@ private struct UpdatesSettingsView: View {
 private struct WritingPartnerSettingsView: View {
     @AppStorage(WritingPartnerDefaults.mode) private var mode: WritingPartnerMode = .off
     @State private var stats = WritingPartnerStats.load()
-    @State private var spellingOn = WritingPartnerDefaults.spelling(systemDefault: NSSpellChecker.isAutomaticSpellingCorrectionEnabled)
+    @State private var spellingOn = WritingPartnerDefaults.spelling()
 
     var body: some View {
         Form {
@@ -291,7 +291,7 @@ private struct WritingPartnerSettingsView: View {
             } header: {
                 Text("Writing Partner")
             } footer: {
-                Text("When you finish a word, Swash gives it a capital or an apostrophe it needs (i → I, dont → don't, a capital to start a sentence), and pressing Return at the end of a sentence adds its full stop or question mark. With Correct spelling on, it also fixes misspellings as macOS's autocorrect would, in place of it (it starts out matching your Mac’s “Correct spelling automatically”). Each fix is its own step: press ⌘Z to undo it, and an undone spelling fix leaves that word alone. Code, math, links' addresses and tables are never changed, and nothing leaves this Mac.")
+                Text("When you finish a word, Swash gives it a capital, an apostrophe or a comma it needs (i → I, dont → don't, id like → I'd like, ok → OK, a capital to start a sentence, a comma before “but” that starts a new clause), and pressing Return at the end of a sentence adds its full stop or question mark. With Correct spelling on, it also fixes misspellings, in place of macOS's autocorrect. Each fix is its own step: press ⌘Z to undo it, and an undone spelling fix leaves that word alone. Code, math, links' addresses and tables are never changed, and nothing leaves this Mac.")
                     .settingsFooterStyle()
             }
 

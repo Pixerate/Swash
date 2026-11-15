@@ -33,16 +33,16 @@ nonisolated enum WritingPartnerMode: String, CaseIterable, Identifiable, Sendabl
 nonisolated enum WritingPartnerDefaults {
     static let mode = "writingPartnerMode"
     static let stats = "writingPartnerStats"
-    /// Whether the partner corrects spelling. Unset, it follows the system's "Correct spelling
-    /// automatically" (the editor's own autocorrect is off while the partner is on).
+    /// Whether the partner corrects spelling. Unset, it's on: the partner's fixes are its own undo
+    /// steps and learn from undo, so it doesn't follow macOS's "Correct spelling automatically",
+    /// which people often turn off for being hard to undo (#98).
     static let spelling = "writingPartnerSpelling"
     /// The undo action name of the partner's edits.
     static let actionName = "Punctuation"
 
-    /// Whether the partner corrects spelling: the stored choice, else `systemDefault` (the system's
-    /// "Correct spelling automatically").
-    static func spelling(_ defaults: UserDefaults = .standard, systemDefault: Bool) -> Bool {
-        defaults.object(forKey: spelling) == nil ? systemDefault : defaults.bool(forKey: spelling)
+    /// Whether the partner corrects spelling: the stored choice, else on.
+    static func spelling(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: spelling) == nil ? true : defaults.bool(forKey: spelling)
     }
 
     static func mode(_ defaults: UserDefaults = .standard) -> WritingPartnerMode {
@@ -62,6 +62,10 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
     case terminalPunctuation
     /// A misspelt word, as the system's spell checker would autocorrect it (`becuase` → `because`).
     case spelling
+    /// Words always written in capitals: `ok` → `OK`.
+    case capitals
+    /// A comma before `but` when it joins two clauses: "It works, but it's slow".
+    case clauseComma
 
     var title: String {
         switch self {
@@ -70,6 +74,8 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
         case .sentenceCase: return "Capitals at the start of sentences"
         case .terminalPunctuation: return "Full stops and question marks"
         case .spelling: return "Spelling"
+        case .capitals: return "Capitals in OK"
+        case .clauseComma: return "Commas before “but”"
         }
     }
 }
@@ -177,6 +183,14 @@ nonisolated enum PunctuateVoice {
         if isActive(.contraction), let edit = itsBefore(word: word, at: start, ns: ns, document: document) {
             edits.append(edit)
         }
+        // `id` and `ill` used as a pronoun and verb ("id like", "ill be") are "I'd" and "I'll"
+        if isActive(.contraction), let edit = pronounContractionBefore(word: word, at: start, ns: ns, document: document) {
+            edits.append(edit)
+        }
+        // "but" starting a new clause takes a comma after the clause before it
+        if flavor != .slack, isActive(.clauseComma), let edit = commaBeforeBut(word: word, at: start, ns: ns, document: document) {
+            edits.append(edit)
+        }
         // Enter at the end of a line ends its sentence: give it a full stop or a question mark
         if typed == newline, flavor != .slack, isActive(.terminalPunctuation),
            let edit = terminalPunctuation(ns: ns, lineEnd: boundary, document: document, enterEndedLine: enterEndedLine) {
@@ -243,8 +257,12 @@ nonisolated enum PunctuateVoice {
     private static let pronounForms: [String: String] = ["i": "I", "i'm": "I'm", "i've": "I've", "i'd": "I'd", "i'll": "I'll",
                                                          "i’m": "I’m", "i’ve": "I’ve", "i’d": "I’d", "i’ll": "I’ll"]
 
+    /// Words always written in capitals. Only lowercase spellings are changed (`Ok` and `oK` might be names).
+    static let capitalWords: [String: String] = ["ok": "OK"]
+
     private static func fixedWord(_ word: String, flavor: MarkdownFlavor, isActive: (PunctuationRule) -> Bool) -> (word: String, rule: PunctuationRule)? {
         if isActive(.pronounI), let fixed = pronounForms[word] { return (fixed, .pronounI) }
+        if flavor != .slack, isActive(.capitals), let fixed = capitalWords[word] { return (fixed, .capitals) }
         guard isActive(.contraction) else { return nil }
         let lower = word.lowercased()
         guard let fixed = contractions[lower] else { return nil }
@@ -278,6 +296,76 @@ nonisolated enum PunctuateVoice {
         let fixed: String
         if previous == "its" { fixed = "it's" } else if previous == "ITS" { fixed = "IT'S" } else if previous == "Its" { fixed = "It's" } else { return nil }
         return PunctuationEdit(range: previousRange, replacement: fixed, rules: [.contraction])
+    }
+
+    /// The word before the one at `start`, when a single space separates them, and the line up to
+    /// the end of `word` with where the earlier word is in it.
+    private static func previousWord(before start: Int, word: String, ns: NSString)
+        -> (range: NSRange, text: String, line: String, offsetInLine: Int)? {
+        guard start >= 2, ns.character(at: start - 1) == 0x20 else { return nil }
+        var previousStart = start - 1
+        while previousStart > 0, isWordCharacter(ns.character(at: previousStart - 1)) { previousStart -= 1 }
+        let range = NSRange(location: previousStart, length: start - 1 - previousStart)
+        guard range.length > 0 else { return nil }
+        var lineStart = previousStart
+        while lineStart > 0, ns.character(at: lineStart - 1) != newline { lineStart -= 1 }
+        let line = ns.substring(with: NSRange(location: lineStart, length: start + (word as NSString).length - lineStart))
+        return (range, ns.substring(with: range), line, previousStart - lineStart)
+    }
+
+    /// The tagger's word class of the word at UTF-16 `offset` in `line`.
+    private static func lexicalClass(at offset: Int, in line: String) -> NLTag? {
+        let tagger = NLTagger(tagSchemes: [.lexicalClass])
+        tagger.string = line
+        guard let index = Range(NSRange(location: offset, length: 0), in: line)?.lowerBound else { return nil }
+        return tagger.tag(at: index, unit: .word, scheme: .lexicalClass).0
+    }
+
+    /// `id` and `ill` are words ("the id field", "I feel ill") and missed apostrophes ("id like",
+    /// "ill be there"). Once the next word is finished, the tagger reads the earlier one in its
+    /// line: as a pronoun or a verb it's "I'd" or "I'll"; as a noun or adjective it stays.
+    static func pronounContractionBefore(word: String, at start: Int, ns: NSString, document: MarkdownDocument) -> PunctuationEdit? {
+        guard let previous = previousWord(before: start, word: word, ns: ns) else { return nil }
+        let forms = ["id": "I'd", "Id": "I'd", "ill": "I'll", "Ill": "I'll"]
+        guard let fixed = forms[previous.text], isProse(previous.range, ns: ns, document: document),
+              let tag = lexicalClass(at: previous.offsetInLine, in: previous.line), tag == .pronoun || tag == .verb else { return nil }
+        return PunctuationEdit(range: previous.range, replacement: fixed, rules: [.contraction])
+    }
+
+    /// Words before "but" that make it mean "except" ("nothing but the truth"): no comma.
+    private static let exceptBefore: Set<String> = ["nothing", "anything", "everything", "all", "none", "nobody", "anyone",
+                                                     "everyone", "no", "any", "every", "last", "next", "not", "only"]
+
+    /// "but" starts a new clause when the word after it begins one (a pronoun, article, preposition
+    /// or adverb: "but it", "but the", "but for now") and the clause before it has a verb and at
+    /// least two words. "small but mighty" and "not red but blue" get no comma.
+    static func commaBeforeBut(word: String, at start: Int, ns: NSString, document: MarkdownDocument) -> PunctuationEdit? {
+        guard let but = previousWord(before: start, word: word, ns: ns), but.text.lowercased() == "but",
+              word.lowercased() != "also", isProse(but.range, ns: ns, document: document),
+              let before = previousWord(before: but.range.location, word: but.text, ns: ns),
+              !exceptBefore.contains(before.text.lowercased()) else { return nil }
+        // The clause before "but": back to the start of its sentence or line
+        var clauseStart = before.range.location
+        while clauseStart > 0 {
+            let c = ns.character(at: clauseStart - 1)
+            if c == newline || c == 0x2E || c == 0x3F || c == 0x21 || c == 0x3B || c == 0x3A || c == 0x2C { break }
+            clauseStart -= 1
+        }
+        let clause = ns.substring(with: NSRange(location: clauseStart, length: NSMaxRange(before.range) - clauseStart))
+        let tagger = NLTagger(tagSchemes: [.lexicalClass])
+        tagger.string = clause
+        var words = 0
+        var hasVerb = false
+        tagger.enumerateTags(in: clause.startIndex..<clause.endIndex, unit: .word, scheme: .lexicalClass,
+                             options: [.omitWhitespace, .omitPunctuation]) { tag, _ in
+            words += 1
+            if tag == .verb { hasVerb = true }
+            return true
+        }
+        guard words >= 2, hasVerb,
+              let tag = lexicalClass(at: but.offsetInLine + but.range.length + 1, in: but.line),
+              [.pronoun, .determiner, .preposition, .adverb].contains(tag) else { return nil }
+        return PunctuationEdit(range: NSRange(location: NSMaxRange(before.range), length: 0), replacement: ",", rules: [.clauseComma])
     }
 
     // MARK: Where prose is
