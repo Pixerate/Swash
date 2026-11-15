@@ -17,6 +17,7 @@ jobs:
   release:
     name: Build, Package & Release
     runs-on: macos-26
+    timeout-minutes: 90
     env:
       # Secrets can't be read in a step's `if`, so expose only whether this one is set.
       HAS_PIXERATE_PACKAGES_TOKEN: ${{ secrets.PIXERATE_PACKAGES_TOKEN != '' }}
@@ -80,15 +81,18 @@ jobs:
           fi
 
           echo "Importing Apple Code Signing Certificate..."
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security default-keychain -s $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
-          echo "$MACOS_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
-          security import $CERTIFICATE_PATH -k $KEYCHAIN_PATH -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign -T /usr/bin/xcodebuild
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          CERTIFICATE_PATH="$RUNNER_TEMP/certificate.p12"
+          echo "$MACOS_CERTIFICATE" | base64 --decode -o "$CERTIFICATE_PATH"
+          security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign -T /usr/bin/xcodebuild -T /usr/bin/security
+          rm -f "$CERTIFICATE_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
           IDENTITY="$EXPLICIT_IDENTITY"
           if [ -z "$IDENTITY" ]; then
@@ -99,21 +103,8 @@ jobs:
           echo "CODE_SIGN_IDENTITY=$IDENTITY" >> $GITHUB_ENV
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
 
-      # Packages/PixerateStickers is an MIT-safe stub with no artwork, so anyone can build Swash.
-      # Official builds swap in the private Pixerate/stickers package when the token is set (#62).
-      # Without the secret this step is skipped and the build keeps the stub.
-      - name: Inject Proprietary Stickers
-        if: (steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch') && env.HAS_PIXERATE_PACKAGES_TOKEN == 'true'
-        env:
-          PIXERATE_PACKAGES_TOKEN: ${{ secrets.PIXERATE_PACKAGES_TOKEN }}
-        run: |
-          rm -rf Packages/PixerateStickers
-          git clone --depth 1 --branch v0.9.0 \
-            "https://x-access-token:${PIXERATE_PACKAGES_TOKEN}@github.com/Pixerate/stickers.git" \
-            Packages/PixerateStickers
-          test -d Packages/PixerateStickers/swift/Sources/PixerateStickers/Resources/Stickers.xcassets
-
       - name: Build macOS App
+        timeout-minutes: 30
         if: steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch'
         run: |
           VERSION="${{ env.VERSION }}"
@@ -280,11 +271,32 @@ jobs:
             Swash-macOS.zip
             appcast.xml
 
+      # Packages/PixerateStickers is an MIT-safe stub with no artwork, so anyone can build Swash.
+      # Only the iOS App Store build swaps in the private Pixerate/stickers package (#62), so this
+      # runs after the macOS app is built and published: the open-source macOS release must never
+      # see the private package. Without the secret this step is skipped and iOS keeps the stub.
+      # Only the Swift package is copied in, never the checkout's .git (its remote holds the token).
+      - name: Inject Proprietary Stickers
+        if: (steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch') && env.HAS_PIXERATE_PACKAGES_TOKEN == 'true'
+        env:
+          PIXERATE_PACKAGES_TOKEN: ${{ secrets.PIXERATE_PACKAGES_TOKEN }}
+        run: |
+          rm -rf "$RUNNER_TEMP/stickers" Packages/PixerateStickers
+          git clone --depth 1 --branch v0.9.0 \
+            "https://x-access-token:${PIXERATE_PACKAGES_TOKEN}@github.com/Pixerate/stickers.git" \
+            "$RUNNER_TEMP/stickers"
+          mkdir -p Packages/PixerateStickers
+          cp "$RUNNER_TEMP/stickers/Package.swift" Packages/PixerateStickers/
+          cp -R "$RUNNER_TEMP/stickers/swift" Packages/PixerateStickers/
+          rm -rf "$RUNNER_TEMP/stickers"
+          test -d Packages/PixerateStickers/swift/Sources/PixerateStickers/Resources/Stickers.xcassets
+
       # iPhone and iPad. These run after the macOS release is published, so an iOS failure can't
       # hold it up. Without App Store Connect secrets the archive is unsigned: it checks that the
-      # iOS release build works (with the real sticker pack when it was injected above). With them,
-      # Xcode signs automatically through the API key and the build is uploaded to TestFlight.
+      # iOS release build works (with the real sticker pack when it was injected just above). With
+      # them, Xcode signs automatically through the API key and the build is uploaded to TestFlight.
       - name: Archive iOS App
+        timeout-minutes: 30
         if: steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch'
         env:
           APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
