@@ -1,5 +1,5 @@
 {
-  "originHash" : "d00799b475a373f879f3208a9f38c5170abe12463c4c907c2ad4932f8647c25a",
+  "originHash" : "c8f938956fbeb23dc20b7f822a63acfc21d55597cd84df74e761cc51414f8c43",
   "pins" : [
     {
       "identity" : "editor",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Pixerate/flair",
       "state" : {
-        "revision" : "a6bb761f71ae97cd7956d058978fd19dfc21b908",
-        "version" : "0.135.1"
+        "revision" : "13d43b81ae1339f43af3e31ac042d17926219800",
+        "version" : "0.135.2"
       }
     },
     {

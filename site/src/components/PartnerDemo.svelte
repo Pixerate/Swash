@@ -61,13 +61,6 @@
   let page: HTMLElement;
 
   let overlay: TextTreatmentOverlay | null = null;
-  /**
-   * A second overlay that plays only the `typing` stage, in `soft-sweep`. That stage is the same as
-   * `ribbon-curl`'s (the old word covered, a tint, the typed word, the caret) without the wisp of
-   * ribbon that trails the caret: the ribbon should arrive when the fix has landed, not while the
-   * word is still changing.
-   */
-  let typingOverlay: TextTreatmentOverlay | null = null;
   let flair: typeof import('@pixerate/flair/embed') | null = null;
   /** Flair once it has loaded, waiting to be used from the start of the next run. */
   let arrived: typeof import('@pixerate/flair/embed') | null = null;
@@ -82,7 +75,6 @@
     if (!arrived || overlay) return;
     flair = arrived;
     overlay = arrived.mountTextTreatment(page, TREATMENT, { values: treatmentValues() as never });
-    typingOverlay = arrived.mountTextTreatment(page, 'soft-sweep', { values: typingValues() as never });
   }
 
   let run = 0;
@@ -93,7 +85,6 @@
   const cssColor = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   /** The treatment's values for the page's theme: the partner's colour, and its frost for light or dark pages. */
   const treatmentValues = () => ({ color: cssColor('--partner'), darkTheme: isDark(), sparkles: 6, nameTag: false });
-  const typingValues = () => ({ color: cssColor('--partner'), nameTag: false });
 
   /** The partner's fix, drawn by the treatment over the word's own text. */
   async function fixWithTreatment(word: Word, l: number, w: number, alive: () => boolean) {
@@ -125,7 +116,8 @@
 
     // The new word is drawn over the old one, letter by letter, and only then written into the text.
     let typed = '';
-    const typing = (typingOverlay ?? overlay).play('typing', () => {
+    // The ribbon is not part of typing (Flair 0.135.2): it arrives when the fix has landed
+    const typing = overlay.play('typing', () => {
       const line = rects()[0];
       return {
         lines: rects(),
@@ -175,7 +167,6 @@
       if (!alive()) return;
       adopt();
       overlay?.clear();
-      typingOverlay?.clear();
       lines = fresh(false);
       fixes = 0;
       // The partner works through its fixes one at a time, behind the typing.
@@ -229,10 +220,7 @@
     // On a slow connection the demo starts without it after a few seconds, and takes it up on a later run
     flairSettled = Promise.race([loading, sleep(4000)]);
 
-    const themeWatch = new MutationObserver(() => {
-      overlay?.setValues(treatmentValues() as never);
-      typingOverlay?.setValues(typingValues() as never);
-    });
+    const themeWatch = new MutationObserver(() => overlay?.setValues(treatmentValues() as never));
     themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
     // Starts when it scrolls into view, and stops when it leaves.
@@ -242,7 +230,6 @@
         else {
           run++;
           overlay?.clear();
-          typingOverlay?.clear();
           lines = fresh(true);
           caret = null;
         }
@@ -256,7 +243,6 @@
       watch.disconnect();
       themeWatch.disconnect();
       overlay?.dispose();
-      typingOverlay?.dispose();
     };
   });
 </script>
