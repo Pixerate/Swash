@@ -38,6 +38,11 @@ nonisolated enum WritingPartnerDefaults {
     /// steps and learn from undo, so it doesn't follow macOS's "Correct spelling automatically",
     /// which people often turn off for being hard to undo (#98).
     static let spelling = "writingPartnerSpelling"
+    /// Typography switches (#104). Off unless turned on: Swash has never curled quotes in a
+    /// Markdown source, so turning it on by default would change how people's files are written.
+    static let curlyQuotes = "writingPartnerCurlyQuotes"
+    static let dashes = "writingPartnerDashes"
+    static let ellipses = "writingPartnerEllipses"
     /// The undo action name of the partner's edits.
     static let actionName = "Punctuation"
     /// How the partner's fixes look: the id of a Flair text treatment (#100).
@@ -55,6 +60,28 @@ nonisolated enum WritingPartnerDefaults {
     /// Whether the partner corrects spelling: the stored choice, else on.
     static func spelling(_ defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: spelling) == nil ? true : defaults.bool(forKey: spelling)
+    }
+
+    static func curlyQuotes(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: curlyQuotes)
+    }
+
+    static func dashes(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: dashes)
+    }
+
+    static func ellipses(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: ellipses)
+    }
+
+    static func isRuleEnabled(_ rule: PunctuationRule, _ defaults: UserDefaults = .standard) -> Bool {
+        switch rule {
+        case .spelling: return spelling(defaults)
+        case .curlyQuotes: return curlyQuotes(defaults)
+        case .dashes: return dashes(defaults)
+        case .ellipses: return ellipses(defaults)
+        default: return true
+        }
     }
 
     static func mode(_ defaults: UserDefaults = .standard) -> WritingPartnerMode {
@@ -84,6 +111,15 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
     case capitals
     /// A comma before `but` when it joins two clauses: "It works, but it's slow".
     case clauseComma
+    /// Straight quotes (`"…"`, `'…'`, `don't`) become curly (`“…”`, `‘…’`, `don’t`).
+    case curlyQuotes
+    /// `--` becomes an en dash (`–`) and `---` an em dash (`—`) in prose.
+    case dashes
+    /// `...` becomes an ellipsis (`…`).
+    case ellipses
+
+    /// Curly quotes, dashes and ellipses: each has its own switch, off unless turned on.
+    var isTypography: Bool { self == .curlyQuotes || self == .dashes || self == .ellipses }
 
     var title: String {
         switch self {
@@ -94,6 +130,9 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
         case .spelling: return "Spelling"
         case .capitals: return "Capitals in OK"
         case .clauseComma: return "Commas before “but”"
+        case .curlyQuotes: return "Curly quotes"
+        case .dashes: return "Dashes"
+        case .ellipses: return "Ellipses"
         }
     }
 }
@@ -179,6 +218,9 @@ nonisolated struct WritingPartnerStats: Codable, Equatable, Sendable {
         case .spelling: return "spelling"
         case .capitals: return "capitals"
         case .clauseComma: return "clause-comma"
+        case .curlyQuotes: return "curly-quotes"
+        case .dashes: return "dashes"
+        case .ellipses: return "ellipses"
         }
     }
 }
@@ -237,6 +279,9 @@ nonisolated extension PunctuationRule {
         case .capitals: self = .capitals
         case .clauseComma: self = .clauseComma
         case .spelling: self = .spelling
+        case .curlyQuotes: self = .curlyQuotes
+        case .dashes: self = .dashes
+        case .ellipses: self = .ellipses
         }
     }
 }

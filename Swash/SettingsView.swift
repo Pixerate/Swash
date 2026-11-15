@@ -276,6 +276,9 @@ private struct WritingPartnerSettingsView: View {
     @State private var stats = WritingPartnerStats.load()
     @State private var spellingOn = WritingPartnerDefaults.spelling()
     private var access: PixerateAccess = .shared
+    @AppStorage(WritingPartnerDefaults.curlyQuotes) private var curlyQuotes = false
+    @AppStorage(WritingPartnerDefaults.dashes) private var dashes = false
+    @AppStorage(WritingPartnerDefaults.ellipses) private var ellipses = false
 
     var body: some View {
         Form {
@@ -328,7 +331,19 @@ private struct WritingPartnerSettingsView: View {
             }
 
             Section {
-                ForEach(PunctuationRule.allCases.filter { $0 != .spelling }, id: \.self) { rule in
+                Toggle("Curly quotes", isOn: $curlyQuotes)
+                Toggle("Dashes", isOn: $dashes)
+                Toggle("Ellipses", isOn: $ellipses)
+            } header: {
+                Text("Typography")
+            } footer: {
+                Text("In prose only, never in code, math or links: straight quotes and apostrophes become curly (“no”, don’t), -- and --- between words become – and —, and ... becomes …. They change the characters in your Markdown file, so they're off unless you turn them on.")
+                    .settingsFooterStyle()
+            }
+            .disabled(mode == .off)
+
+            Section {
+                ForEach(PunctuationRule.allCases.filter { $0 != .spelling && (!$0.isTypography || WritingPartnerDefaults.isRuleEnabled($0)) }, id: \.self) { rule in
                     LabeledContent(rule.title) {
                         if stats.isActive(rule) {
                             Text("On")

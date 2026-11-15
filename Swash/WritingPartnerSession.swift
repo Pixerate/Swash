@@ -390,6 +390,11 @@ final class WritingPartnerSession {
         guard selection.length == 0 else { return }
         let stats = WritingPartnerStats.load(defaults)
         let spellingOn = WritingPartnerDefaults.spelling(defaults)
+        /// The rule's switch and what the partner has learned; the pause tier may hold rules back per paragraph below.
+        let ruleIsOn: (PunctuationRule) -> Bool = { rule in
+            if rule == .spelling { return spellingOn }
+            return WritingPartnerDefaults.isRuleEnabled(rule, self.defaults) && stats.isActive(rule)
+        }
         let checker = NSSpellChecker.shared
         let tag = textView.spellCheckerDocumentTag
         let spellingCorrection: (String, NSRange, String) -> String? = { _, range, text in
@@ -428,7 +433,7 @@ final class WritingPartnerSession {
                    settings.disabledRules.contains(rule) {
                     return false
                 }
-                return rule == .spelling ? spellingOn : stats.isActive(rule)
+                return ruleIsOn(rule)
             }
             let edits = PunctuateVoice.edits(text: text, boundary: boundary, document: document, flavor: flavor,
                                              enterEndedLine: pending.enterEndedLine, isActive: isActive,
