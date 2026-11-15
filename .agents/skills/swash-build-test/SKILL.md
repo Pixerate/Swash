@@ -77,6 +77,7 @@ The Format menu, shortcuts, bubble-menu labels and code languages come from the 
 ./scripts/run_agent_tools_tests.sh # agent tools (#49) called through a PixerateCore ToolRegistry
 ./scripts/run_account_tests.sh     # Pixerate account (#60): sign-in and the request gate, against a fake server
 ./scripts/run_writing_partner_tests.sh # writing partner (#61): the Punctuate voice's fixes as text is typed
+./scripts/run_writing_partner_eval.sh  # writing partner (#106): strip-and-restore corpus eval against baseline.json
 xcodebuild test -scheme Swash -destination "platform=iOS Simulator,name=iPhone 17" CODE_SIGNING_ALLOWED=NO  # iOS Edit Text editor (Tests/SwashiOSTests)
 ```
 

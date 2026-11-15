@@ -101,6 +101,10 @@ expect("Tag #dont here ", "Tag #dont here ")
 expect("A file_dont name ", "A file_dont name ")
 expect("<span>dont</span> ", "<span>dont</span> ")
 expect("| a | b |\n|---|---|\n| dont | i |", "| a | b |\n|---|---|\n| dont | i |")
+expect("| dont | i |\n|---|---|\n", "| dont | i |\n|---|---|\n")
+expect("---\ntitle: dont i\n---\n", "---\ntitle: dont i\n---\n")
+expect("![alt](img.png \"dont i\") ", "![alt](img.png \"dont i\") ")
+expect("[ref]: https://x.y \"dont i\"\n", "[ref]: https://x.y \"dont i\"\n")
 
 // Full stops and question marks when Enter ends a line
 expect("this is a whole sentence\n", "This is a whole sentence.\n")

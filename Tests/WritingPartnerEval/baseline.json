@@ -1,0 +1,210 @@
+{
+  "documents" : [
+    {
+      "caretWordEdits" : 0,
+      "f1" : 0.9421,
+      "flavor" : "GitHub",
+      "missed" : 4,
+      "name" : "01-prose-and-dialogue.md",
+      "netScore" : 0.9421,
+      "precision" : 0.95,
+      "protectedChanges" : 0,
+      "recall" : 0.9344,
+      "restored" : 57,
+      "stripped" : 61,
+      "wrongChanges" : 3
+    },
+    {
+      "caretWordEdits" : 0,
+      "f1" : 0.95,
+      "flavor" : "GitHub",
+      "missed" : 3,
+      "name" : "02-headings-and-lists.md",
+      "netScore" : 0.95,
+      "precision" : 0.9744,
+      "protectedChanges" : 0,
+      "recall" : 0.9268,
+      "restored" : 38,
+      "stripped" : 41,
+      "wrongChanges" : 1
+    },
+    {
+      "caretWordEdits" : 0,
+      "f1" : 0.9041,
+      "flavor" : "GitHub",
+      "missed" : 5,
+      "name" : "03-quotes-and-callouts.md",
+      "netScore" : 0.9041,
+      "precision" : 0.9429,
+      "protectedChanges" : 0,
+      "recall" : 0.8684,
+      "restored" : 33,
+      "stripped" : 38,
+      "wrongChanges" : 2
+    },
+    {
+      "caretWordEdits" : 0,
+      "f1" : 0.9688,
+      "flavor" : "GitHub",
+      "missed" : 1,
+      "name" : "04-code-and-frontmatter.md",
+      "netScore" : 0.9688,
+      "precision" : 0.9688,
+      "protectedChanges" : 0,
+      "recall" : 0.9688,
+      "restored" : 31,
+      "stripped" : 32,
+      "wrongChanges" : 1
+    },
+    {
+      "caretWordEdits" : 0,
+      "f1" : 0.9333,
+      "flavor" : "GitHub",
+      "missed" : 2,
+      "name" : "05-math-and-tables.md",
+      "netScore" : 0.9333,
+      "precision" : 0.9545,
+      "protectedChanges" : 0,
+      "recall" : 0.913,
+      "restored" : 21,
+      "stripped" : 23,
+      "wrongChanges" : 1
+    },
+    {
+      "caretWordEdits" : 0,
+      "f1" : 0.9455,
+      "flavor" : "GitHub",
+      "missed" : 2,
+      "name" : "06-links-and-references.md",
+      "netScore" : 0.9455,
+      "precision" : 0.963,
+      "protectedChanges" : 0,
+      "recall" : 0.9286,
+      "restored" : 26,
+      "stripped" : 28,
+      "wrongChanges" : 1
+    },
+    {
+      "caretWordEdits" : 0,
+      "f1" : 0.9333,
+      "flavor" : "GitHub",
+      "missed" : 4,
+      "name" : "07-release-notes.md",
+      "netScore" : 0.9333,
+      "precision" : 0.9722,
+      "protectedChanges" : 0,
+      "recall" : 0.8974,
+      "restored" : 35,
+      "stripped" : 39,
+      "wrongChanges" : 1
+    },
+    {
+      "caretWordEdits" : 0,
+      "f1" : 0.9524,
+      "flavor" : "Slack",
+      "missed" : 1,
+      "name" : "08-slack-standup.slack.md",
+      "netScore" : 0.9524,
+      "precision" : 1,
+      "protectedChanges" : 0,
+      "recall" : 0.9091,
+      "restored" : 10,
+      "stripped" : 11,
+      "wrongChanges" : 0
+    },
+    {
+      "caretWordEdits" : 0,
+      "f1" : 0.9286,
+      "flavor" : "Slack",
+      "missed" : 2,
+      "name" : "09-slack-incident.slack.md",
+      "netScore" : 0.9286,
+      "precision" : 1,
+      "protectedChanges" : 0,
+      "recall" : 0.8667,
+      "restored" : 13,
+      "stripped" : 15,
+      "wrongChanges" : 0
+    }
+  ],
+  "maxRuleScoreDropMargin" : 0.02,
+  "maxScoreDropMargin" : 0.01,
+  "overall" : {
+    "caretWordEdits" : 0,
+    "f1" : 0.9395,
+    "missed" : 24,
+    "netScore" : 0.9395,
+    "precision" : 0.9635,
+    "protectedChanges" : 0,
+    "recall" : 0.9167,
+    "restored" : 264,
+    "stripped" : 288,
+    "wrongChanges" : 10
+  },
+  "rules" : {
+    "capitals" : {
+      "f1" : 1,
+      "missed" : 0,
+      "precision" : 1,
+      "recall" : 1,
+      "restored" : 6,
+      "stripped" : 6,
+      "wrongChanges" : 0
+    },
+    "clauseComma" : {
+      "f1" : 1,
+      "missed" : 0,
+      "precision" : 1,
+      "recall" : 1,
+      "restored" : 9,
+      "stripped" : 9,
+      "wrongChanges" : 0
+    },
+    "contraction" : {
+      "f1" : 0.9211,
+      "missed" : 11,
+      "precision" : 0.9859,
+      "recall" : 0.8642,
+      "restored" : 70,
+      "stripped" : 81,
+      "wrongChanges" : 1
+    },
+    "pronounI" : {
+      "f1" : 1,
+      "missed" : 0,
+      "precision" : 1,
+      "recall" : 1,
+      "restored" : 25,
+      "stripped" : 25,
+      "wrongChanges" : 0
+    },
+    "sentenceCase" : {
+      "f1" : 0.9843,
+      "missed" : 3,
+      "precision" : 1,
+      "recall" : 0.9691,
+      "restored" : 94,
+      "stripped" : 97,
+      "wrongChanges" : 0
+    },
+    "spelling" : {
+      "f1" : 1,
+      "missed" : 0,
+      "precision" : 1,
+      "recall" : 1,
+      "restored" : 37,
+      "stripped" : 37,
+      "wrongChanges" : 0
+    },
+    "terminalPunctuation" : {
+      "f1" : 0.7077,
+      "missed" : 10,
+      "precision" : 0.7188,
+      "recall" : 0.697,
+      "restored" : 23,
+      "stripped" : 33,
+      "wrongChanges" : 9
+    }
+  },
+  "seed" : 357946184520
+}
