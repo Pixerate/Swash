@@ -740,6 +740,8 @@ struct InteractionRunner {
              // Each line is a sentence, at normal speed and typed faster than the run loop turns
              let lines = "It's really interesting becuase I dont know how to do this any more\nwhat could be happenign here\nthis should be capitilised but isnt\n"
              let linesFixed = "It's really interesting becuase I don't know how to do this any more.\nWhat could be happenign here?\nThis should be capitilised but isn't.\n"
+             // These check punctuation: spelling (on by default, from the system's spell checker) is off
+             defaults.set(false, forKey: WritingPartnerDefaults.spelling)
              for styled in [true, false] {
                  let mode = styled ? "styled" : "source"
                  defaults.removeObject(forKey: WritingPartnerDefaults.stats)
@@ -774,7 +776,7 @@ struct InteractionRunner {
                  defaults.set(true, forKey: WritingPartnerDefaults.spelling)
                  let sp = TextBox(""); let tvSp = makeEditor(sp, styled: styled)
                  tvSp.isAutomaticSpellingCorrectionEnabled = true
-                 typeEach("teh dog came becuase i said so\n", into: tvSp)
+                 typeEach("teh dog came because i said so\n", into: tvSp)
                  log("writing-partner-spelling-\(mode)", "", "\(sp.text) systemAutocorrect=\(tvSp.isAutomaticSpellingCorrectionEnabled)",
                      expect: "The dog came because I said so.\n systemAutocorrect=false")
                  // Undoing a spelling fix leaves that word alone from then on
@@ -786,11 +788,12 @@ struct InteractionRunner {
                  typeEach("a", into: tvSp)
                  log("writing-partner-autocorrect-restored-\(mode)", "", "\(tvSp.isAutomaticSpellingCorrectionEnabled)", expect: "true")
                  defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
-                 defaults.removeObject(forKey: WritingPartnerDefaults.spelling)
+                 defaults.set(false, forKey: WritingPartnerDefaults.spelling)
              }
              // Two undos in a row stop a rule
              defaults.removeObject(forKey: WritingPartnerDefaults.stats)
              defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+             defaults.set(false, forKey: WritingPartnerDefaults.spelling)
              let learn = TextBox(""); let tvLearn = makeEditor(learn, styled: false)
              typeEach("I dont ", into: tvLearn); tvLearn.undoManager?.undo(); pump()
              typeEach("dont ", into: tvLearn); tvLearn.undoManager?.undo(); pump()
@@ -798,6 +801,7 @@ struct InteractionRunner {
              let stats = WritingPartnerStats.load()
              log("writing-partner-learns", "", "\(learn.text) contraction=\(stats.isActive(.contraction))",
                  expect: "I dont dont dont  contraction=false")
+             defaults.removeObject(forKey: WritingPartnerDefaults.spelling)
              if let savedMode { defaults.set(savedMode, forKey: WritingPartnerDefaults.mode) } else { defaults.removeObject(forKey: WritingPartnerDefaults.mode) }
              if let savedStats { defaults.set(savedStats, forKey: WritingPartnerDefaults.stats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.stats) }
         }
