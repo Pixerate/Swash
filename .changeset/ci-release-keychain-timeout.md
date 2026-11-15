@@ -2,4 +2,4 @@
 "swash": patch
 ---
 
-Fix Build & Release workflow hanging during package resolution after injecting PixerateStickers, harden CI signing keychain settings, and add a 45-minute job timeout.
+Fix the Build & Release workflow hanging for 6 hours in package resolution: the private sticker pack is now injected only for the iOS App Store archive, after the open-source macOS release is built and published. Also harden the CI signing keychain and add job and build-step timeouts.
