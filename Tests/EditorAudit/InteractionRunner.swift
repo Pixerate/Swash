@@ -6,6 +6,14 @@ import PixerateMarkdown
 
 final class TextBox { var text: String; init(_ t: String) { text = t } }
 func pump(_ s: Double = 0.15) { RunLoop.main.run(until: Date().addingTimeInterval(s)) }
+/// Runs the loop until the writing partner has played every fix (up to `limit` seconds), then a turn
+/// more for the editor to restyle.
+@MainActor func waitForPartner(_ tv: NSTextView, limit: Double = 10) {
+    let deadline = Date().addingTimeInterval(limit)
+    pump(0.05)
+    while Date() < deadline, let coordinator = tv.delegate as? SwashTextView.Coordinator, !coordinator.writingPartner.isIdle { pump(0.02) }
+    pump(0.05)
+}
 func findTextView(in v: NSView) -> NSTextView? {
     if let tv = v as? NSTextView { return tv }
     for s in v.subviews { if let f = findTextView(in: s) { return f } }
@@ -702,7 +710,7 @@ struct InteractionRunner {
              defaults.removeObject(forKey: WritingPartnerDefaults.stats)
              func typeEach(_ text: String, into tv: NSTextView) {
                  for ch in text { tv.insertText(String(ch), replacementRange: tv.selectedRange()); pump(0.05) }
-                 pump(0.2)
+                 waitForPartner(tv)
              }
              for styled in [true, false] {
                  let mode = styled ? "styled" : "source"
@@ -741,7 +749,7 @@ struct InteractionRunner {
                  log("writing-partner-no-inline-predictions-\(mode)", "", "\(tvNormal.inlinePredictionType == .no)", expect: "true")
                  let fast = TextBox(""); let tvFast = makeEditor(fast, styled: styled)
                  for ch in lines { tvFast.insertText(String(ch), replacementRange: tvFast.selectedRange()) }
-                 pump(0.5)
+                 waitForPartner(tvFast)
                  log("writing-partner-fast-\(mode)", lines, fast.text, expect: linesFixed)
              }
              // The partner's cursor and selection show while a fix is on its way, and go afterwards
@@ -753,7 +761,7 @@ struct InteractionRunner {
                  let overlay = tvV.subviews.compactMap { $0 as? WritingPartnerOverlay }.first
                  let during = overlay?.layer?.sublayers?.count ?? 0
                  let textDuring = v.text
-                 pump(1.2)
+                 waitForPartner(tvV); pump(1.0)
                  let afterwards = overlay?.layer?.sublayers?.count ?? 0
                  log("writing-partner-cursor", "so i ", "during=\(during > 0) unchangedYet=\(textDuring == "so i ") afterwards=\(afterwards) text=\(v.text)",
                      expect: "during=true unchangedYet=true afterwards=0 text=So I ")

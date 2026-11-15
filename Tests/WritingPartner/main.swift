@@ -177,5 +177,39 @@ do {
     defaults.removePersistentDomain(forName: "swash-writing-partner-tests")
 }
 
+// The partner's cursor plays a fix as whole-word edits, left to right, each with its own rules (#878)
+do {
+    let old = "so its teh end" as NSString
+    let new = "So it's the end." as NSString
+    let marks = [
+        PartnerMark(range: NSRange(location: 0, length: 2), rules: [.sentenceCase]),
+        PartnerMark(range: NSRange(location: 3, length: 4), rules: [.contraction]),
+        PartnerMark(range: NSRange(location: 8, length: 3), rules: [.spelling], spellingWord: "teh"),
+        PartnerMark(range: NSRange(location: 15, length: 1), rules: [.terminalPunctuation]),
+    ]
+    let edits = PunctuateVoice.partnerEdits(from: old, to: new, marks: marks)
+    check(edits.map(\.original) == ["so", "its", "teh", "end"], "whole words selected: \(edits.map(\.original))")
+    check(edits.map(\.replacement) == ["So", "it's", "the", "end."], "whole words typed: \(edits.map(\.replacement))")
+    check(edits.map(\.rules) == [[.sentenceCase], [.contraction], [.spelling], [.terminalPunctuation]], "rules per edit: \(edits.map(\.rules))")
+    check(edits[2].spellingWords == ["teh"] && edits[0].spellingWords.isEmpty, "the spelling word goes with its edit")
+    check(edits.map(\.range) == [NSRange(location: 0, length: 2), NSRange(location: 3, length: 3), NSRange(location: 7, length: 3),
+                                  NSRange(location: 11, length: 3)], "ranges in the text before the fix: \(edits.map(\.range))")
+    // Played left to right, each on the text the earlier ones left, they make the fixed text
+    var text = old as String
+    var shift = 0
+    for edit in edits {
+        let range = NSRange(location: edit.range.location + shift, length: edit.range.length)
+        text = (text as NSString).replacingCharacters(in: range, with: edit.replacement)
+        shift += (edit.replacement as NSString).length - edit.range.length
+    }
+    check(text == new as String, "edits replay to the fix: \(text)")
+    // Two changes in one word are one edit
+    let merged = PunctuateVoice.partnerEdits(from: "i dont" as NSString, to: "I don't" as NSString, marks: [])
+    check(merged.map(\.replacement) == ["I", "don't"], "one edit per word: \(merged.map(\.replacement))")
+    let both = PunctuateVoice.partnerEdits(from: "dont" as NSString, to: "Don't" as NSString,
+                                           marks: [PartnerMark(range: NSRange(location: 0, length: 5), rules: [.contraction, .sentenceCase])])
+    check(both.count == 1 && both[0].replacement == "Don't" && both[0].rules == [.contraction, .sentenceCase], "capital and apostrophe in one word")
+}
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

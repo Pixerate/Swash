@@ -4,6 +4,7 @@ set -e
 # Script to build and run the GFM spec compliance & snapshot runner
 cd "$(dirname "$0")/.."
 source scripts/pixerate_markdown.sh
+source scripts/pixerate_core.sh
 
 BUILD_DIR="build/spec-runner"
 mkdir -p "$BUILD_DIR"
@@ -21,7 +22,7 @@ swiftc $EXTRAS \
   Swash/MarkdownFlavor.swift \
   Swash/FolderAccessManager.swift \
   Swash/MarkdownParser.swift \
-  $PIXERATE_MARKDOWN \
+  $PIXERATE_MARKDOWN $PIXERATE_CORE \
   Swash/PixerateMarkdownExtensions.swift \
   Swash/SlackMarkdown.swift \
   Swash/MarkdownEditorStyler.swift \

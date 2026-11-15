@@ -4,34 +4,177 @@
 //
 //  Connects the writing partner's Punctuate voice (WritingPartner.swift, #61) to the Mac editor.
 //  When the person types a space, punctuation or a blank line, the session asks the voice for
-//  fixes to what they just finished and applies them as their own undo step ("Undo Punctuation").
-//  Undoing that step straight away counts against the rules it applied; typing on keeps it.
+//  fixes to what they just finished. The partner's cursor plays each fix out through the editor
+//  package's `AgentTextDirector` (#878): it selects the word, types the new one, and the edit lands
+//  as its own undo step ("Undo Punctuation"). Undoing a step straight away counts against the rules
+//  it applied; typing on keeps it.
 //
 
 #if os(macOS)
 import AppKit
+import PixerateCore
 import PixerateMarkdown
 
+/// The editor as the partner's director sees it: the raw Markdown, with the word the partner is
+/// typing shown in place of the word it replaces. The frames of typing are never written into the
+/// text view (that would leave the person's own typing with undo ranges that no longer fit, and
+/// publish half-typed words): `ghost` holds them and `WritingPartnerOverlay` draws them. Only the
+/// commit edits the text, as one undoable `applyEdit`.
+@MainActor
+final class WritingPartnerTarget: AgentTextTarget {
+    weak var textView: NSTextView?
+    weak var coordinator: SwashTextView.Coordinator?
+    /// What the partner is typing: `range` of the raw text shows as `text`.
+    private(set) var ghost: (range: NSRange, text: String)?
+    /// Called when `ghost` changes, to redraw it.
+    var onGhostChange: (() -> Void)?
+    /// Called after a commit: the raw range replaced, its new text, and where the person's caret was.
+    var onCommit: ((NSRange, String, Int) -> Void)?
+    /// Set when a commit couldn't be made (the person is composing with an input method).
+    private(set) var commitSkipped = false
+
+    init(textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        self.textView = textView
+        self.coordinator = coordinator
+    }
+
+    /// The raw Markdown as it is in the text view.
+    var realText: String {
+        guard let textView, let coordinator else { return "" }
+        return coordinator.rawText(of: textView)
+    }
+
+    var agentText: String {
+        let real = realText as NSString
+        guard let ghost, NSMaxRange(ghost.range) <= real.length else { return real as String }
+        return real.replacingCharacters(in: ghost.range, with: ghost.text)
+    }
+
+    var agentReadOnlyReason: String? {
+        guard let textView, coordinator != nil else { return "The editor was closed." }
+        return textView.isEditable ? nil : "The document can't be edited."
+    }
+
+    func previewAgentTyping(in range: NSRange, with text: String) {
+        let real = realRange(forAgent: range)
+        let current = realText as NSString
+        guard NSMaxRange(real) <= current.length else { clearGhost(); return }
+        ghost = current.substring(with: real) == text ? nil : (real, text)
+        onGhostChange?()
+    }
+
+    func commitAgentEdit(in range: NSRange, with text: String, actionName: String) {
+        let real = realRange(forAgent: range)
+        clearGhost()
+        commitSkipped = false
+        guard let textView, let coordinator, !textView.hasMarkedText() else { commitSkipped = true; return }
+        let current = realText as NSString
+        guard NSMaxRange(real) <= current.length else { commitSkipped = true; return }
+        let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        let length = (text as NSString).length
+        let caret: Int
+        if selection.location >= NSMaxRange(real) {
+            caret = selection.location + length - real.length
+        } else if selection.location > real.location {
+            caret = real.location + length
+        } else {
+            caret = selection.location
+        }
+        textView.breakUndoCoalescing()
+        coordinator.applyEdit(in: textView, newRawText: current.replacingCharacters(in: real, with: text),
+                              rawSelection: NSRange(location: caret, length: 0), actionName: actionName)
+        textView.breakUndoCoalescing()
+        onCommit?(real, text, selection.location)
+    }
+
+    func clearGhost() {
+        guard ghost != nil else { return }
+        ghost = nil
+        onGhostChange?()
+    }
+
+    /// A raw offset for an offset in `agentText`. One inside the word being typed goes to its start.
+    func realPosition(forAgent position: Int) -> Int {
+        guard let ghost else { return position }
+        let typedEnd = ghost.range.location + (ghost.text as NSString).length
+        if position <= ghost.range.location { return position }
+        if position >= typedEnd { return position - typedEnd + NSMaxRange(ghost.range) }
+        return ghost.range.location
+    }
+
+    func realRange(forAgent range: NSRange) -> NSRange {
+        let start = realPosition(forAgent: range.location)
+        return NSRange(location: start, length: max(0, realPosition(forAgent: NSMaxRange(range)) - start))
+    }
+
+    /// The person is about to replace `range` (raw) with `replacement`: moves the word being typed
+    /// with it and returns the same change in `agentText`'s offsets. A change to the word itself
+    /// takes the ghost away (the director then stops: the text changed where it was typing).
+    func personWillEdit(_ range: NSRange, replacement: String) -> NSRange {
+        guard let ghost else { return range }
+        let typed = (ghost.text as NSString).length
+        let shift = typed - ghost.range.length
+        if NSMaxRange(range) <= ghost.range.location {
+            self.ghost?.range.location += (replacement as NSString).length - range.length
+            return range
+        }
+        if range.location >= NSMaxRange(ghost.range) {
+            return NSRange(location: range.location + shift, length: range.length)
+        }
+        let start = min(range.location, ghost.range.location)
+        let end = NSMaxRange(range) > NSMaxRange(ghost.range) ? NSMaxRange(range) + shift : ghost.range.location + typed
+        clearGhost()
+        return NSRange(location: start, length: end - start)
+    }
+}
+
+/// Not isolated itself (the swiftc runners compile the editor in Swift 5 mode, where the coordinator
+/// isn't on the main actor); everything that touches the director runs on the main actor.
 final class WritingPartnerSession {
+    /// Who the partner is, for its cursor.
+    static let agent = AgentCaretInfo(id: "writing-partner", name: "Writing partner", color: "#AF52DE")
+
     /// Word boundaries the person typed (raw-Markdown offsets) that haven't been looked at yet. More
-    /// than one when they type faster than the run loop turns.
+    /// than one when they type faster than the run loop turns, or while the partner is busy.
     /// `enterEndedLine` records whether an Enter was at the end of its line when it was pressed:
     /// by the time it's looked at, the person may have typed the next line.
     private var pendingBoundaries: [(location: Int, enterEndedLine: Bool?)] = []
     private var isScheduled = false
-    /// The rules of the last fix, until the person types on (kept) or undoes it (undone).
-    private var lastApplied: [PunctuationRule] = []
-    /// The misspellings the last fix corrected: undoing it tells the spell checker they're words.
-    private var lastSpellingWords: [String] = []
+    /// The partner's undo steps since the person last typed, oldest first: typing keeps them all,
+    /// undo takes back the newest.
+    private var applied: [Step] = []
     /// The text view's own autocorrect, saved while the partner has it off.
     private var savedAutocorrect: Bool?
-    /// Where the caret was (raw offset) before the last fix, to put it back if the fix is undone.
-    private var caretBeforeFix: Int?
     private weak var textView: NSTextView?
     private weak var coordinator: SwashTextView.Coordinator?
     private var undoObserver: NSObjectProtocol?
     private weak var observedUndoManager: UndoManager?
     private let defaults: UserDefaults
+
+    /// The director playing fixes in `target`, made for the text view it's in.
+    private var director: AgentTextDirector?
+    private var target: WritingPartnerTarget?
+    /// The fix being played, and the task playing it.
+    private var fixInFlight: Fix?
+    private var player: Task<Void, Never>?
+
+    private struct Step {
+        var rules: [PunctuationRule]
+        var spellingWords: [String]
+        /// Where the person's caret was (raw) before it, to put it back if it's undone.
+        var caretBefore: Int
+    }
+
+    /// A fix the partner's cursor is playing, one word at a time.
+    private struct Fix {
+        /// The edits still to play, in raw offsets as the text is now, left to right.
+        var remaining: [PartnerEdit]
+        /// The boundaries it was worked out for, to work it out again if the text changed under it.
+        var boundaries: [(location: Int, enterEndedLine: Bool?)]
+        var isRetry: Bool
+        /// Stopped by undo, redo or the partner being turned off: don't work it out again.
+        var isCancelled = false
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -41,22 +184,29 @@ final class WritingPartnerSession {
         if let undoObserver { NotificationCenter.default.removeObserver(undoObserver) }
     }
 
+    /// True while the partner has nothing to do (for tests).
+    var isIdle: Bool { fixInFlight == nil && pendingBoundaries.isEmpty && !isScheduled }
+
     /// The person is about to type `string` over `range` (storage offsets). Call only for their own
     /// typing: not for Swash's edits, restyling, SwiftUI updates or Writing Tools.
     func willType(_ string: String?, in range: NSRange, textView: NSTextView, coordinator: SwashTextView.Coordinator) {
         if let undoManager = textView.undoManager, undoManager.isUndoing || undoManager.isRedoing {
             pendingBoundaries = []
+            cancelFix()
             return
         }
-        if !lastApplied.isEmpty {
+        let raw = coordinator.rawRange(forStorage: range, in: textView)
+        let replacement = string ?? ""
+        if fixInFlight != nil { MainActor.assumeIsolated { personWillEdit(raw, replacement: replacement) } }
+        if !applied.isEmpty {
             // Typing on after a fix keeps it
             var stats = WritingPartnerStats.load(defaults)
-            for rule in lastApplied { stats.kept(rule) }
+            for step in applied { for rule in step.rules { stats.kept(rule) } }
             stats.save(defaults)
-            lastApplied = []
-            lastSpellingWords = []
+            applied = []
         }
         let isOn = WritingPartnerDefaults.mode(defaults) == .automatic
+        if !isOn { cancelFix() }
         // macOS's inline predictions and autocorrect also write at the caret, and the two together
         // lose or corrupt fixes: while the partner is on it does the autocorrecting itself
         let predictions: NSTextInputTraitType = isOn ? .no : .default
@@ -72,30 +222,22 @@ final class WritingPartnerSession {
               textView.selectedRange().length == 0, !textView.hasMarkedText() else {
             // Anything else (a paste, a deletion, macOS's text replacement) moves the text under the
             // pending offsets: move them with it, and drop any it replaced
-            let raw = coordinator.rawRange(forStorage: range, in: textView)
-            let delta = ((string ?? "") as NSString).length - raw.length
-            let move = { (location: Int) -> Int? in
-                if location >= NSMaxRange(raw) { return location + delta }
-                return location < raw.location ? location : nil
-            }
-            pendingBoundaries = pendingBoundaries.compactMap { pending in move(pending.location).map { ($0, pending.enterEndedLine) } }
-            if fixInFlight != nil { changesSinceFix.append((raw, delta)) }
+            pendingBoundaries = Self.move(pendingBoundaries, through: raw, replacement: replacement)
             return
         }
         let c = (string as NSString).character(at: 0)
         guard PunctuateVoice.isWordBoundary(c) || c == 0x0A else { return }
-        let location = coordinator.rawRange(forStorage: range, in: textView).location
         var enterEndedLine: Bool?
         if c == 0x0A {
-            let raw = coordinator.rawText(of: textView) as NSString
-            enterEndedLine = location >= raw.length || raw.character(at: location) == 0x0A
+            let text = coordinator.rawText(of: textView) as NSString
+            enterEndedLine = raw.location >= text.length || text.character(at: raw.location) == 0x0A
         }
-        pendingBoundaries.append((location, enterEndedLine))
+        pendingBoundaries.append((raw.location, enterEndedLine))
     }
 
     /// The person's change landed. Fixes run on the next turn of the run loop, after the editor has
-    /// published and styled the change, and one at a time: while the partner's cursor is on its way
-    /// to a fix, new boundaries wait for it.
+    /// published and styled the change, and one at a time: while the partner's cursor is playing a
+    /// fix, new boundaries wait for it.
     func didChange(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
         guard !pendingBoundaries.isEmpty, !isScheduled, fixInFlight == nil else { return }
         isScheduled = true
@@ -106,27 +248,6 @@ final class WritingPartnerSession {
             self.punctuate(in: textView, coordinator: coordinator)
         }
     }
-
-    /// A fix the partner's cursor is selecting, applied when it gets there.
-    private struct Fix {
-        /// The raw Markdown and caret it was worked out on.
-        var raw: String
-        var caret: Int
-        /// The fixed text, and where the fixes are in the raw text (before) and the fixed text (after).
-        var fixed: String
-        var before: [NSRange]
-        var after: [NSRange]
-        var rules: [PunctuationRule]
-        var spellingWords: [String]
-        /// The boundaries it was worked out for, to work it out again if macOS changed the text first.
-        var boundaries: [(location: Int, enterEndedLine: Bool?)]
-        var isRetry: Bool
-    }
-
-    private var fixInFlight: Fix?
-    /// Changes that weren't the person's typing (macOS's text replacement, say) while a fix was on
-    /// its way: (raw range replaced, change in length).
-    private var changesSinceFix: [(range: NSRange, delta: Int)] = []
 
     private func punctuate(in textView: NSTextView, coordinator: SwashTextView.Coordinator, isRetry: Bool = false) {
         let boundaries = pendingBoundaries
@@ -146,13 +267,12 @@ final class WritingPartnerSession {
         }
         let flavor = coordinator.parent.flavor
         let overlay = WritingPartnerOverlay.overlay(for: textView)
-        var spellingWords: [String] = []
 
         // Each boundary in order, on the text as the earlier ones left it
         var working = raw as NSString
         var caret = selection.location
         var shift = 0
-        var rules: [PunctuationRule] = []
+        var marks: [PartnerMark] = []
         var checked: [NSRange] = []
         for pending in boundaries.sorted(by: { $0.location < $1.location }) {
             let boundary = pending.location + shift
@@ -168,143 +288,169 @@ final class WritingPartnerSession {
                                              enterEndedLine: pending.enterEndedLine, isActive: isActive,
                                              spellingCorrection: spellingCorrection)
             for edit in edits.sorted(by: { $0.range.location > $1.range.location }) {
-                if edit.rules.contains(.spelling) { spellingWords.append(working.substring(with: edit.range)) }
+                let spellingWord = edit.rules.contains(.spelling) ? working.substring(with: edit.range) : nil
                 working = working.replacingCharacters(in: edit.range, with: edit.replacement) as NSString
-                let delta = (edit.replacement as NSString).length - edit.range.length
+                let length = (edit.replacement as NSString).length
+                let delta = length - edit.range.length
+                marks = marks.map { mark in
+                    var mark = mark
+                    if mark.range.location >= NSMaxRange(edit.range) { mark.range.location += delta }
+                    return mark
+                }
+                marks.append(PartnerMark(range: NSRange(location: edit.range.location, length: length), rules: edit.rules,
+                                         spellingWord: spellingWord))
                 if edit.range.location < caret { caret += delta }
                 if edit.range.location <= boundary { shift += delta }
-                rules += edit.rules
             }
         }
         overlay.sweep(checked.flatMap { WritingPartnerOverlay.rects(for: coordinator.storageRange(forRaw: $0, in: textView), in: textView) })
-        guard !rules.isEmpty else { return }
+        let edits = PunctuateVoice.partnerEdits(from: raw as NSString, to: working, marks: marks)
+        guard !edits.isEmpty else { return }
+        play(Fix(remaining: edits, boundaries: boundaries, isRetry: isRetry), in: textView, coordinator: coordinator)
+    }
 
-        let (changedBefore, changedAfter) = Self.changedRanges(from: raw as NSString, to: working)
-        // The partner selects whole words, as a person would before retyping one
-        let before = changedBefore.map { Self.word(around: $0, in: raw as NSString) }
-        let after = changedAfter.map { Self.word(around: $0, in: working) }
-        let fix = Fix(raw: raw, caret: selection.location, fixed: working as String, before: before, after: after, rules: rules,
-                      spellingWords: spellingWords, boundaries: boundaries, isRetry: isRetry)
-        fixInFlight = fix
-        changesSinceFix = []
-        overlay.select(before.map { coordinator.storageRange(forRaw: $0, in: textView) }, in: textView)
-        let apply = { [weak self, weak textView, weak coordinator] in
-            guard let self else { return }
-            self.fixInFlight = nil
-            guard let textView, let coordinator else { return }
-            self.apply(fix, in: textView, coordinator: coordinator, overlay: overlay)
-            // Boundaries typed while the cursor was on its way
-            if !self.pendingBoundaries.isEmpty { self.didChange(in: textView, coordinator: coordinator) }
-        }
-        let delay = WritingPartnerOverlay.selectDuration
-        if delay > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: apply)
-        } else {
-            apply()
+    // MARK: Playing a fix
+
+    /// The director for `textView`, made on first use and again if the editor changed.
+    @MainActor
+    private func director(for textView: NSTextView, coordinator: SwashTextView.Coordinator) -> (AgentTextDirector, WritingPartnerTarget) {
+        if let director, let target, target.textView === textView, target.coordinator === coordinator { return (director, target) }
+        let target = WritingPartnerTarget(textView: textView, coordinator: coordinator)
+        let director = AgentTextDirector(target: target, linger: 300)
+        let overlay = WritingPartnerOverlay.overlay(for: textView)
+        overlay.attach(carets: director.carets, target: target)
+        target.onGhostChange = { [weak overlay] in overlay?.render() }
+        target.onCommit = { [weak self] range, text, caret in self?.committed(range, text: text, caretBefore: caret) }
+        self.director = director
+        self.target = target
+        return (director, target)
+    }
+
+    private func play(_ fix: Fix, in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        MainActor.assumeIsolated {
+            let (director, target) = director(for: textView, coordinator: coordinator)
+            fixInFlight = fix
+            self.textView = textView
+            self.coordinator = coordinator
+            player = Task { @MainActor [weak self] in
+                await self?.run(director: director, target: target)
+            }
         }
     }
 
-    /// Applies `fix` if the text up to the caret it was worked out at hasn't changed since: the person
-    /// may have typed on after the caret, which is kept.
-    private func apply(_ fix: Fix, in textView: NSTextView, coordinator: SwashTextView.Coordinator, overlay: WritingPartnerOverlay) {
-        let current = coordinator.rawText(of: textView) as NSString
-        let raw = fix.raw as NSString
-        let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
-        guard WritingPartnerDefaults.mode(defaults) == .automatic, !textView.hasMarkedText(),
-              current.length >= fix.caret, selection.length == 0, selection.location >= fix.caret,
-              current.substring(to: fix.caret) == raw.substring(to: fix.caret) else {
-            // macOS may have changed the word first (text replacement turns "teh" into "the" while
-            // the cursor is on its way): work the fix out again, once, on the text as it is now
-            if !fix.isRetry, WritingPartnerDefaults.mode(defaults) == .automatic, selection.length == 0, !textView.hasMarkedText() {
-                var moved = fix.boundaries
-                for change in changesSinceFix {
-                    moved = moved.compactMap { pending in
-                        if pending.location >= NSMaxRange(change.range) { return (pending.location + change.delta, pending.enterEndedLine) }
-                        return pending.location < change.range.location ? pending : nil
-                    }
-                }
-                changesSinceFix = []
-                pendingBoundaries = moved + pendingBoundaries
-                overlay.cancel()
-                punctuate(in: textView, coordinator: coordinator, isRetry: true)
+    @MainActor
+    private func run(director: AgentTextDirector, target: WritingPartnerTarget) async {
+        while var fix = fixInFlight, !fix.isCancelled, let edit = fix.remaining.first {
+            fix.remaining.removeFirst()
+            fixInFlight = fix
+            // The word it replaces is still where it was: the person may have changed it meanwhile
+            let text = target.realText as NSString
+            guard WritingPartnerDefaults.mode(defaults) == .automatic, let textView = target.textView,
+                  !textView.hasMarkedText(), NSMaxRange(edit.range) <= text.length,
+                  text.substring(with: edit.range) == edit.original else {
+                retry(fix)
                 return
             }
-            overlay.cancel()
+            pendingStep = edit
+            let animate = !WritingPartnerOverlay.reduceMotion && textView.window != nil
+            do {
+                try await director.perform(AgentTextEdit(from: edit.range.location, to: NSMaxRange(edit.range), text: edit.replacement),
+                                           by: Self.agent, actionName: WritingPartnerDefaults.actionName,
+                                           options: AgentTypingOptions(selectMs: WritingPartnerOverlay.selectMs, animate: animate))
+            } catch {
+                pendingStep = nil
+                target.clearGhost()
+                if let fix = fixInFlight { retry(fix) }
+                return
+            }
+            pendingStep = nil
+            if target.commitSkipped, let fix = fixInFlight {
+                retry(fix)
+                return
+            }
+        }
+        finish()
+    }
+
+    /// The edit being played, for `committed` to record.
+    private var pendingStep: PartnerEdit?
+
+    /// The director committed an edit: it's an undo step of the partner's, and what comes after it moved.
+    private func committed(_ range: NSRange, text: String, caretBefore: Int) {
+        let delta = (text as NSString).length - range.length
+        if let edit = pendingStep {
+            applied.append(Step(rules: edit.rules, spellingWords: edit.spellingWords, caretBefore: caretBefore))
+        }
+        let move = { (location: Int) -> Int in location >= NSMaxRange(range) ? location + delta : location }
+        pendingBoundaries = pendingBoundaries.map { (move($0.location), $0.enterEndedLine) }
+        if var fix = fixInFlight {
+            fix.boundaries = fix.boundaries.map { (move($0.location), $0.enterEndedLine) }
+            fix.remaining = fix.remaining.map { var edit = $0; edit.range.location = move(edit.range.location); return edit }
+            fixInFlight = fix
+        }
+        observeUndo(textView?.undoManager)
+    }
+
+    /// The person is about to change the text while a fix plays: move the fix with it.
+    @MainActor
+    private func personWillEdit(_ range: NSRange, replacement: String) {
+        if let target, let director {
+            director.noteEdit(in: target.personWillEdit(range, replacement: replacement), replacement: replacement)
+        }
+        guard var fix = fixInFlight else { return }
+        let delta = (replacement as NSString).length - range.length
+        fix.boundaries = Self.move(fix.boundaries, through: range, replacement: replacement)
+        // An edit whose word the person changed is dropped (the fix is worked out again when it's reached)
+        fix.remaining = fix.remaining.compactMap { edit in
+            var edit = edit
+            if NSMaxRange(range) <= edit.range.location {
+                edit.range.location += delta
+                return edit
+            }
+            return range.location >= NSMaxRange(edit.range) ? edit : nil
+        }
+        fixInFlight = fix
+    }
+
+    /// The text changed under the fix (macOS's text replacement turns "teh" into "the" while the
+    /// cursor is on its way): work it out again, once, on the text as it is now.
+    private func retry(_ fix: Fix) {
+        fixInFlight = nil
+        guard !fix.isCancelled, !fix.isRetry, WritingPartnerDefaults.mode(defaults) == .automatic,
+              let textView, let coordinator, !textView.hasMarkedText() else {
+            finish()
             return
         }
-        let fixed = fix.fixed as NSString
-        let delta = fixed.length - raw.length
-        let newText = fixed.substring(to: fix.caret + delta) + current.substring(from: fix.caret)
-        let newCaret = selection.location + delta
+        pendingBoundaries = fix.boundaries + pendingBoundaries
+        punctuate(in: textView, coordinator: coordinator, isRetry: true)
+        if fixInFlight == nil { finish() }
+    }
 
-        textView.breakUndoCoalescing()
-        coordinator.applyEdit(in: textView, newRawText: newText, rawSelection: NSRange(location: newCaret, length: 0),
-                              actionName: WritingPartnerDefaults.actionName)
-        textView.breakUndoCoalescing()
-        // Boundaries typed after the caret moved with the fix
-        pendingBoundaries = pendingBoundaries.map { ($0.location >= fix.caret ? $0.location + delta : $0.location, $0.enterEndedLine) }
-        lastApplied = fix.rules
-        lastSpellingWords = fix.spellingWords
-        caretBeforeFix = selection.location
-        self.textView = textView
-        self.coordinator = coordinator
-        observeUndo(textView.undoManager)
-        // Show where the fix landed once the editor has restyled it
-        DispatchQueue.main.async { [weak textView, weak coordinator] in
-            guard let textView, let coordinator else { return }
-            overlay.landed(fix.after.map { coordinator.storageRange(forRaw: $0, in: textView) }, in: textView)
+    /// The fix is done: boundaries typed while it played get their turn.
+    private func finish() {
+        fixInFlight = nil
+        player = nil
+        if let textView, let coordinator, !pendingBoundaries.isEmpty { didChange(in: textView, coordinator: coordinator) }
+    }
+
+    /// Stops the fix being played (undo, redo, the partner turned off); nothing partial is left.
+    private func cancelFix() {
+        guard fixInFlight != nil else { return }
+        fixInFlight?.isCancelled = true
+        MainActor.assumeIsolated { target?.clearGhost() }
+        player?.cancel()
+    }
+
+    private static func move(_ boundaries: [(location: Int, enterEndedLine: Bool?)], through range: NSRange,
+                             replacement: String) -> [(location: Int, enterEndedLine: Bool?)] {
+        let delta = (replacement as NSString).length - range.length
+        return boundaries.compactMap { pending in
+            if pending.location >= NSMaxRange(range) { return (pending.location + delta, pending.enterEndedLine) }
+            return pending.location < range.location ? pending : nil
         }
     }
 
-    /// `range` widened to the whole words it touches (a full stop added after a word takes the word).
-    static func word(around range: NSRange, in text: NSString) -> NSRange {
-        var start = range.location
-        var end = NSMaxRange(range)
-        while start > 0, PunctuateVoice.isWordCharacter(text.character(at: start - 1)) { start -= 1 }
-        while end < text.length, PunctuateVoice.isWordCharacter(text.character(at: end)) { end += 1 }
-        return NSRange(location: start, length: end - start)
-    }
-
-    /// Where `new` differs from `old`: each run of changed characters, as ranges in both.
-    static func changedRanges(from old: NSString, to new: NSString) -> (before: [NSRange], after: [NSRange]) {
-        // Trim the common prefix and suffix, then diff what's left character by character
-        let limit = min(old.length, new.length)
-        var prefix = 0
-        while prefix < limit, old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
-        var suffix = 0
-        while suffix < limit - prefix, old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
-        let oldMiddle = (0..<(old.length - prefix - suffix)).map { old.character(at: prefix + $0) }
-        let newMiddle = (0..<(new.length - prefix - suffix)).map { new.character(at: prefix + $0) }
-        let difference = newMiddle.difference(from: oldMiddle)
-        var removed = IndexSet()
-        var inserted = IndexSet()
-        for change in difference {
-            switch change {
-            case .remove(let offset, _, _): removed.insert(offset)
-            case .insert(let offset, _, _): inserted.insert(offset)
-            }
-        }
-        // Pair each run of changes in the old text with the run at the same place in the new one
-        var before: [NSRange] = []
-        var after: [NSRange] = []
-        var oldIndex = 0
-        var newIndex = 0
-        while oldIndex < oldMiddle.count || newIndex < newMiddle.count {
-            if !removed.contains(oldIndex) && !inserted.contains(newIndex), oldIndex < oldMiddle.count, newIndex < newMiddle.count {
-                oldIndex += 1
-                newIndex += 1
-                continue
-            }
-            let oldStart = oldIndex
-            let newStart = newIndex
-            while removed.contains(oldIndex) { oldIndex += 1 }
-            while inserted.contains(newIndex) { newIndex += 1 }
-            if oldIndex == oldStart && newIndex == newStart { break }
-            before.append(NSRange(location: prefix + oldStart, length: oldIndex - oldStart))
-            after.append(NSRange(location: prefix + newStart, length: newIndex - newStart))
-        }
-        return (before, after)
-    }
+    // MARK: Undo
 
     /// Undoing the partner's step straight away counts against its rules.
     private func observeUndo(_ undoManager: UndoManager?) {
@@ -314,29 +460,30 @@ final class WritingPartnerSession {
         undoObserver = NotificationCenter.default.addObserver(
             forName: .NSUndoManagerDidUndoChange, object: undoManager, queue: .main
         ) { [weak self] notification in
-            guard let self, !self.lastApplied.isEmpty,
-                  (notification.object as? UndoManager)?.redoActionName == WritingPartnerDefaults.actionName else { return }
-            // Undoing a spelling fix says the word is right: the spell checker leaves it alone in this
-            // document. Other rules learn to fix less.
-            var stats = WritingPartnerStats.load(self.defaults)
-            for rule in self.lastApplied where rule != .spelling { stats.undone(rule) }
-            stats.save(self.defaults)
-            if let textView = self.textView {
-                let tag = textView.spellCheckerDocumentTag
-                for word in self.lastSpellingWords { NSSpellChecker.shared.ignoreWord(word, inSpellDocumentWithTag: tag) }
-            }
-            self.lastApplied = []
-            self.lastSpellingWords = []
-            // Undo selects the restored word; put the caret back where the person was typing, after
-            // the editor has restyled the change
-            guard let caret = self.caretBeforeFix else { return }
-            self.caretBeforeFix = nil
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let textView = self.textView, let coordinator = self.coordinator else { return }
-                let length = (coordinator.rawText(of: textView) as NSString).length
-                let raw = NSRange(location: min(caret, length), length: 0)
-                textView.setSelectedRange(coordinator.storageRange(forRaw: raw, in: textView))
-            }
+            let isPartnerStep = (notification.object as? UndoManager)?.redoActionName == WritingPartnerDefaults.actionName
+            self?.didUndo(isPartnerStep: isPartnerStep)
+        }
+    }
+
+    private func didUndo(isPartnerStep: Bool) {
+        guard isPartnerStep, let step = applied.popLast() else { return }
+        // Undoing a spelling fix says the word is right: the spell checker leaves it alone in this
+        // document. Other rules learn to fix less.
+        var stats = WritingPartnerStats.load(defaults)
+        for rule in step.rules where rule != .spelling { stats.undone(rule) }
+        stats.save(defaults)
+        if let textView {
+            let tag = textView.spellCheckerDocumentTag
+            for word in step.spellingWords { NSSpellChecker.shared.ignoreWord(word, inSpellDocumentWithTag: tag) }
+        }
+        // Undo selects the restored word; put the caret back where the person was typing, after
+        // the editor has restyled the change
+        let caret = step.caretBefore
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let textView = self.textView, let coordinator = self.coordinator else { return }
+            let length = (coordinator.rawText(of: textView) as NSString).length
+            let raw = NSRange(location: min(caret, length), length: 0)
+            textView.setSelectedRange(coordinator.storageRange(forRaw: raw, in: textView))
         }
     }
 }
