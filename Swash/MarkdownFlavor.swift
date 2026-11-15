@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum MarkdownFlavor: String, CaseIterable, Identifiable {
+nonisolated enum MarkdownFlavor: String, CaseIterable, Identifiable, Sendable {
     case github = "GitHub"
     case commonMark = "CommonMark"
     case original = "Original"

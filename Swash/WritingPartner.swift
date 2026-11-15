@@ -31,9 +31,43 @@ nonisolated enum WritingPartnerMode: String, CaseIterable, Identifiable, Sendabl
     }
 }
 
+/// Which voice the writing partner plays (#105): Punctuate for documents, Chat for Slack messages.
+nonisolated enum WritingPartnerVoice: String, CaseIterable, Identifiable, Sendable {
+    case punctuate
+    case chat
+
+    var id: String { rawValue }
+
+    /// The voice for `flavor`: Slack messages get the Chat voice; other flavours get Punctuate.
+    init(flavor: MarkdownFlavor) {
+        self = flavor == .slack ? .chat : .punctuate
+    }
+
+    var title: String {
+        switch self {
+        case .punctuate: return "Punctuate"
+        case .chat: return "Chat"
+        }
+    }
+
+    /// How Settings › Writing names the voice for `flavor`.
+    static func summary(for flavor: MarkdownFlavor) -> String {
+        "\(WritingPartnerVoice(flavor: flavor).title) (\(flavor.displayName))"
+    }
+
+    /// The rules this voice uses.
+    var rules: [PunctuationRule] {
+        switch self {
+        case .punctuate: return PunctuationRule.allCases
+        case .chat: return ChatVoice.rules
+        }
+    }
+}
+
 nonisolated enum WritingPartnerDefaults {
     static let mode = "writingPartnerMode"
     static let stats = "writingPartnerStats"
+    static let chatStats = "writingPartnerChatStats"
     /// Whether the partner corrects spelling. Unset, it's on: the partner's fixes are its own undo
     /// steps and learn from undo, so it doesn't follow macOS's "Correct spelling automatically",
     /// which people often turn off for being hard to undo (#98).
@@ -56,6 +90,16 @@ nonisolated enum WritingPartnerDefaults {
 
     /// The undo action name of the partner's structural suggestions.
     static let suggestionActionName = "Suggestion"
+    static func statsKey(for voice: WritingPartnerVoice) -> String {
+        switch voice {
+        case .punctuate: return stats
+        case .chat: return chatStats
+        }
+    }
+
+    static func statsKey(for flavor: MarkdownFlavor) -> String {
+        statsKey(for: WritingPartnerVoice(flavor: flavor))
+    }
 
     /// Whether the partner corrects spelling: the stored choice, else on.
     static func spelling(_ defaults: UserDefaults = .standard) -> Bool {
@@ -175,14 +219,14 @@ nonisolated struct WritingPartnerStats: Codable, Equatable, Sendable {
         rules[rule.rawValue] = entry
     }
 
-    static func load(_ defaults: UserDefaults = .standard) -> WritingPartnerStats {
-        guard let data = defaults.data(forKey: WritingPartnerDefaults.stats),
+    static func load(_ defaults: UserDefaults = .standard, voice: WritingPartnerVoice = .punctuate) -> WritingPartnerStats {
+        guard let data = defaults.data(forKey: WritingPartnerDefaults.statsKey(for: voice)),
               let stats = try? JSONDecoder().decode(WritingPartnerStats.self, from: data) else { return WritingPartnerStats() }
         return stats
     }
 
-    func save(_ defaults: UserDefaults = .standard) {
-        if let data = try? JSONEncoder().encode(self) { defaults.set(data, forKey: WritingPartnerDefaults.stats) }
+    static func load(_ defaults: UserDefaults = .standard, flavor: MarkdownFlavor) -> WritingPartnerStats {
+        load(defaults, voice: WritingPartnerVoice(flavor: flavor))
     }
 
     func toVoiceState(spellingOn: Bool = true) -> JazzTextVoiceState {
@@ -223,6 +267,25 @@ nonisolated struct WritingPartnerStats: Codable, Equatable, Sendable {
         case .ellipses: return "ellipses"
         }
     }
+    func save(_ defaults: UserDefaults = .standard, voice: WritingPartnerVoice = .punctuate) {
+        if let data = try? JSONEncoder().encode(self) {
+            defaults.set(data, forKey: WritingPartnerDefaults.statsKey(for: voice))
+        }
+    }
+
+    func save(_ defaults: UserDefaults = .standard, flavor: MarkdownFlavor) {
+        save(defaults, voice: WritingPartnerVoice(flavor: flavor))
+    }
+}
+
+/// The Chat voice (#105): a light touch for Slack messages. Fixes apostrophes (`dont` → `don't`),
+/// capital `I` and spelling, while leaving lowercase starts, message ends, `ok`, `lol` and other
+/// chat conventions, `:shortcode:` emoji, and Slack syntax (`<@user>`, `<#channel>`, `<!here>`,
+/// `<url|label>`, `*bold*`, `_italic_`, `~strike~` markers) alone.
+nonisolated enum ChatVoice {
+    /// The rules the Chat voice plays: the editor's `chat` profile (`TextMechanicsOptions.Profile.chat`)
+    /// keeps chat shorthand, Slack syntax and lowercase starts, and runs no typography.
+    static let rules: [PunctuationRule] = [.pronounI, .contraction, .spelling]
 }
 
 /// The Punctuate voice: the editor package's text mechanics checks (`TextMechanics` in

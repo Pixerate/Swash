@@ -122,8 +122,50 @@ expect("# A heading with four words\n\n", "# A heading with four words\n\n")
 expect("Ends with a `code span`\n\n", "Ends with a `code span`\n\n")
 expect("It ends with a [link here](https://x.y)\n\n", "It ends with a [link here](https://x.y)\n\n")
 
-// Slack: the chat voice keeps capitals and full stops out of it
+// Slack: the Chat voice (#105) fixes apostrophes, capital I and spelling, and leaves lowercase
+// starts, message ends, ok, lol, :emoji: shortcodes and Slack syntax alone
 expect("ok so i dont know\n\n", "ok so I don't know\n\n", flavor: .slack)
+expect("hey i think its really good but i cant make it today\n",
+       "hey I think it's really good but I can't make it today\n", flavor: .slack)
+expect("what could be happening here\n", "what could be happening here\n", flavor: .slack)
+// At the start of a message the tagger reads "id" as a noun, so it stays (the editor's rule asks the tagger)
+expect("id like to help and ill be there soon ", "id like to help and I'll be there soon ", flavor: .slack)
+expect("done. next message starts lowercase ", "done. next message starts lowercase ", flavor: .slack)
+expect("lol ok tbh imo idk btw brb lgtm ", "lol ok tbh imo idk btw brb lgtm ", flavor: .slack)
+expect("nice work :thumbsup: :thumbs_up: :+1: :dont: :i: ",
+       "nice work :thumbsup: :thumbs_up: :+1: :dont: :i: ", flavor: .slack)
+expect("hey <@U123> <@dont> in <#C456|dont i> <#channel> <!here> <!subteam^S1|dont> i dont know ",
+       "hey <@U123> <@dont> in <#C456|dont i> <#channel> <!here> <!subteam^S1|dont> I don't know ", flavor: .slack)
+expect("see <https://example.com|dont i> and <https://dont.com/i> when youre free ",
+       "see <https://example.com|dont i> and <https://dont.com/i> when you're free ", flavor: .slack)
+// Slack's *bold*, _italic_ and ~strike~ markers are never changed; words right inside closing markers
+// aren't fixed yet (see the editor issue for emphasis markers in text mechanics)
+expect("*bold* _italic_ ~strike~ and *dont* _i dont know_ ~cant~ _its really_ ",
+       "*bold* _italic_ ~strike~ and *dont* _i don't know_ ~cant~ _its really_ ", flavor: .slack)
+expect("keep file_dont and __dont__ alone ", "keep file_dont and __dont__ alone ", flavor: .slack)
+do {
+    let chatSpelling: (String, NSRange, String) -> String? = { word, _, _ in
+        ["becuase": "because", "teh": "the", "lol": "Lot", "tbh": "the", "idk": "ink", "lgtm": "let", "monday": "Monday"][word]
+    }
+    let msg = type("teh build failed becuase i dont know lol tbh idk lgtm on monday\n", flavor: .slack, spelling: chatSpelling)
+    check(msg.text == "the build failed because I don't know lol tbh idk lgtm on monday\n", "chat spelling: \(msg.text)")
+    let link = type("check <https://example.com|teh becuase> and :becuase: becuase i said so ", flavor: .slack, spelling: chatSpelling)
+    check(link.text == "check <https://example.com|teh becuase> and :becuase: because I said so ", "chat spelling skips Slack tokens: \(link.text)")
+
+    func checkedSlack(_ text: String, _ boundary: Int) -> String? {
+        let document = MarkdownDocument.parse(text, flavor: .slack)
+        return PunctuateVoice.checkedRange(text: text, boundary: boundary, document: document).map { (text as NSString).substring(with: $0) }
+    }
+    check(checkedSlack("ok i dont ", 9) == "dont", "chat checkedRange: word before space")
+    check(checkedSlack(":thumbsup: ", 9) == nil, "chat checkedRange: not an emoji shortcode")
+    check(checkedSlack("<@dont> ", 6) == nil, "chat checkedRange: not a Slack mention")
+    check(checkedSlack("<https://x.y|dont> ", 17) == nil, "chat checkedRange: not a Slack link label")
+
+    check(WritingPartnerVoice(flavor: .slack) == .chat && WritingPartnerVoice(flavor: .github) == .punctuate, "voice follows flavor")
+    check(WritingPartnerVoice.summary(for: .slack) == "Chat (Slack mrkdwn)", "Slack voice summary")
+    check(WritingPartnerVoice.summary(for: .github) == "Punctuate (GitHub Markdown)", "GitHub voice summary")
+    check(WritingPartnerVoice.chat.rules == [.pronounI, .contraction, .spelling], "Chat voice rules")
+}
 
 // The rest of the document is untouched
 expect("so i ", "Intro.\n\nSo I ", after: "Intro.\n\n")
@@ -179,6 +221,15 @@ do {
     defaults.removePersistentDomain(forName: "swash-writing-partner-tests")
     kept.save(defaults)
     check(WritingPartnerStats.load(defaults) == kept, "stats round-trip")
+    // Chat and prose learn separately (#105)
+    var chatStats = WritingPartnerStats.load(defaults, voice: .chat)
+    check(chatStats.isActive(.pronounI) && chatStats.isActive(.contraction), "chat stats start fresh")
+    chatStats.undone(.pronounI)
+    chatStats.undone(.pronounI)
+    chatStats.save(defaults, flavor: .slack)
+    check(!WritingPartnerStats.load(defaults, voice: .chat).isActive(.pronounI), "two undos in chat stop pronounI in chat")
+    check(WritingPartnerStats.load(defaults, voice: .punctuate).isActive(.pronounI), "prose pronounI is unaffected by chat undos")
+    check(WritingPartnerStats.load(defaults, flavor: .github) == kept, "prose stats unchanged after saving chat stats")
     check(WritingPartnerDefaults.mode(defaults) == .off, "off by default")
     defaults.set(WritingPartnerMode.suggest.rawValue, forKey: WritingPartnerDefaults.mode)
     check(WritingPartnerDefaults.mode(defaults) == .suggest && WritingPartnerMode.suggest.title == "Suggest", "suggest mode round-trip")
