@@ -1,0 +1,6 @@
+{
+  "apphosting": {
+    "backendId": "swash-web",
+    "rootDir": "site"
+  }
+}
