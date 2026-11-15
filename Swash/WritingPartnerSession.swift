@@ -75,7 +75,7 @@ final class WritingPartnerTarget: AgentTextTarget {
         let caret: Int
         if selection.location >= NSMaxRange(real) {
             caret = selection.location + length - real.length
-        } else if selection.location > real.location {
+        } else if NSMaxRange(selection) > real.location {
             caret = real.location + length
         } else {
             caret = selection.location
@@ -158,6 +158,21 @@ final class WritingPartnerSession {
     private var fixInFlight: Fix?
     private var player: Task<Void, Never>?
 
+    /// A fix offered in Suggest mode (#103), waiting for the person to accept or dismiss it.
+    struct Suggestion: Equatable {
+        var edit: PartnerEdit
+        /// Raw-Markdown offset just after the boundary that offered this fix.
+        var triggerEnd: Int
+    }
+
+    /// How far (UTF-16 units) the person can type past a suggestion before ignoring it counts as dismissing it.
+    static let suggestionReach = 40
+
+    /// Active suggestions in Suggest mode, in document order.
+    private(set) var suggestions: [Suggestion] = []
+    /// Most recent VoiceOver announcement for a suggestion.
+    private(set) var lastAnnouncement: String?
+
     private struct Step {
         var rules: [PunctuationRule]
         var spellingWords: [String]
@@ -193,11 +208,35 @@ final class WritingPartnerSession {
         if let undoManager = textView.undoManager, undoManager.isUndoing || undoManager.isRedoing {
             pendingBoundaries = []
             cancelFix()
+            clearSuggestions(in: textView)
             return
         }
         let raw = coordinator.rawRange(forStorage: range, in: textView)
         let replacement = string ?? ""
         if fixInFlight != nil { MainActor.assumeIsolated { personWillEdit(raw, replacement: replacement) } }
+        if !suggestions.isEmpty {
+            let delta = (replacement as NSString).length - raw.length
+            suggestions = suggestions.compactMap { suggestion in
+                var suggestion = suggestion
+                if NSMaxRange(raw) <= suggestion.edit.range.location {
+                    suggestion.edit.range.location += delta
+                    suggestion.triggerEnd += delta
+                    return suggestion
+                }
+                if raw.location >= NSMaxRange(suggestion.edit.range) {
+                    // Typing on after a suggestion keeps it on offer. Finishing the line, or typing
+                    // well past it, without accepting it dismisses it and counts against its rules
+                    if replacement.contains("\n") || raw.location - suggestion.triggerEnd > Self.suggestionReach {
+                        penalize(suggestion.edit, in: textView)
+                        return nil
+                    }
+                    return suggestion
+                }
+                // Editing the suggested word itself removes the suggestion without penalty
+                return nil
+            }
+            refreshSuggestions(in: textView, coordinator: coordinator)
+        }
         if !applied.isEmpty {
             // Typing on after a fix keeps it
             var stats = WritingPartnerStats.load(defaults)
@@ -205,8 +244,14 @@ final class WritingPartnerSession {
             stats.save(defaults)
             applied = []
         }
-        let isOn = WritingPartnerDefaults.mode(defaults) == .automatic
-        if !isOn { cancelFix() }
+        let mode = WritingPartnerDefaults.mode(defaults)
+        let isOn = mode != .off
+        if !isOn {
+            cancelFix()
+            clearSuggestions(in: textView)
+        } else if mode != .suggest, !suggestions.isEmpty {
+            clearSuggestions(in: textView)
+        }
         // macOS's inline predictions and autocorrect also write at the caret, and the two together
         // lose or corrupt fixes: while the partner is on it does the autocorrecting itself
         let predictions: NSTextInputTraitType = isOn ? .no : .default
@@ -252,7 +297,8 @@ final class WritingPartnerSession {
     private func punctuate(in textView: NSTextView, coordinator: SwashTextView.Coordinator, isRetry: Bool = false) {
         let boundaries = pendingBoundaries
         pendingBoundaries = []
-        guard WritingPartnerDefaults.mode(defaults) == .automatic, !textView.hasMarkedText(),
+        let mode = WritingPartnerDefaults.mode(defaults)
+        guard mode != .off, !textView.hasMarkedText(),
               textView.window != nil, textView.isEditable else { return }
         let raw = coordinator.rawText(of: textView)
         let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
@@ -311,7 +357,122 @@ final class WritingPartnerSession {
             overlay.sweep(checked.flatMap { WritingPartnerOverlay.rects(for: coordinator.storageRange(forRaw: $0, in: textView), in: textView) })
             return
         }
-        play(Fix(remaining: edits, boundaries: boundaries, isRetry: isRetry), in: textView, coordinator: coordinator)
+        if mode == .suggest {
+            offer(edits, triggerEnd: selection.location, in: textView, coordinator: coordinator)
+        } else {
+            play(Fix(remaining: edits, boundaries: boundaries, isRetry: isRetry), in: textView, coordinator: coordinator)
+        }
+    }
+
+    // MARK: Suggestions (#103)
+
+    private func offer(_ edits: [PartnerEdit], triggerEnd: Int, in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        self.textView = textView
+        self.coordinator = coordinator
+        for edit in edits {
+            suggestions.removeAll { NSIntersectionRange($0.edit.range, edit.range).length > 0 }
+            suggestions.append(Suggestion(edit: edit, triggerEnd: max(NSMaxRange(edit.range), triggerEnd)))
+        }
+        suggestions.sort { $0.edit.range.location < $1.edit.range.location }
+        refreshSuggestions(in: textView, coordinator: coordinator)
+        DispatchQueue.main.async { [weak self, weak textView, weak coordinator] in
+            guard let self, let textView, let coordinator else { return }
+            self.refreshSuggestions(in: textView, coordinator: coordinator)
+        }
+        let summary = edits.map { "\($0.replacement) for \($0.original)" }.joined(separator: ", ")
+        let announcement = "Suggestion: \(summary)"
+        lastAnnouncement = announcement
+        NSAccessibility.post(
+            element: textView,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: announcement,
+                .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+            ]
+        )
+    }
+
+    /// Redraws active suggestion underlines in `WritingPartnerOverlay`.
+    func refreshSuggestions(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        let overlay = WritingPartnerOverlay.overlay(for: textView)
+        let rects = suggestions.flatMap {
+            WritingPartnerOverlay.rects(for: coordinator.storageRange(forRaw: $0.edit.range, in: textView), in: textView)
+        }
+        overlay.showSuggestions(rects)
+    }
+
+    /// Removes all active suggestions without counting them against their rules.
+    func clearSuggestions(in textView: NSTextView?) {
+        guard !suggestions.isEmpty else { return }
+        suggestions = []
+        if let textView = textView ?? self.textView {
+            WritingPartnerOverlay.overlay(for: textView).showSuggestions([])
+        }
+    }
+
+    /// The suggestion drawn under `point` (text view coordinates), if any.
+    func suggestion(at point: NSPoint, in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Suggestion? {
+        suggestions.first { suggestion in
+            let storage = coordinator.storageRange(forRaw: suggestion.edit.range, in: textView)
+            return WritingPartnerOverlay.rects(for: storage, in: textView).contains { $0.insetBy(dx: -2, dy: -2).contains(point) }
+        }
+    }
+
+    /// Suggestions that the current selection or caret is on or just after.
+    func suggestionsForCaret(in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> [Suggestion] {
+        guard !suggestions.isEmpty else { return [] }
+        let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        if selection.length > 0 {
+            return suggestions.filter { NSIntersectionRange(selection, $0.edit.range).length > 0 }
+        }
+        let caret = selection.location
+        let onWord = suggestions.filter { caret >= $0.edit.range.location && caret <= NSMaxRange($0.edit.range) + 1 }
+        if !onWord.isEmpty { return onWord }
+        return suggestions.filter { caret >= $0.edit.range.location && caret <= $0.triggerEnd }
+    }
+
+    /// Accepts the suggestion under `point` (pointer click).
+    @discardableResult
+    func acceptSuggestion(at point: NSPoint, in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+        guard let chosen = suggestion(at: point, in: textView, coordinator: coordinator) else { return false }
+        return accept([chosen], in: textView, coordinator: coordinator)
+    }
+
+    /// Accepts the suggestion(s) at or just before the caret (Tab or ⌥⏎).
+    @discardableResult
+    func acceptSuggestionAtCaret(in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+        let matching = suggestionsForCaret(in: textView, coordinator: coordinator)
+        guard !matching.isEmpty else { return false }
+        return accept(matching, in: textView, coordinator: coordinator)
+    }
+
+    /// Accepts the suggestion at the caret/selection, or the latest active suggestion (Edit menu / VoiceOver).
+    @discardableResult
+    func acceptSuggestion(in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+        let matching = suggestionsForCaret(in: textView, coordinator: coordinator)
+        let chosen = matching.isEmpty ? (suggestions.last.map { [$0] } ?? []) : matching
+        guard !chosen.isEmpty else { return false }
+        return accept(chosen, in: textView, coordinator: coordinator)
+    }
+
+    private func accept(_ chosen: [Suggestion], in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+        guard !chosen.isEmpty, fixInFlight == nil else { return false }
+        suggestions.removeAll { chosen.contains($0) }
+        refreshSuggestions(in: textView, coordinator: coordinator)
+        play(Fix(remaining: chosen.map(\.edit), boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
+        return true
+    }
+
+    /// Dismisses the suggestion at the caret (or all active suggestions) and counts it against its rules.
+    @discardableResult
+    func dismissSuggestion(in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+        guard !suggestions.isEmpty else { return false }
+        let matching = suggestionsForCaret(in: textView, coordinator: coordinator)
+        let toDismiss = matching.isEmpty ? suggestions : matching
+        suggestions.removeAll { toDismiss.contains($0) }
+        for item in toDismiss { penalize(item.edit, in: textView) }
+        refreshSuggestions(in: textView, coordinator: coordinator)
+        return true
     }
 
     // MARK: Playing a fix
@@ -350,7 +511,7 @@ final class WritingPartnerSession {
             fixInFlight = fix
             // The word it replaces is still where it was: the person may have changed it meanwhile
             let text = target.realText as NSString
-            guard WritingPartnerDefaults.mode(defaults) == .automatic, let textView = target.textView,
+            guard WritingPartnerDefaults.mode(defaults) != .off, let textView = target.textView,
                   !textView.hasMarkedText(), NSMaxRange(edit.range) <= text.length,
                   text.substring(with: edit.range) == edit.original else {
                 retry(fix)
@@ -393,6 +554,18 @@ final class WritingPartnerSession {
             fix.remaining = fix.remaining.map { var edit = $0; edit.range.location = move(edit.range.location); return edit }
             fixInFlight = fix
         }
+        if !suggestions.isEmpty {
+            suggestions = suggestions.compactMap { suggestion in
+                var suggestion = suggestion
+                if suggestion.edit.range.location >= NSMaxRange(range) {
+                    suggestion.edit.range.location += delta
+                    suggestion.triggerEnd += delta
+                    return suggestion
+                }
+                return NSMaxRange(suggestion.edit.range) <= range.location ? suggestion : nil
+            }
+            if let textView, let coordinator { refreshSuggestions(in: textView, coordinator: coordinator) }
+        }
         observeUndo(textView?.undoManager)
     }
 
@@ -421,7 +594,8 @@ final class WritingPartnerSession {
     /// cursor is on its way): work it out again, once, on the text as it is now.
     private func retry(_ fix: Fix) {
         fixInFlight = nil
-        guard !fix.isCancelled, !fix.isRetry, WritingPartnerDefaults.mode(defaults) == .automatic,
+        guard !fix.isCancelled, !fix.isRetry, !fix.boundaries.isEmpty,
+              WritingPartnerDefaults.mode(defaults) == .automatic,
               let textView, let coordinator, !textView.hasMarkedText() else {
             finish()
             return
@@ -455,7 +629,23 @@ final class WritingPartnerSession {
         }
     }
 
-    // MARK: Undo
+    // MARK: Undo & Learning
+
+    /// Counts an undone or dismissed fix against its rules, and tells the spell checker to leave
+    /// any spelling words in it alone in this document.
+    private func penalize(_ edit: PartnerEdit, in textView: NSTextView?) {
+        penalize(rules: edit.rules, spellingWords: edit.spellingWords, in: textView)
+    }
+
+    private func penalize(rules: [PunctuationRule], spellingWords: [String], in textView: NSTextView?) {
+        var stats = WritingPartnerStats.load(defaults)
+        for rule in rules where rule != .spelling { stats.undone(rule) }
+        stats.save(defaults)
+        if let textView {
+            let tag = textView.spellCheckerDocumentTag
+            for word in spellingWords { NSSpellChecker.shared.ignoreWord(word, inSpellDocumentWithTag: tag) }
+        }
+    }
 
     /// Undoing the partner's step straight away counts against its rules.
     private func observeUndo(_ undoManager: UndoManager?) {
@@ -472,15 +662,7 @@ final class WritingPartnerSession {
 
     private func didUndo(isPartnerStep: Bool) {
         guard isPartnerStep, let step = applied.popLast() else { return }
-        // Undoing a spelling fix says the word is right: the spell checker leaves it alone in this
-        // document. Other rules learn to fix less.
-        var stats = WritingPartnerStats.load(defaults)
-        for rule in step.rules where rule != .spelling { stats.undone(rule) }
-        stats.save(defaults)
-        if let textView {
-            let tag = textView.spellCheckerDocumentTag
-            for word in step.spellingWords { NSSpellChecker.shared.ignoreWord(word, inSpellDocumentWithTag: tag) }
-        }
+        penalize(rules: step.rules, spellingWords: step.spellingWords, in: textView)
         // Undo selects the restored word; put the caret back where the person was typing, after
         // the editor has restyled the change
         let caret = step.caretBefore

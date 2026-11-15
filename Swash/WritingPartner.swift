@@ -17,6 +17,7 @@ import PixerateMarkdown
 
 nonisolated enum WritingPartnerMode: String, CaseIterable, Identifiable, Sendable {
     case off
+    case suggest
     case automatic
 
     var id: String { rawValue }
@@ -24,6 +25,7 @@ nonisolated enum WritingPartnerMode: String, CaseIterable, Identifiable, Sendabl
     var title: String {
         switch self {
         case .off: return "Off"
+        case .suggest: return "Suggest"
         case .automatic: return "Automatically"
         }
     }

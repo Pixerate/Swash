@@ -206,6 +206,34 @@ final class WritingPartnerOverlay: NSView {
         render()
     }
 
+    // MARK: Suggestions
+
+    /// Layers drawn for active suggestions in Suggest mode (#103), without touching the text storage.
+    private(set) var suggestionLayers: [CALayer] = []
+
+    /// Draws a subtle tint and underline on each suggested word's rectangles, or clears them when empty.
+    func showSuggestions(_ rects: [NSRect]) {
+        guard let root = layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for layer in suggestionLayers { layer.removeFromSuperlayer() }
+        suggestionLayers = []
+        for rect in rects {
+            let container = CALayer()
+            container.backgroundColor = Self.tint.withAlphaComponent(0.10).cgColor
+            container.cornerRadius = 2
+            container.frame = rect
+            let underline = CALayer()
+            underline.backgroundColor = Self.tint.withAlphaComponent(0.65).cgColor
+            underline.cornerRadius = 1
+            underline.frame = NSRect(x: 0, y: max(0, rect.height - 2), width: rect.width, height: 2)
+            container.addSublayer(underline)
+            root.addSublayer(container)
+            suggestionLayers.append(container)
+        }
+        CATransaction.commit()
+    }
+
     // MARK: The partner's cursor
 
     /// How long the partner's cursor holds a word selected before typing over it, in ms. The

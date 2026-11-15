@@ -279,19 +279,20 @@ private struct WritingPartnerSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Fix punctuation as I type", isOn: Binding(
-                    get: { mode == .automatic },
-                    set: { mode = $0 ? .automatic : .off }
-                ))
+                Picker("Fix punctuation as I type", selection: $mode) {
+                    ForEach(WritingPartnerMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
                 Toggle("Correct spelling", isOn: Binding(
                     get: { spellingOn },
                     set: { UserDefaults.standard.set($0, forKey: WritingPartnerDefaults.spelling); spellingOn = $0 }
                 ))
-                .disabled(mode != .automatic)
+                .disabled(mode == .off)
             } header: {
                 Text("Writing Partner")
             } footer: {
-                Text("When you finish a word, Swash gives it a capital, an apostrophe or a comma it needs (i → I, dont → don't, id like → I'd like, ok → OK, a capital to start a sentence, a comma before “but” that starts a new clause), and pressing Return at the end of a sentence adds its full stop or question mark. With Correct spelling on, it also fixes misspellings, in place of macOS's autocorrect. Each fix is its own step: press ⌘Z to undo it, and an undone spelling fix leaves that word alone. Code, math, links' addresses and tables are never changed. These fixes never leave this Mac.")
+                Text("When you finish a word, Swash gives it a capital, an apostrophe or a comma it needs (i → I, dont → don't, id like → I'd like, ok → OK, a capital to start a sentence, a comma before “but” that starts a new clause), and pressing Return at the end of a sentence adds its full stop or question mark. With Correct spelling on, it also fixes misspellings, in place of macOS's autocorrect. In Suggest mode, each fix is underlined for you to accept (Tab, ⌥⏎ or click) or dismiss (Esc). Each fix is its own step: press ⌘Z to undo it, and an undone or dismissed spelling fix leaves that word alone. Code, math, links' addresses and tables are never changed. These fixes never leave this Mac.")
                     .settingsFooterStyle()
                 Link("What the writing partner sends", destination: URL(string: "https://github.com/Pixerate/Swash/blob/main/docs/writing-partner-privacy.md")!)
                     .font(.footnote)
