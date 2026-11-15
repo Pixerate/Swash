@@ -133,9 +133,11 @@ nonisolated enum WritingPartnerDefaults {
     }
 
     /// Who answers when the person pauses (#101). Not a choice: Pixerate when signed in (signing in
-    /// is the opt-in, GOTCHAS #77), otherwise nothing; the on-device tier (#102) comes in between.
+    /// is the opt-in, GOTCHAS #77), otherwise the limited on-device tier where Apple Intelligence is
+    /// available (#102), otherwise nothing. A subscriber never gets less than a free user.
     static func provider(_ defaults: UserDefaults = .standard) -> WritingPartnerProvider {
-        WritingBandleaderFactory.isPixerateAvailable() ? .pixerate : .none
+        if WritingBandleaderFactory.isPixerateAvailable() { return .pixerate }
+        return WritingBandleaderFactory.isOnDeviceAvailable() ? .onDevice : .none
     }
 }
 

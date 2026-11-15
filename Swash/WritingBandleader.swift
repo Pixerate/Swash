@@ -341,6 +341,7 @@ nonisolated final class NoneWritingBandleader: WritingBandleader {
 /// The available writing partner providers in Settings › Writing.
 nonisolated enum WritingPartnerProvider: String, CaseIterable, Identifiable, Sendable {
     case none
+    case onDevice
     case pixerate
 
     var id: String { rawValue }
@@ -348,6 +349,7 @@ nonisolated enum WritingPartnerProvider: String, CaseIterable, Identifiable, Sen
     var title: String {
         switch self {
         case .none: return "None (local only)"
+        case .onDevice: return "On-Device (Apple Intelligence)"
         case .pixerate: return "Pixerate"
         }
     }
@@ -362,11 +364,19 @@ enum WritingBandleaderFactory {
     /// Whether Pixerate can answer: signed in. Set by the app (`installPixerateBandleader`); false
     /// where the account isn't linked (Quick Look, the test runners).
     nonisolated(unsafe) static var isPixerateAvailable: () -> Bool = { false }
+    /// Whether the on-device tier can answer: Apple Intelligence available (macOS 26 and later). Set
+    /// by the app (`installOnDeviceBandleader`).
+    nonisolated(unsafe) static var isOnDeviceAvailable: () -> Bool = { false }
+    static var makeOnDeviceBandleader: () -> any WritingBandleader = {
+        NoneWritingBandleader()
+    }
 
     static func makeBandleader(_ provider: WritingPartnerProvider) -> any WritingBandleader {
         switch provider {
         case .none:
             return NoneWritingBandleader()
+        case .onDevice:
+            return makeOnDeviceBandleader()
         case .pixerate:
             return makePixerateBandleader()
         }

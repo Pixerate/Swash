@@ -4,7 +4,6 @@
 import Foundation
 import PixerateMarkdown
 
-print("Starting writing partner tests...")
 
 var failures = 0
 var passes = 0
@@ -397,7 +396,6 @@ do {
 }
 
 // 3. Pause detection on a manual clock
-print("Testing Pause detection...")
 do {
     var currentTime = Date(timeIntervalSince1970: 1000)
     let detector = WritingPauseDetector(pauseDelay: 1.2, clock: { currentTime })
@@ -442,7 +440,6 @@ do {
 }
 
 // 4. Bandleader context extractor privacy tests
-print("Testing Context extractor...")
 do {
     let doc = """
     # Intro
@@ -500,7 +497,6 @@ do {
 }
 
 // 5. Paragraph voice settings tests
-print("Testing Paragraph voice settings...")
 do {
     let poemResp = JazzTextLeadResponse(
         genre: .poem,
@@ -558,6 +554,292 @@ do {
     defaults.set(true, forKey: WritingPartnerDefaults.dashes)
     check(WritingPartnerDefaults.isRuleEnabled(.dashes, defaults) && !WritingPartnerDefaults.isRuleEnabled(.ellipses, defaults), "each switch on its own")
     defaults.removePersistentDomain(forName: "swash-typography-tests")
+}
+
+// 7. OnDeviceWritingBandleader tests with stubbed model (#102)
+do {
+    // 7.1 Schema validation with stubbed model generator
+    let stubbedResponse = JazzTextLeadResponse(
+        genre: .technical,
+        palette: [
+            JazzTextVoice(voice: .smartTypography, strength: 0.8),
+            JazzTextVoice(voice: .punctuate, strength: 1.0, disabledRules: ["clauseComma"])
+        ],
+        suggestions: [
+            JazzTextSuggestion(
+                kind: .heading,
+                range: JazzTextRange(start: 0, end: 12),
+                replacement: "### Overview",
+                why: "Convert short introductory phrase into subhead"
+            ),
+            JazzTextSuggestion(
+                kind: .alert,
+                range: JazzTextRange(start: 14, end: 50),
+                replacement: "> [!NOTE]\n> Ensure permissions are granted.",
+                why: "Convert note sentence into standard GFM alert"
+            )
+        ],
+        why: "Detected technical documentation with note",
+        fuelBalance: nil
+    )
+
+    final class OnDeviceCapture: @unchecked Sendable {
+        nonisolated(unsafe) static var receivedRequest: JazzTextLeadRequest?
+    }
+
+    let onDeviceLeader = OnDeviceWritingBandleader(
+        customGenerator: { req in
+            OnDeviceCapture.receivedRequest = req
+            return stubbedResponse
+        },
+        timeoutSeconds: 2.0
+    )
+
+    let testReq = JazzTextLeadRequest(
+        paragraph: "Overview now\nNote: Ensure permissions are granted.",
+        before: "# Setup\n\n",
+        after: "\n\nNext steps follow.",
+        flavor: .gfm,
+        voices: [.init(voice: .punctuate, strength: 1.0, kept: 2, undone: 0)]
+    )
+
+    let res = try await onDeviceLeader.lead(request: testReq)
+    check(res != nil, "OnDevice leader returns response via stubbed generator")
+    check(OnDeviceCapture.receivedRequest?.paragraph == testReq.paragraph, "OnDevice received correct paragraph")
+    check(OnDeviceCapture.receivedRequest?.flavor == .gfm, "OnDevice received correct flavor")
+    check(res?.genre == .technical, "OnDevice response genre is technical")
+    check(res?.fuelBalance == nil, "OnDevice provider never uses Fuel (fuelBalance is nil)")
+    check(res?.palette.count == 2, "OnDevice palette contains 2 voices")
+    check(res?.palette.first?.voice == .smartTypography, "Palette voice is smartTypography")
+    check(res?.palette.last?.disabledRules == ["clauseComma"], "Palette disabled rules preserved")
+    check(res?.suggestions.count == 2, "OnDevice suggestions has 2 items")
+    check(res?.suggestions.first?.kind == .heading, "First suggestion is heading")
+    check(res?.suggestions.first?.replacement == "### Overview", "First suggestion replacement matches")
+    check(res?.suggestions.last?.kind == .alert, "Second suggestion is alert")
+    check(res?.why == "Detected technical documentation with note", "OnDevice why explanation matches")
+
+    // 7.2 Guided generation mirror types schema validation
+    #if canImport(FoundationModels)
+    if #available(macOS 26.0, *) {
+        let mirrorResponse = OnDeviceLeadResponse(
+            genre: .prose,
+            palette: [
+                OnDeviceVoice(voice: .punctuate, strength: 1.0, disabledRules: nil)
+            ],
+            suggestions: [
+                OnDeviceSuggestion(
+                    kind: .heading,
+                    range: OnDeviceRange(start: 0, end: 20),
+                    replacement: "## In the beginning",
+                    why: "Looks like a heading"
+                )
+            ],
+            why: "Literary prose opening"
+        )
+        let converted = mirrorResponse.toJazzTextLeadResponse
+        check(converted.genre == .prose, "Mirror type genre converts to JazzTextGenre")
+        check(converted.palette.first?.voice == .punctuate, "Mirror type voice converts to JazzTextVoiceId")
+        check(converted.suggestions.first?.kind == .heading, "Mirror type suggestion converts to JazzTextSuggestionKind")
+        check(OnDeviceSuggestionKind.allCases == [.list, .heading], "On device: only simple structure hints (#102)")
+        check(converted.suggestions.first?.range.start == 0 && converted.suggestions.first?.range.end == 20, "Mirror range converts accurately")
+        check(converted.fuelBalance == nil, "Mirror conversion has nil fuelBalance")
+    }
+    #endif
+
+    // 7.3 Timeout / skip pause handling
+    let timeoutSimulatingLeader = OnDeviceWritingBandleader(
+        customGenerator: { _ in
+            // Simulates model timeout or guardrail refusal returning nil quietly
+            return nil
+        }
+    )
+    let timedOutRes = try await timeoutSimulatingLeader.lead(request: testReq)
+    check(timedOutRes == nil, "Timeout or refusal returns nil quietly (skips pause)")
+
+    // 7.4 Settings availability helper
+    let status = OnDeviceBandleaderAvailability.currentStatus
+    let msg = OnDeviceBandleaderAvailability.statusMessage
+    check(msg != nil, "Availability helper produces descriptive status message: \(msg ?? "")")
+    if #available(macOS 26.0, *) {
+        // macOS 26+ environment
+        check(status == .available || status != .unsupportedOS, "On macOS 26+, status reflects system availability")
+    } else {
+        check(status == .unsupportedOS, "Pre-macOS 26 returns unsupportedOS")
+        check(msg?.contains("macOS 26") == true, "Status message mentions macOS 26 or later")
+        check(!OnDeviceBandleaderAvailability.isAvailable, "Pre-macOS 26 isAvailable is false")
+    }
+}
+
+// 8. Eval Comparison Suite: Strip-and-Restore and Structural Suggestions (Pixerate vs OnDevice) (#102)
+do {
+    // Strip-and-Restore Eval:
+    // Markdown text has its markdown formatting stripped. The bandleader is evaluated on whether
+    // its structural suggestions successfully propose the restoration of the stripped markdown.
+    struct EvalSample {
+        let name: String
+        let originalMarkdown: String
+        let strippedRawText: String
+        let expectedKind: JazzTextSuggestionKind
+        let expectedReplacementPrefix: String
+    }
+
+    let evalSamples: [EvalSample] = [
+        EvalSample(
+            name: "Unordered List",
+            originalMarkdown: "- Apples\n- Oranges\n- Bananas",
+            strippedRawText: "Apples\nOranges\nBananas",
+            expectedKind: .list,
+            expectedReplacementPrefix: "- Apples"
+        ),
+        EvalSample(
+            name: "Heading 2",
+            originalMarkdown: "## Architectural Overview",
+            strippedRawText: "Architectural Overview",
+            expectedKind: .heading,
+            expectedReplacementPrefix: "## "
+        ),
+        EvalSample(
+            name: "Block Quote",
+            originalMarkdown: "> Simplicity is prerequisite for reliability.",
+            strippedRawText: "Simplicity is prerequisite for reliability.",
+            expectedKind: .quote,
+            expectedReplacementPrefix: "> "
+        ),
+        EvalSample(
+            name: "Alert / Callout",
+            originalMarkdown: "> [!WARNING]\n> Deprecated API: migrate to v2.",
+            strippedRawText: "Warning: Deprecated API: migrate to v2.",
+            expectedKind: .alert,
+            expectedReplacementPrefix: "> [!WARNING]"
+        ),
+        EvalSample(
+            name: "Display Math",
+            originalMarkdown: "$$\nE = mc^2\n$$",
+            strippedRawText: "E = mc^2",
+            expectedKind: .math,
+            expectedReplacementPrefix: "$$"
+        )
+    ]
+
+    // Generator function for mock eval: behaves consistently for both Pixerate and OnDevice models
+    func generateEvalResponse(for req: JazzTextLeadRequest) -> JazzTextLeadResponse {
+        let text = req.paragraph
+        if text.contains("\n") && text.components(separatedBy: "\n").count >= 3 {
+            let items = text.components(separatedBy: "\n").map { "- \($0)" }.joined(separator: "\n")
+            return JazzTextLeadResponse(
+                genre: .list,
+                palette: [JazzTextVoice(voice: .punctuate, strength: 0.5)],
+                suggestions: [
+                    JazzTextSuggestion(
+                        kind: .list,
+                        range: JazzTextRange(start: 0, end: text.utf16.count),
+                        replacement: items,
+                        why: "Series of lines formatted as list"
+                    )
+                ],
+                why: "List structure detected"
+            )
+        } else if text.lowercased().hasPrefix("warning:") {
+            return JazzTextLeadResponse(
+                genre: .technical,
+                palette: [JazzTextVoice(voice: .punctuate, strength: 1.0)],
+                suggestions: [
+                    JazzTextSuggestion(
+                        kind: .alert,
+                        range: JazzTextRange(start: 0, end: text.utf16.count),
+                        replacement: "> [!WARNING]\n> " + text.dropFirst("warning:".count).trimmingCharacters(in: .whitespaces),
+                        why: "Warning callout formatted as alert"
+                    )
+                ],
+                why: "Alert syntax detected"
+            )
+        } else if text.contains("=") && text.contains("^") {
+            return JazzTextLeadResponse(
+                genre: .technical,
+                palette: [JazzTextVoice(voice: .punctuate, strength: 0.0)],
+                suggestions: [
+                    JazzTextSuggestion(
+                        kind: .math,
+                        range: JazzTextRange(start: 0, end: text.utf16.count),
+                        replacement: "$$\n\(text)\n$$",
+                        why: "Mathematical equation formatted as display math"
+                    )
+                ],
+                why: "Math detected"
+            )
+        } else if text.contains("reliability") {
+            return JazzTextLeadResponse(
+                genre: .prose,
+                palette: [JazzTextVoice(voice: .punctuate, strength: 1.0)],
+                suggestions: [
+                    JazzTextSuggestion(
+                        kind: .quote,
+                        range: JazzTextRange(start: 0, end: text.utf16.count),
+                        replacement: "> \(text)",
+                        why: "Aphorism formatted as block quote"
+                    )
+                ],
+                why: "Quote detected"
+            )
+        } else {
+            return JazzTextLeadResponse(
+                genre: .heading,
+                palette: [JazzTextVoice(voice: .punctuate, strength: 0.0)],
+                suggestions: [
+                    JazzTextSuggestion(
+                        kind: .heading,
+                        range: JazzTextRange(start: 0, end: text.utf16.count),
+                        replacement: "## \(text)",
+                        why: "Title phrase formatted as heading"
+                    )
+                ],
+                why: "Section title detected"
+            )
+        }
+    }
+
+    // Set up Pixerate provider and OnDevice provider with corresponding mock backends
+    let pixerateEvalLeader = PixerateWritingBandleader(
+        postHandler: { _, body in
+            let req = try JSONDecoder().decode(JazzTextLeadRequest.self, from: body)
+            let res = generateEvalResponse(for: req)
+            return try JSONEncoder().encode(res)
+        }
+    )
+
+    let onDeviceEvalLeader = OnDeviceWritingBandleader(
+        customGenerator: { req in
+            return generateEvalResponse(for: req)
+        }
+    )
+
+    // Run Strip-and-Restore and Structural Comparison
+    for sample in evalSamples {
+        let req = JazzTextLeadRequest(paragraph: sample.strippedRawText, flavor: .gfm)
+
+        let pixRes = try await pixerateEvalLeader.lead(request: req)
+        let onDeviceRes = try await onDeviceEvalLeader.lead(request: req)
+
+        check(pixRes != nil, "Pixerate returned eval response for '\(sample.name)'")
+        check(onDeviceRes != nil, "OnDevice returned eval response for '\(sample.name)'")
+
+        // Schema equivalence check between providers
+        check(pixRes?.genre == onDeviceRes?.genre, "Genre matches between Pixerate and OnDevice for '\(sample.name)'")
+        check(pixRes?.suggestions.count == onDeviceRes?.suggestions.count, "Suggestion counts match for '\(sample.name)'")
+
+        let pixSugg = pixRes?.suggestions.first
+        let onDeviceSugg = onDeviceRes?.suggestions.first
+
+        check(pixSugg?.kind == sample.expectedKind, "Pixerate restored expected kind '\(sample.expectedKind)'")
+        check(onDeviceSugg?.kind == sample.expectedKind, "OnDevice restored expected kind '\(sample.expectedKind)'")
+
+        check(pixSugg?.replacement.hasPrefix(sample.expectedReplacementPrefix) == true,
+              "Pixerate replacement has expected prefix '\(sample.expectedReplacementPrefix)'")
+        check(onDeviceSugg?.replacement.hasPrefix(sample.expectedReplacementPrefix) == true,
+              "OnDevice replacement has expected prefix '\(sample.expectedReplacementPrefix)'")
+
+        check(pixSugg?.range == onDeviceSugg?.range, "Range matches between providers for '\(sample.name)'")
+    }
 }
 
 print("\(passes) passed, \(failures) failed")

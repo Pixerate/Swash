@@ -330,7 +330,9 @@ private struct WritingPartnerSettingsView: View {
 
             Section {
                 LabeledContent("When you pause") {
-                    if access.isSignedOut {
+                    if WritingPartnerDefaults.provider() == .onDevice {
+                        Text("On this Mac (Apple Intelligence)").foregroundStyle(.secondary)
+                    } else if access.isSignedOut {
                         Text("Basic fixes only").foregroundStyle(.secondary)
                     } else if !access.isSubscribed {
                         Text("Basic plan: fixes as you type only").foregroundStyle(.secondary)

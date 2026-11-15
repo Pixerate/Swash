@@ -14,5 +14,6 @@ swiftc -target arm64-apple-macos14.0 -sdk "$(xcrun --show-sdk-path --sdk macosx)
   $PIXERATE_MARKDOWN $PIXERATE_ACCOUNT \
   Swash/MarkdownFlavor.swift Swash/PixerateMarkdownExtensions.swift Swash/SlackMarkdown.swift \
   Swash/WritingPartner.swift Swash/PixerateAccess.swift Swash/WritingBandleader.swift Swash/PixerateWritingBandleader.swift \
+  Swash/OnDeviceWritingBandleader.swift \
   Tests/WritingPartner/main.swift -o "$OUT/runner"
 "$OUT/runner"
