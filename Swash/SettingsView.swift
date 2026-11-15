@@ -291,8 +291,10 @@ private struct WritingPartnerSettingsView: View {
             } header: {
                 Text("Writing Partner")
             } footer: {
-                Text("When you finish a word, Swash gives it a capital, an apostrophe or a comma it needs (i → I, dont → don't, id like → I'd like, ok → OK, a capital to start a sentence, a comma before “but” that starts a new clause), and pressing Return at the end of a sentence adds its full stop or question mark. With Correct spelling on, it also fixes misspellings, in place of macOS's autocorrect. Each fix is its own step: press ⌘Z to undo it, and an undone spelling fix leaves that word alone. Code, math, links' addresses and tables are never changed, and nothing leaves this Mac.")
+                Text("When you finish a word, Swash gives it a capital, an apostrophe or a comma it needs (i → I, dont → don't, id like → I'd like, ok → OK, a capital to start a sentence, a comma before “but” that starts a new clause), and pressing Return at the end of a sentence adds its full stop or question mark. With Correct spelling on, it also fixes misspellings, in place of macOS's autocorrect. Each fix is its own step: press ⌘Z to undo it, and an undone spelling fix leaves that word alone. Code, math, links' addresses and tables are never changed. These fixes never leave this Mac.")
                     .settingsFooterStyle()
+                Link("What the writing partner sends", destination: URL(string: "https://github.com/Pixerate/Swash/blob/main/docs/writing-partner-privacy.md")!)
+                    .font(.footnote)
             }
 
             WritingPartnerStyleSection()
