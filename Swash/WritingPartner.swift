@@ -13,7 +13,6 @@
 //
 
 import Foundation
-import NaturalLanguage
 import PixerateMarkdown
 
 nonisolated enum WritingPartnerMode: String, CaseIterable, Identifiable, Sendable {
@@ -137,7 +136,9 @@ nonisolated struct WritingPartnerStats: Codable, Equatable, Sendable {
     }
 }
 
-/// The Punctuate voice: fixes for the word or paragraph just finished.
+/// The Punctuate voice: the editor package's text mechanics checks (`TextMechanics` in
+/// PixerateMarkdown, Pixerate/editor#892), with Swash's rules, flavours and spell checker. The
+/// rules themselves live in the editor, so every Pixerate editor fixes text the same way.
 nonisolated enum PunctuateVoice {
     /// The fixes to make after the person typed the character at `boundary` (raw-Markdown UTF-16
     /// offset; the caret is just after it). `document` is `text` parsed in `flavor`.
@@ -150,412 +151,46 @@ nonisolated enum PunctuateVoice {
         isActive: (PunctuationRule) -> Bool = { _ in true },
         spellingCorrection: ((_ word: String, _ range: NSRange, _ text: String) -> String?)? = nil
     ) -> [PunctuationEdit] {
-        let ns = text as NSString
-        guard boundary >= 0, boundary < ns.length else { return [] }
-        let typed = ns.character(at: boundary)
-        var edits: [PunctuationEdit] = []
-
-        guard isWordBoundary(typed) || typed == newline else { return [] }
-
-        // The word just finished: letters and apostrophes before the boundary
-        var start = boundary
-        while start > 0, isWordCharacter(ns.character(at: start - 1)) { start -= 1 }
-        let wordRange = NSRange(location: start, length: boundary - start)
-        guard wordRange.length > 0, isProse(wordRange, ns: ns, document: document) else { return [] }
-        guard !insideUnclosedSpan(before: start, ns: ns) else { return [] }
-        let word = ns.substring(with: wordRange)
-
-        var replacement = word
-        var rules: [PunctuationRule] = []
-        if let fixed = fixedWord(word, flavor: flavor, isActive: isActive) {
-            replacement = fixed.word
-            rules.append(fixed.rule)
-        } else if isActive(.spelling), let spellingCorrection, (word as NSString).length > 2,
-                  !word.contains(where: { $0.isUppercase }) || word.first?.isUppercase == true && !word.dropFirst().contains(where: { $0.isUppercase }),
-                  let corrected = spellingCorrection(word, wordRange, text), corrected != word,
-                  !corrected.contains(" ") {
-            replacement = corrected
-            rules.append(.spelling)
+        withoutActuallyEscaping(isActive) { isActive in
+            let options = TextMechanicsOptions(
+                profile: flavor == .slack ? .chat : .prose,
+                enabled: { isActive(PunctuationRule($0)) },
+                enterEndedLine: enterEndedLine,
+                spelling: spellingCorrection,
+                tagger: TextMechanics.naturalLanguageTagger
+            )
+            return TextMechanics.edits(at: boundary, in: text, document: document, options: options).map {
+                PunctuationEdit(range: $0.range, replacement: $0.replacement, rules: $0.checks.map(PunctuationRule.init))
+            }
         }
-        if flavor != .slack, isActive(.sentenceCase),
-           let first = replacement.unicodeScalars.first, CharacterSet.lowercaseLetters.contains(first),
-           !replacement.dropFirst().contains(where: { $0.isUppercase }),
-           startsSentence(at: start, ns: ns, document: document) {
-            replacement = replacement.prefix(1).uppercased() + replacement.dropFirst()
-            rules.append(.sentenceCase)
-        }
-        if !rules.isEmpty, replacement != word {
-            edits.append(PunctuationEdit(range: wordRange, replacement: replacement, rules: rules))
-        }
-        // `its` before an adverb, article, verb or pronoun ("its really", "its a") is "it's"
-        if isActive(.contraction), let edit = itsBefore(word: word, at: start, ns: ns, document: document) {
-            edits.append(edit)
-        }
-        // `id` and `ill` used as a pronoun and verb ("id like", "ill be") are "I'd" and "I'll"
-        if isActive(.contraction), let edit = pronounContractionBefore(word: word, at: start, ns: ns, document: document) {
-            edits.append(edit)
-        }
-        // "but" starting a new clause takes a comma after the clause before it
-        if flavor != .slack, isActive(.clauseComma), let edit = commaBeforeBut(word: word, at: start, ns: ns, document: document) {
-            edits.append(edit)
-        }
-        // Enter at the end of a line ends its sentence: give it a full stop or a question mark
-        if typed == newline, flavor != .slack, isActive(.terminalPunctuation),
-           let edit = terminalPunctuation(ns: ns, lineEnd: boundary, document: document, enterEndedLine: enterEndedLine) {
-            edits.append(edit)
-        }
-        return edits
     }
 
     /// What the voice looks at for the boundary at `boundary`: the word before it, or the line it
-    /// ends when it's a newline. Nil when that isn't prose (code, math, a URL…), so there's nothing
-    /// to show as being checked.
+    /// ends when it's a newline. Nil when that isn't prose, so there's nothing to show as checked.
     static func checkedRange(text: String, boundary: Int, document: MarkdownDocument) -> NSRange? {
-        let ns = text as NSString
-        guard boundary > 0, boundary < ns.length else { return nil }
-        let typed = ns.character(at: boundary)
-        if typed == newline {
-            var lineStart = boundary
-            while lineStart > 0, ns.character(at: lineStart - 1) != newline { lineStart -= 1 }
-            let line = NSRange(location: lineStart, length: boundary - lineStart)
-            guard line.length > 0, !(ns.substring(with: line).trimmingCharacters(in: .whitespaces).isEmpty) else { return nil }
-            var last = boundary - 1
-            while last > lineStart, ns.character(at: last) == 0x20 { last -= 1 }
-            guard isProse(NSRange(location: last, length: 1), ns: ns, document: document) else { return nil }
-            return line
-        }
-        guard isWordBoundary(typed) else { return nil }
-        var start = boundary
-        while start > 0, isWordCharacter(ns.character(at: start - 1)) { start -= 1 }
-        let word = NSRange(location: start, length: boundary - start)
-        guard word.length > 0, isProse(word, ns: ns, document: document), !insideUnclosedSpan(before: start, ns: ns) else { return nil }
-        return word
+        TextMechanics.checkedRange(at: boundary, in: text, document: document)
     }
-
-    // MARK: Words
-
-    private static let newline: unichar = 0x0A
 
     /// Characters that end a word: space, tab and sentence punctuation.
-    static func isWordBoundary(_ c: unichar) -> Bool {
-        switch c {
-        case 0x20, 0x09, 0x2C, 0x2E, 0x3F, 0x21, 0x3B, 0x3A: return true // space tab , . ? ! ; :
-        default: return false
+    static func isWordBoundary(_ c: unichar) -> Bool { TextMechanics.isBoundary(c) }
+
+    /// Letters and apostrophes.
+    static func isWordCharacter(_ c: unichar) -> Bool { TextMechanics.isWordCharacter(c) }
+}
+
+nonisolated extension PunctuationRule {
+    /// Swash's rule for one of the editor's checks. The raw values stay Swash's own: they key
+    /// the weights people's partners have already learned.
+    init(_ check: TextMechanicsCheck) {
+        switch check {
+        case .pronounI: self = .pronounI
+        case .contractions: self = .contraction
+        case .sentenceCase: self = .sentenceCase
+        case .terminalPunctuation: self = .terminalPunctuation
+        case .capitals: self = .capitals
+        case .clauseComma: self = .clauseComma
+        case .spelling: self = .spelling
         }
-    }
-
-    static func isWordCharacter(_ c: unichar) -> Bool {
-        if c == 0x27 || c == 0x2019 { return true } // ' and ’
-        guard let scalar = Unicode.Scalar(c) else { return false }
-        return CharacterSet.letters.contains(scalar)
-    }
-
-    /// Missing apostrophes. Words that are also real words without one (its, well, were, ill, id,
-    /// wont, lets, shell, hell, wed) are left alone.
-    static let contractions: [String: String] = [
-        "dont": "don't", "doesnt": "doesn't", "didnt": "didn't", "cant": "can't", "couldnt": "couldn't",
-        "shouldnt": "shouldn't", "wouldnt": "wouldn't", "isnt": "isn't", "arent": "aren't", "wasnt": "wasn't",
-        "werent": "weren't", "havent": "haven't", "hasnt": "hasn't", "hadnt": "hadn't", "mustnt": "mustn't",
-        "neednt": "needn't", "youre": "you're", "theyre": "they're", "youve": "you've", "theyve": "they've",
-        "weve": "we've", "youll": "you'll", "theyll": "they'll", "youd": "you'd", "theyd": "they'd",
-        "thats": "that's", "whats": "what's", "theres": "there's", "heres": "here's", "wheres": "where's",
-        "whos": "who's", "hes": "he's", "shes": "she's", "aint": "ain't", "im": "I'm", "ive": "I've",
-    ]
-
-    private static let pronounForms: [String: String] = ["i": "I", "i'm": "I'm", "i've": "I've", "i'd": "I'd", "i'll": "I'll",
-                                                         "i’m": "I’m", "i’ve": "I’ve", "i’d": "I’d", "i’ll": "I’ll"]
-
-    /// Words always written in capitals. Only lowercase spellings are changed (`Ok` and `oK` might be names).
-    static let capitalWords: [String: String] = ["ok": "OK"]
-
-    private static func fixedWord(_ word: String, flavor: MarkdownFlavor, isActive: (PunctuationRule) -> Bool) -> (word: String, rule: PunctuationRule)? {
-        if isActive(.pronounI), let fixed = pronounForms[word] { return (fixed, .pronounI) }
-        if flavor != .slack, isActive(.capitals), let fixed = capitalWords[word] { return (fixed, .capitals) }
-        guard isActive(.contraction) else { return nil }
-        let lower = word.lowercased()
-        guard let fixed = contractions[lower] else { return nil }
-        if lower == "im" || lower == "ive" { return word == "IM" || word == "IVE" ? nil : (fixed, .contraction) }
-        if word == lower { return (fixed, .contraction) }
-        if word == word.uppercased() { return (fixed.uppercased(), .contraction) }
-        if word == word.prefix(1).uppercased() + word.dropFirst() { return (fixed.prefix(1).uppercased() + fixed.dropFirst(), .contraction) }
-        return nil // mixed case: a name or a code word
-    }
-
-    /// `its` is right before a noun or adjective ("its colour", "its own") and wrong before an
-    /// adverb, article, verb or pronoun ("its really", "its a", "its going", "its me"). Once the
-    /// word after it is finished, the tagger says which, from the line so far. "its about" can go
-    /// either way and stays.
-    static func itsBefore(word: String, at start: Int, ns: NSString, document: MarkdownDocument) -> PunctuationEdit? {
-        guard start >= 2, ns.character(at: start - 1) == 0x20 else { return nil }
-        var previousStart = start - 1
-        while previousStart > 0, isWordCharacter(ns.character(at: previousStart - 1)) { previousStart -= 1 }
-        let previousRange = NSRange(location: previousStart, length: start - 1 - previousStart)
-        guard previousRange.length == 3 else { return nil }
-        let previous = ns.substring(with: previousRange)
-        guard previous.lowercased() == "its", isProse(previousRange, ns: ns, document: document) else { return nil }
-        var lineStart = previousStart
-        while lineStart > 0, ns.character(at: lineStart - 1) != newline { lineStart -= 1 }
-        let line = ns.substring(with: NSRange(location: lineStart, length: start + (word as NSString).length - lineStart))
-        let tagger = NLTagger(tagSchemes: [.lexicalClass])
-        tagger.string = line
-        let wordStart = line.index(line.endIndex, offsetBy: -word.count)
-        let (tag, _) = tagger.tag(at: wordStart, unit: .word, scheme: .lexicalClass)
-        guard let tag, [.adverb, .determiner, .verb, .pronoun].contains(tag) else { return nil }
-        let fixed: String
-        if previous == "its" { fixed = "it's" } else if previous == "ITS" { fixed = "IT'S" } else if previous == "Its" { fixed = "It's" } else { return nil }
-        return PunctuationEdit(range: previousRange, replacement: fixed, rules: [.contraction])
-    }
-
-    /// The word before the one at `start`, when a single space separates them, and the line up to
-    /// the end of `word` with where the earlier word is in it.
-    private static func previousWord(before start: Int, word: String, ns: NSString)
-        -> (range: NSRange, text: String, line: String, offsetInLine: Int)? {
-        guard start >= 2, ns.character(at: start - 1) == 0x20 else { return nil }
-        var previousStart = start - 1
-        while previousStart > 0, isWordCharacter(ns.character(at: previousStart - 1)) { previousStart -= 1 }
-        let range = NSRange(location: previousStart, length: start - 1 - previousStart)
-        guard range.length > 0 else { return nil }
-        var lineStart = previousStart
-        while lineStart > 0, ns.character(at: lineStart - 1) != newline { lineStart -= 1 }
-        let line = ns.substring(with: NSRange(location: lineStart, length: start + (word as NSString).length - lineStart))
-        return (range, ns.substring(with: range), line, previousStart - lineStart)
-    }
-
-    /// The tagger's word class of the word at UTF-16 `offset` in `line`.
-    private static func lexicalClass(at offset: Int, in line: String) -> NLTag? {
-        let tagger = NLTagger(tagSchemes: [.lexicalClass])
-        tagger.string = line
-        guard let index = Range(NSRange(location: offset, length: 0), in: line)?.lowerBound else { return nil }
-        return tagger.tag(at: index, unit: .word, scheme: .lexicalClass).0
-    }
-
-    /// `id` and `ill` are words ("the id field", "I feel ill") and missed apostrophes ("id like",
-    /// "ill be there"). Once the next word is finished, the tagger reads the earlier one in its
-    /// line: as a pronoun or a verb it's "I'd" or "I'll"; as a noun or adjective it stays.
-    static func pronounContractionBefore(word: String, at start: Int, ns: NSString, document: MarkdownDocument) -> PunctuationEdit? {
-        guard let previous = previousWord(before: start, word: word, ns: ns) else { return nil }
-        let forms = ["id": "I'd", "Id": "I'd", "ill": "I'll", "Ill": "I'll"]
-        guard let fixed = forms[previous.text], isProse(previous.range, ns: ns, document: document),
-              let tag = lexicalClass(at: previous.offsetInLine, in: previous.line), tag == .pronoun || tag == .verb else { return nil }
-        return PunctuationEdit(range: previous.range, replacement: fixed, rules: [.contraction])
-    }
-
-    /// Words before "but" that make it mean "except" ("nothing but the truth"): no comma.
-    private static let exceptBefore: Set<String> = ["nothing", "anything", "everything", "all", "none", "nobody", "anyone",
-                                                     "everyone", "no", "any", "every", "last", "next", "not", "only"]
-
-    /// "but" starts a new clause when the word after it begins one (a pronoun, article, preposition
-    /// or adverb: "but it", "but the", "but for now") and the clause before it has a verb and at
-    /// least two words. "small but mighty" and "not red but blue" get no comma.
-    static func commaBeforeBut(word: String, at start: Int, ns: NSString, document: MarkdownDocument) -> PunctuationEdit? {
-        guard let but = previousWord(before: start, word: word, ns: ns), but.text.lowercased() == "but",
-              word.lowercased() != "also", isProse(but.range, ns: ns, document: document),
-              let before = previousWord(before: but.range.location, word: but.text, ns: ns),
-              !exceptBefore.contains(before.text.lowercased()) else { return nil }
-        // The clause before "but": back to the start of its sentence or line
-        var clauseStart = before.range.location
-        while clauseStart > 0 {
-            let c = ns.character(at: clauseStart - 1)
-            if c == newline || c == 0x2E || c == 0x3F || c == 0x21 || c == 0x3B || c == 0x3A || c == 0x2C { break }
-            clauseStart -= 1
-        }
-        let clause = ns.substring(with: NSRange(location: clauseStart, length: NSMaxRange(before.range) - clauseStart))
-        let tagger = NLTagger(tagSchemes: [.lexicalClass])
-        tagger.string = clause
-        var words = 0
-        var hasVerb = false
-        tagger.enumerateTags(in: clause.startIndex..<clause.endIndex, unit: .word, scheme: .lexicalClass,
-                             options: [.omitWhitespace, .omitPunctuation]) { tag, _ in
-            words += 1
-            if tag == .verb { hasVerb = true }
-            return true
-        }
-        guard words >= 2, hasVerb,
-              let tag = lexicalClass(at: but.offsetInLine + but.range.length + 1, in: but.line),
-              [.pronoun, .determiner, .preposition, .adverb].contains(tag) else { return nil }
-        return PunctuationEdit(range: NSRange(location: NSMaxRange(before.range), length: 0), replacement: ",", rules: [.clauseComma])
-    }
-
-    // MARK: Where prose is
-
-    /// The deepest node whose range contains `location`.
-    static func node(at location: Int, in document: MarkdownDocument) -> MarkdownNode {
-        var node = document.root
-        descend: while true {
-            for child in node.children where NSLocationInRange(location, child.range) {
-                node = child
-                continue descend
-            }
-            return node
-        }
-    }
-
-    /// The word is ordinary text in a paragraph, heading or list: not in code, math, HTML, an
-    /// address, front matter or a table, and not part of a URL, path, email or mention.
-    static func isProse(_ range: NSRange, ns: NSString, document: MarkdownDocument) -> Bool {
-        var node: MarkdownNode? = node(at: range.location, in: document)
-        guard node?.kind == .text else { return false }
-        while let current = node {
-            switch current.kind {
-            case .code, .codeBlock, .math, .htmlInline, .htmlBlock, .frontMatter, .image, .table,
-                 .linkReferenceDefinition:
-                return false
-            case .link(_, _, let kind) where kind == .autolink || kind == .extendedAutolink:
-                return false
-            default:
-                node = current.parent
-            }
-        }
-        // The token around the word (to the previous space) mustn't be a URL, path, email, mention or tag
-        var tokenStart = range.location
-        while tokenStart > 0 {
-            let c = ns.character(at: tokenStart - 1)
-            if c == 0x20 || c == 0x09 || c == newline { break }
-            tokenStart -= 1
-        }
-        let token = ns.substring(with: NSRange(location: tokenStart, length: NSMaxRange(range) - tokenStart))
-        if token.contains("/") || token.contains("@") || token.contains("#") || token.contains("\\") || token.contains(":") || token.contains("_") {
-            return false
-        }
-        if token.dropLast(range.length).contains(".") { return false } // file.name, e.g.word
-        return true
-    }
-
-    /// A code span or inline math still being typed: an odd number of backticks or dollar signs
-    /// earlier on the line, which the parser can't see as code or math until it's closed.
-    static func insideUnclosedSpan(before location: Int, ns: NSString) -> Bool {
-        var backticks = 0
-        var dollars = 0
-        var i = location
-        while i > 0 {
-            let c = ns.character(at: i - 1)
-            if c == newline { break }
-            if c == 0x60 { backticks += 1 }
-            if c == 0x24, i < 2 || ns.character(at: i - 2) != 0x5C { dollars += 1 }
-            i -= 1
-        }
-        return backticks % 2 == 1 || dollars % 2 == 1
-    }
-
-    // MARK: Sentences
-
-    private static let abbreviations: Set<String> = ["e.g", "i.e", "etc", "vs", "cf", "approx", "mr", "mrs", "ms", "dr", "st", "no", "fig", "ca", "al"]
-
-    /// The word at `start` begins a sentence: it's the first word of its paragraph, heading, list
-    /// item or quote, or follows `.`, `?` or `!` (not an abbreviation, ellipsis or decimal).
-    static func startsSentence(at start: Int, ns: NSString, document: MarkdownDocument) -> Bool {
-        let text = node(at: start, in: document)
-        var block = text.parent
-        while let current = block, !current.kind.isBlock { block = current.parent }
-        guard let block else { return false }
-        switch block.kind {
-        case .paragraph, .heading: break
-        default: return false
-        }
-        if let first = firstText(in: block), first === text, firstNonMarkup(in: ns, from: first.range.location, to: start) {
-            return true
-        }
-        // Back over spaces and opening markup to the end of the previous sentence
-        var i = start
-        while i > 0 {
-            let c = ns.character(at: i - 1)
-            if c == 0x20 || c == 0x2A || c == 0x5F || c == 0x7E || c == 0x5B || c == 0x28 || c == 0x22 || c == 0x201C {
-                i -= 1
-            } else {
-                break
-            }
-        }
-        guard i > 0 else { return false }
-        // Swash shows each line on its own, so a word that starts a line starts a sentence
-        if ns.character(at: i - 1) == newline { return true }
-        guard i < start else { return false }
-        let end = ns.character(at: i - 1)
-        // Closing quotes and brackets after the stop: "Done." or (done.)
-        var stop = i - 1
-        if end == 0x22 || end == 0x201D || end == 0x29, stop > 0 { stop -= 1 }
-        let mark = ns.character(at: stop)
-        if mark == 0x3F || mark == 0x21 { return true } // ? !
-        guard mark == 0x2E else { return false }
-        if stop > 0 {
-            let before = ns.character(at: stop - 1)
-            if before == 0x2E { return false } // ellipsis
-            if let scalar = Unicode.Scalar(before), CharacterSet.decimalDigits.contains(scalar) { return false }
-        }
-        var wordStart = stop
-        while wordStart > 0, isWordCharacter(ns.character(at: wordStart - 1)) || ns.character(at: wordStart - 1) == 0x2E { wordStart -= 1 }
-        let previous = ns.substring(with: NSRange(location: wordStart, length: stop - wordStart)).lowercased()
-        if abbreviations.contains(previous) { return false }
-        if previous.count == 1 { return false } // initials: J. Smith
-        return true
-    }
-
-    private static func firstText(in block: MarkdownNode) -> MarkdownNode? {
-        var found: MarkdownNode?
-        block.walk { node in
-            if found == nil, node.kind == .text { found = node }
-        }
-        return found
-    }
-
-    /// Only opening markup (and spaces) between `from` and `to`.
-    private static func firstNonMarkup(in ns: NSString, from: Int, to: Int) -> Bool {
-        guard from <= to else { return false }
-        for i in from..<to {
-            switch ns.character(at: i) {
-            case 0x20, 0x2A, 0x5F, 0x7E, 0x22, 0x201C, 0x28: continue
-            default: return false
-            }
-        }
-        return true
-    }
-
-    // MARK: Paragraph ends
-
-    private static let questionWords: Set<String> = [
-        "who", "what", "when", "where", "why", "how", "which", "whose", "whom",
-        "is", "are", "am", "was", "were", "do", "does", "did", "can", "could", "would", "should", "will", "shall",
-        "may", "might", "have", "has", "had", "isn't", "aren't", "don't", "doesn't", "didn't", "can't", "won't",
-        "wouldn't", "shouldn't", "couldn't",
-    ]
-
-    /// A full stop or question mark for the line just ended with Enter at `lineEnd` (the newline):
-    /// four or more words of prose ending in a letter or digit, in a paragraph (not a heading, list
-    /// item, callout, footnote or table). Only when Enter was pressed at the end of the line, not to
-    /// split it.
-    /// `enterEndedLine` says whether Enter was pressed at the end of the line, when the caller saw
-    /// it happen; otherwise the text after the newline decides.
-    static func terminalPunctuation(ns: NSString, lineEnd: Int, document: MarkdownDocument, enterEndedLine: Bool? = nil) -> PunctuationEdit? {
-        guard lineEnd > 0 else { return nil }
-        let endedLine = enterEndedLine ?? (lineEnd + 1 >= ns.length || ns.character(at: lineEnd + 1) == newline)
-        guard endedLine else { return nil } // Enter split a line
-        let last = lineEnd - 1
-        let lastChar = ns.character(at: last)
-        guard let scalar = Unicode.Scalar(lastChar), CharacterSet.alphanumerics.contains(scalar) else { return nil }
-        let text = node(at: last, in: document)
-        guard text.kind == .text else { return nil }
-        var paragraph = text.parent
-        while let current = paragraph, current.kind != .paragraph {
-            if current.kind.isBlock { return nil }
-            paragraph = current.parent
-        }
-        guard let paragraph else { return nil }
-        var ancestor = paragraph.parent
-        while let current = ancestor {
-            switch current.kind {
-            case .listItem, .tableCell, .alert, .footnoteDefinition: return nil
-            default: ancestor = current.parent
-            }
-        }
-        guard isProse(NSRange(location: last, length: 1), ns: ns, document: document),
-              !insideUnclosedSpan(before: last, ns: ns) else { return nil }
-        var lineStart = lineEnd
-        while lineStart > 0, ns.character(at: lineStart - 1) != newline { lineStart -= 1 }
-        let line = ns.substring(with: NSRange(location: lineStart, length: lineEnd - lineStart))
-        let words = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-        guard words.count >= 4 else { return nil }
-        let first = words[0].lowercased().trimmingCharacters(in: CharacterSet.letters.inverted.subtracting(CharacterSet(charactersIn: "'’")))
-        let mark = questionWords.contains(first) ? "?" : "."
-        return PunctuationEdit(range: NSRange(location: lineEnd, length: 0), replacement: mark, rules: [.terminalPunctuation])
     }
 }
 
