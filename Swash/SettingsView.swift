@@ -282,6 +282,7 @@ private struct WritingPartnerSettingsView: View {
     @AppStorage(WritingPartnerDefaults.curlyQuotes) private var curlyQuotes = false
     @AppStorage(WritingPartnerDefaults.dashes) private var dashes = false
     @AppStorage(WritingPartnerDefaults.ellipses) private var ellipses = false
+    @AppStorage(WritingPartnerDefaults.quickNoteTidy) private var quickNoteTidy = true
 
     private var flavor: MarkdownFlavor {
         activeVoice.currentFlavor(default: defaultFlavor)
@@ -343,6 +344,8 @@ private struct WritingPartnerSettingsView: View {
                     }
                 }
                 .disabled(mode == .off)
+                Toggle("Tidy Quick Notes on pause or save", isOn: $quickNoteTidy)
+                    .disabled(WritingPartnerDefaults.provider() != .pixerate)
             } footer: {
                 if access.isSignedOut {
                     Text("Signed in to Pixerate (the Account tab), the partner also reads the paragraph you've just written when you pause, and suggests structure such as a list or a heading. Until then, the fixes as you type work on this Mac.")

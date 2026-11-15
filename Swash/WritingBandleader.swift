@@ -10,7 +10,11 @@
 //
 
 import Foundation
+import Observation
 import PixerateMarkdown
+#if os(macOS)
+import AppKit
+#endif
 
 // MARK: - Schema Types (Pixerate/schemas#73)
 
@@ -731,3 +735,574 @@ nonisolated final class WritingPauseDetector: @unchecked Sendable {
         lastRequestedRevision = nil
     }
 }
+
+
+// MARK: - Quick Note tidy-up (#108)
+//
+// A subscription feature: the tidy-up comes from jazz on the Pixerate server (Swash#61's boundary).
+// Swash proposes it on pause or save, previews it, and applies it as one undo step. There are no
+// local tidy rules: without Pixerate (signed in with Pro), Quick Notes aren't tidied.
+
+extension JazzTextRange {
+    var nsRange: NSRange { NSRange(location: start, length: end - start) }
+}
+
+extension WritingBandleaderFactory {
+    /// A provider tests set instead of the app's.
+    static var overrideBandleader: (any WritingBandleader)?
+
+    /// Who tidies a Quick Note: Pixerate when it can answer, otherwise nobody (the on-device tier
+    /// doesn't tidy notes, #102).
+    static func currentBandleader() -> any WritingBandleader {
+        if let overrideBandleader { return overrideBandleader }
+        return isPixerateAvailable() ? makePixerateBandleader() : NoneWritingBandleader()
+    }
+}
+
+/// A bandleader that answers from a handler, for tests.
+nonisolated final class StubWritingBandleader: WritingBandleader, @unchecked Sendable {
+    typealias Handler = @Sendable (JazzTextLeadRequest) async throws -> JazzTextLeadResponse?
+
+    private let handler: Handler
+    private(set) var requests: [JazzTextLeadRequest] = []
+
+    init(handler: @escaping Handler) {
+        self.handler = handler
+    }
+
+    func lead(request: JazzTextLeadRequest) async throws -> JazzTextLeadResponse? {
+        requests.append(request)
+        return try await handler(request)
+    }
+}
+
+// MARK: - Quick Note Tidy Proposal & Diff (#108)
+
+nonisolated struct QuickNoteTidyDiffSegment: Equatable, Sendable {
+    enum Kind: String, Equatable, Sendable {
+        case unchanged
+        case removed
+        case inserted
+    }
+
+    var kind: Kind
+    var text: String
+
+    init(kind: Kind, text: String) {
+        self.kind = kind
+        self.text = text
+    }
+}
+
+nonisolated struct QuickNoteTidyProposal: Equatable, Sendable {
+    var originalText: String
+    var tidiedText: String
+    var suggestions: [JazzTextSuggestion]
+    var why: String
+    var diff: [QuickNoteTidyDiffSegment]
+
+    init(
+        originalText: String,
+        tidiedText: String,
+        suggestions: [JazzTextSuggestion],
+        why: String,
+        diff: [QuickNoteTidyDiffSegment]? = nil
+    ) {
+        self.originalText = originalText
+        self.tidiedText = tidiedText
+        self.suggestions = suggestions
+        self.why = why
+        self.diff = diff ?? Self.computeDiff(from: originalText, to: tidiedText)
+    }
+
+    /// Builds a tidy proposal by applying `response.suggestions` to `originalText`.
+    /// Returns `nil` when there are no applicable suggestions or when the resulting text is unchanged.
+    static func from(
+        originalText: String,
+        response: JazzTextLeadResponse,
+        flavor: MarkdownFlavor = .github
+    ) -> QuickNoteTidyProposal? {
+        guard !response.suggestions.isEmpty else { return nil }
+        let ns = originalText as NSString
+        let length = ns.length
+        let document = MarkdownDocument.parse(originalText)
+        let excludedRanges = Self.excludedRanges(in: document, text: ns)
+
+        // Sort ascending to validate bounds and filter overlaps or excluded code/math/table ranges
+        let sorted = response.suggestions.sorted {
+            if $0.range.start != $1.range.start { return $0.range.start < $1.range.start }
+            return $0.range.end > $1.range.end
+        }
+
+        var accepted: [JazzTextSuggestion] = []
+        var lastEnd = 0
+        for suggestion in sorted {
+            let start = suggestion.range.start
+            let end = suggestion.range.end
+            guard start >= 0, end >= start, end <= length, start >= lastEnd else { continue }
+            let range = NSRange(location: start, length: end - start)
+            // If this is a sub-range suggestion (not a whole-note replacement that already preserved exclusions),
+            // reject suggestions that cut into code, math, or tables.
+            if !(start == 0 && end == length) {
+                let touchesExcluded = excludedRanges.contains { NSIntersectionRange($0, range).length > 0 }
+                if touchesExcluded { continue }
+            }
+            if ns.substring(with: range) == suggestion.replacement { continue }
+            accepted.append(suggestion)
+            lastEnd = end
+        }
+
+        guard !accepted.isEmpty else { return nil }
+
+        let working = NSMutableString(string: originalText)
+        for suggestion in accepted.reversed() {
+            working.replaceCharacters(in: suggestion.range.nsRange, with: suggestion.replacement)
+        }
+        let tidied = working as String
+        guard tidied != originalText else { return nil }
+
+        let rationale: String
+        let trimmedWhy = response.why.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedWhy.isEmpty {
+            rationale = trimmedWhy
+        } else {
+            var reasons: [String] = []
+            for s in accepted {
+                let w = s.why.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !w.isEmpty, !reasons.contains(w) { reasons.append(w) }
+            }
+            rationale = reasons.isEmpty ? "Tidy Quick Note" : reasons.joined(separator: "; ")
+        }
+
+        return QuickNoteTidyProposal(
+            originalText: originalText,
+            tidiedText: tidied,
+            suggestions: accepted,
+            why: rationale
+        )
+    }
+
+    /// Computes a readable token-level diff between `oldText` and `newText` for the "Tidy" preview.
+    static func computeDiff(from oldText: String, to newText: String) -> [QuickNoteTidyDiffSegment] {
+        if oldText == newText {
+            return oldText.isEmpty ? [] : [QuickNoteTidyDiffSegment(kind: .unchanged, text: oldText)]
+        }
+        let oldTokens = tokenize(oldText)
+        let newTokens = tokenize(newText)
+        let diff = newTokens.difference(from: oldTokens)
+
+        var removedIndices = IndexSet()
+        var insertedIndices = IndexSet()
+        for change in diff {
+            switch change {
+            case .remove(let offset, _, _): removedIndices.insert(offset)
+            case .insert(let offset, _, _): insertedIndices.insert(offset)
+            }
+        }
+
+        var segments: [QuickNoteTidyDiffSegment] = []
+        func append(_ kind: QuickNoteTidyDiffSegment.Kind, _ text: String) {
+            guard !text.isEmpty else { return }
+            if let last = segments.last, last.kind == kind {
+                segments[segments.count - 1].text += text
+            } else {
+                segments.append(QuickNoteTidyDiffSegment(kind: kind, text: text))
+            }
+        }
+
+        var i = 0
+        var j = 0
+        while i < oldTokens.count || j < newTokens.count {
+            if i < oldTokens.count, j < newTokens.count, !removedIndices.contains(i), !insertedIndices.contains(j) {
+                append(.unchanged, oldTokens[i])
+                i += 1
+                j += 1
+                continue
+            }
+            while i < oldTokens.count, removedIndices.contains(i) {
+                append(.removed, oldTokens[i])
+                i += 1
+            }
+            while j < newTokens.count, insertedIndices.contains(j) {
+                append(.inserted, newTokens[j])
+                j += 1
+            }
+        }
+        return segments
+    }
+
+    private static func tokenize(_ text: String) -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        enum CharKind { case word, space, other }
+        var lastKind: CharKind?
+
+        for scalar in text.unicodeScalars {
+            let kind: CharKind
+            if CharacterSet.alphanumerics.contains(scalar) || scalar == "'" || scalar == "’" {
+                kind = .word
+            } else if scalar == " " || scalar == "\t" {
+                kind = .space
+            } else {
+                kind = .other
+            }
+            if kind == .other || (lastKind != nil && lastKind != kind) {
+                if !current.isEmpty {
+                    tokens.append(current)
+                    current = ""
+                }
+            }
+            current.unicodeScalars.append(scalar)
+            lastKind = kind
+        }
+        if !current.isEmpty { tokens.append(current) }
+        return tokens
+    }
+
+    static func excludedRanges(in document: MarkdownDocument, text: NSString) -> [NSRange] {
+        var ranges: [NSRange] = []
+        document.root.walk { node in
+            switch node.kind {
+            case .code, .codeBlock, .math, .htmlInline, .htmlBlock, .frontMatter, .table:
+                ranges.append(node.range)
+            default:
+                break
+            }
+        }
+        return ranges
+    }
+}
+
+
+// MARK: - Quick Note Pause Detector (#108)
+
+/// Tracks typing pauses in Quick Note on an injectable clock so tests run deterministically.
+nonisolated final class QuickNotePauseDetector: @unchecked Sendable {
+    typealias Clock = @Sendable () -> Date
+
+    var pauseDelay: TimeInterval
+    private let clock: Clock
+    private(set) var deadline: Date?
+    private(set) var lastCheckedRevision: String?
+    private var pendingText: String = ""
+
+    init(pauseDelay: TimeInterval = 1.2, clock: @escaping Clock = { Date() }) {
+        self.pauseDelay = pauseDelay
+        self.clock = clock
+    }
+
+    var isScheduled: Bool { deadline != nil }
+
+    /// Records an edit to the Quick Note text and schedules (or backs off) a pause check.
+    func noteEdit(text: String) {
+        pendingText = text
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            deadline = nil
+            return
+        }
+        deadline = clock().addingTimeInterval(pauseDelay)
+    }
+
+    /// Evaluates whether the pause deadline has passed for an unchecked note revision.
+    func checkPause(currentText: String? = nil) -> String? {
+        guard let target = deadline, clock() >= target else { return nil }
+        deadline = nil
+        let candidate = currentText ?? pendingText
+        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, lastCheckedRevision != candidate else { return nil }
+        lastCheckedRevision = candidate
+        return candidate
+    }
+
+    func markChecked(_ revision: String) {
+        lastCheckedRevision = revision
+        deadline = nil
+    }
+
+    func cancel() {
+        deadline = nil
+    }
+}
+
+// MARK: - Quick Note Tidy Session (#108)
+
+nonisolated enum QuickNoteSaveAction: Equatable, Sendable {
+    case createDocument
+    case appendToTarget
+}
+
+/// Manages a Quick Note's text, pause/save tidy-up triggers, preview proposal, and single-step undo.
+@MainActor
+@Observable
+final class QuickNoteTidySession {
+    private(set) var text: String = ""
+    private(set) var proposal: QuickNoteTidyProposal?
+    private(set) var isChecking: Bool = false
+
+    @ObservationIgnored let undoManager: UndoManager
+    @ObservationIgnored var bandleader: any WritingBandleader
+    @ObservationIgnored let defaults: UserDefaults
+    @ObservationIgnored var flavor: MarkdownFlavor
+    @ObservationIgnored let pauseDetector: QuickNotePauseDetector
+
+    @ObservationIgnored var onCreate: ((String) -> Void)?
+    @ObservationIgnored var onAppend: ((String) -> Void)?
+
+    @ObservationIgnored private var pauseTask: Task<Void, Never>?
+    @ObservationIgnored private var dismissedRevisions: Set<String> = []
+    @ObservationIgnored private var acceptedRevisions: Set<String> = []
+    @ObservationIgnored private var isApplyingProgrammaticChange = false
+
+    #if os(macOS)
+    @ObservationIgnored weak var textView: NSTextView?
+    #endif
+
+    init(
+        bandleader: (any WritingBandleader)? = nil,
+        defaults: UserDefaults = .standard,
+        flavor: MarkdownFlavor = .github,
+        pauseDelay: TimeInterval = 1.2,
+        clock: @escaping QuickNotePauseDetector.Clock = { Date() },
+        undoManager: UndoManager? = nil
+    ) {
+        self.bandleader = bandleader ?? WritingBandleaderFactory.currentBandleader()
+        self.defaults = defaults
+        self.flavor = flavor
+        self.pauseDetector = QuickNotePauseDetector(pauseDelay: pauseDelay, clock: clock)
+        let manager = undoManager ?? UndoManager()
+        manager.groupsByEvent = false
+        self.undoManager = manager
+    }
+
+    var isEmpty: Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var isTidyEnabled: Bool {
+        WritingPartnerDefaults.quickNoteTidy(defaults)
+    }
+
+    var canUndo: Bool { undoManager.canUndo }
+    var canRedo: Bool { undoManager.canRedo }
+    var undoActionName: String { undoManager.undoActionName }
+    var redoActionName: String { undoManager.redoActionName }
+
+    // MARK: Editing
+
+    /// Updates the Quick Note text from user typing, scheduling a pause check and recording undo.
+    func userDidEditText(_ newText: String, scheduleLiveTimer: Bool = true) {
+        guard newText != text else { return }
+        let oldText = text
+        text = newText
+
+        if !isApplyingProgrammaticChange {
+            registerTextUndo(from: oldText, to: newText, actionName: "Typing")
+        }
+
+        // Editing while a proposal is visible clears the stale proposal
+        if let proposal, proposal.originalText != newText {
+            self.proposal = nil
+        }
+
+        guard isTidyEnabled else {
+            pauseDetector.cancel()
+            pauseTask?.cancel()
+            return
+        }
+
+        pauseDetector.noteEdit(text: newText)
+        if scheduleLiveTimer {
+            scheduleAutomaticPauseCheck()
+        }
+    }
+
+    /// Simulates typing in tests without starting wall-clock timers.
+    func type(_ newText: String) {
+        userDidEditText(newText, scheduleLiveTimer: false)
+        syncTextViewIfNeeded()
+    }
+
+    private func scheduleAutomaticPauseCheck() {
+        pauseTask?.cancel()
+        let delay = pauseDetector.pauseDelay
+        guard delay > 0 else { return }
+        pauseTask = Task { @MainActor [weak self] in
+            let nanoseconds = UInt64(max(0.05, delay) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled, let self else { return }
+            _ = await self.checkPause()
+        }
+    }
+
+    // MARK: Pause & Save Triggers
+
+    /// Checks whether the pause deadline has passed and, if so, asks the bandleader for a tidy-up proposal.
+    @discardableResult
+    func checkPause() async -> QuickNoteTidyProposal? {
+        guard isTidyEnabled else { return nil }
+        guard let candidate = pauseDetector.checkPause(currentText: text) else { return nil }
+        guard !dismissedRevisions.contains(candidate), !acceptedRevisions.contains(candidate) else { return nil }
+        return await requestProposal(for: candidate)
+    }
+
+    /// Immediately triggers a pause tidy-up check on the current note.
+    @discardableResult
+    func triggerPause() async -> QuickNoteTidyProposal? {
+        pauseTask?.cancel()
+        guard isTidyEnabled else { return nil }
+        let candidate = text
+        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard pauseDetector.lastCheckedRevision != candidate,
+              !dismissedRevisions.contains(candidate),
+              !acceptedRevisions.contains(candidate) else {
+            return proposal
+        }
+        pauseDetector.markChecked(candidate)
+        return await requestProposal(for: candidate)
+    }
+
+    /// Triggered when the person saves the Quick Note ("New Document" or "Add to …").
+    /// If the note hasn't been checked yet and the bandleader proposes a tidy-up, shows the "Tidy"
+    /// prompt instead of saving silently and returns `false`. Once accepted, dismissed, or when no
+    /// tidy-up is proposed (or Quick Note tidy-up is off in Settings), performs the save and returns `true`.
+    @discardableResult
+    func save(_ action: QuickNoteSaveAction = .createDocument) async -> Bool {
+        pauseTask?.cancel()
+        pauseDetector.cancel()
+        guard !isEmpty else { return false }
+
+        if proposal != nil {
+            // A tidy proposal is already showing for the person to accept or dismiss
+            return false
+        }
+
+        let current = text
+        if isTidyEnabled,
+           !acceptedRevisions.contains(current),
+           !dismissedRevisions.contains(current),
+           pauseDetector.lastCheckedRevision != current {
+            pauseDetector.markChecked(current)
+            if let proposed = await requestProposal(for: current), proposed.tidiedText != current {
+                // Shown, never applied silently: hold save so the person can preview and accept or dismiss
+                return false
+            }
+        }
+
+        performSaveCallback(action)
+        return true
+    }
+
+    private func performSaveCallback(_ action: QuickNoteSaveAction) {
+        switch action {
+        case .createDocument:
+            onCreate?(text)
+        case .appendToTarget:
+            onAppend?(text)
+        }
+    }
+
+    private func requestProposal(for snapshot: String) async -> QuickNoteTidyProposal? {
+        let stats = WritingPartnerStats.load(defaults)
+        var ruleStats: [String: JazzTextVoiceStats] = [:]
+        var totalKept = 0
+        var totalUndone = 0
+        for (rule, entry) in stats.rules {
+            ruleStats[rule] = JazzTextVoiceStats(kept: entry.kept, undone: entry.undone)
+            totalKept += entry.kept
+            totalUndone += entry.undone
+        }
+        let voiceState = JazzTextVoiceState(
+            voice: .punctuate,
+            strength: 1.0,
+            kept: totalKept,
+            undone: totalUndone,
+            rules: ruleStats
+        )
+        let request = JazzTextLeadRequest(
+            paragraph: snapshot,
+            flavor: flavor.jazzTextFlavor,
+            voices: [voiceState]
+        )
+
+        isChecking = true
+        defer { isChecking = false }
+
+        guard let response = try? await bandleader.lead(request: request) else { return nil }
+        // Ensure the note wasn't edited while the request was in flight
+        guard text == snapshot, isTidyEnabled else { return nil }
+        guard let built = QuickNoteTidyProposal.from(originalText: snapshot, response: response, flavor: flavor) else {
+            return nil
+        }
+        proposal = built
+        return built
+    }
+
+    // MARK: Accept, Dismiss & Single-Step Undo
+
+    /// Accepts the active tidy-up proposal, applying all of its changes as a single "Tidy" undo step.
+    func acceptProposal() {
+        guard let currentProposal = proposal else { return }
+        proposal = nil
+        let oldText = text
+        let newText = currentProposal.tidiedText
+        guard newText != oldText else { return }
+
+        acceptedRevisions.insert(newText)
+        pauseDetector.markChecked(newText)
+
+        applyProgrammaticText(newText, from: oldText, actionName: WritingPartnerDefaults.tidyActionName)
+    }
+
+    /// Dismisses the active tidy-up proposal and leaves the note untouched.
+    func dismissProposal() {
+        guard let currentProposal = proposal else { return }
+        dismissedRevisions.insert(currentProposal.originalText)
+        pauseDetector.markChecked(currentProposal.originalText)
+        proposal = nil
+    }
+
+    func undo() {
+        guard undoManager.canUndo else { return }
+        undoManager.undo()
+    }
+
+    func redo() {
+        guard undoManager.canRedo else { return }
+        undoManager.redo()
+    }
+
+    private func applyProgrammaticText(_ newText: String, from oldText: String, actionName: String) {
+        isApplyingProgrammaticChange = true
+        defer { isApplyingProgrammaticChange = false }
+
+        text = newText
+        syncTextViewIfNeeded()
+        registerTextUndo(from: oldText, to: newText, actionName: actionName)
+    }
+
+    private func registerTextUndo(from oldText: String, to newText: String, actionName: String) {
+        undoManager.beginUndoGrouping()
+        undoManager.registerUndo(withTarget: self) { target in
+            target.applyProgrammaticText(oldText, from: newText, actionName: actionName)
+        }
+        if !actionName.isEmpty {
+            undoManager.setActionName(actionName)
+        }
+        undoManager.endUndoGrouping()
+    }
+
+    private func syncTextViewIfNeeded() {
+        #if os(macOS)
+        guard let textView, textView.string != text else { return }
+        textView.string = text
+        let length = (text as NSString).length
+        let currentSelection = textView.selectedRange()
+        if NSMaxRange(currentSelection) > length {
+            textView.setSelectedRange(NSRange(location: length, length: 0))
+        }
+        #endif
+    }
+}
+
