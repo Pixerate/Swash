@@ -93,11 +93,12 @@
     // as the same background sweep twice.
     await sleep(180);
     if (!alive()) return tag.stop(), true;
-    await overlay.play('selecting', () => ({ lines: rects(), caret: endOfWord() })).finished;
-    // Typing starts at once, as in Flair's preview: a pause here leaves a moment with no
-    // selection drawn, and the selection then appears a second time under the typed word.
+    // The selection is still showing when typing starts (it finishes at 180 ms and would be removed),
+    // as in Flair's preview: a gap between the two shows the selection a second time.
+    const selecting = overlay.play('selecting', () => ({ lines: rects(), caret: endOfWord() }));
+    await sleep(160);
     tag.stop();
-    if (!alive()) return true;
+    if (!alive()) return selecting.stop(), true;
 
     // The new word is drawn over the old one, letter by letter, and only then written into the text.
     let typed = '';
@@ -112,6 +113,7 @@
         font,
       };
     });
+    selecting.stop();
     for (const ch of word.fix!) {
       if (!alive()) break;
       typed += ch;
