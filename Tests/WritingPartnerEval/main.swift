@@ -216,7 +216,7 @@ enum Stripper {
             "i'll": "ill",
             "won't": "wont",
         ]
-        for (stripped, fixed) in PunctuateVoice.contractions {
+        for (stripped, fixed) in TextMechanics.contractions {
             map[fixed.lowercased()] = stripped
         }
         return map
@@ -291,11 +291,11 @@ enum Stripper {
             let rawWord = entry.text
             let normalizedWord = rawWord.replacingOccurrences(of: "’", with: "'")
             guard !isProtected(wordRange),
-                  PunctuateVoice.isProse(wordRange, ns: ns, document: document) else { continue }
+                  TextMechanics.isProse(wordRange, ns: ns, document: document) else { continue }
 
             let lower = normalizedWord.lowercased()
             let atSentenceStart = flavor != .slack
-                && PunctuateVoice.startsSentence(at: wordRange.location, ns: ns, document: document)
+                && EvalSentences.startsSentence(at: wordRange.location, ns: ns, document: document)
             let isTitleCase = normalizedWord.first?.isUppercase == true
                 && !normalizedWord.dropFirst().contains(where: { $0.isUppercase })
 
@@ -380,8 +380,8 @@ enum Stripper {
                       ns.substring(with: NSRange(location: betweenStart, length: 2)) == ", " else { continue }
                 let commaRange = NSRange(location: betweenStart, length: 1)
                 guard !isProtected(commaRange),
-                      PunctuateVoice.isProse(prev.range, ns: ns, document: document),
-                      PunctuateVoice.isProse(current.range, ns: ns, document: document) else { continue }
+                      TextMechanics.isProse(prev.range, ns: ns, document: document),
+                      TextMechanics.isProse(current.range, ns: ns, document: document) else { continue }
                 rawEdits.append(RawEdit(range: commaRange, originalText: ",", replacement: "", rules: [.clauseComma]))
             }
         }
@@ -459,7 +459,7 @@ enum Stripper {
     }
 
     private static func isTerminalParagraphProse(at location: Int, ns: NSString, document: MarkdownDocument) -> Bool {
-        let text = PunctuateVoice.node(at: location, in: document)
+        let text = EvalSentences.node(at: location, in: document)
         guard text.kind == .text else { return false }
         var paragraph = text.parent
         while let current = paragraph, current.kind != .paragraph {
@@ -476,7 +476,7 @@ enum Stripper {
                 ancestor = current.parent
             }
         }
-        return PunctuateVoice.isProse(NSRange(location: location, length: 1), ns: ns, document: document)
+        return TextMechanics.isProse(NSRange(location: location, length: 1), ns: ns, document: document)
     }
 }
 
@@ -643,6 +643,7 @@ enum ReplayHarness {
                     document: parsed,
                     flavor: doc.flavor,
                     enterEndedLine: pending.enterEndedLine,
+                    isActive: { !$0.isTypography }, // the default rules (typography is off unless turned on)
                     spellingCorrection: EvalSpelling.fakeChecker
                 )
                 for edit in edits.sorted(by: { $0.range.location > $1.range.location }) {
@@ -698,6 +699,7 @@ enum ReplayHarness {
                     boundary: keystrokeLocation,
                     document: parsed,
                     flavor: doc.flavor,
+                    isActive: { !$0.isTypography },
                     spellingCorrection: EvalSpelling.fakeChecker
                 )
                 for edit in prematureEdits.sorted(by: { $0.range.location > $1.range.location }) {
@@ -903,7 +905,7 @@ nonisolated enum Scorer {
                         isRestored = finalNorm.first == origNorm.first
                     case .contraction, .spelling:
                         isRestored = finalNorm.lowercased() == origNorm.lowercased()
-                    case .pronounI, .capitals, .terminalPunctuation, .clauseComma:
+                    case .pronounI, .capitals, .terminalPunctuation, .clauseComma, .curlyQuotes, .dashes, .ellipses:
                         isRestored = finalNorm == origNorm
                     }
                     if isRestored {
@@ -922,7 +924,7 @@ nonisolated enum Scorer {
                         isWrong = finalNorm.first != origNorm.first
                     case .contraction, .spelling:
                         isWrong = finalNorm.lowercased() != origNorm.lowercased()
-                    case .pronounI, .capitals, .terminalPunctuation, .clauseComma:
+                    case .pronounI, .capitals, .terminalPunctuation, .clauseComma, .curlyQuotes, .dashes, .ellipses:
                         isWrong = finalNorm != origNorm
                     }
                     if isWrong {
@@ -1410,3 +1412,49 @@ if !failures.isEmpty {
 
 print("WRITING PARTNER EVAL PASSED — Net Score: \(ReportGenerator.pct(summary.netScore)), Precision: \(ReportGenerator.pct(summary.totalRuleScore.precision)), Recall: \(ReportGenerator.pct(summary.totalRuleScore.recall)), Protected Changes: \(summary.protectedChanges), Caret Edits: \(summary.caretWordEdits)")
 exit(0)
+
+
+/// Sentence starts for the stripper: the rule the writing partner uses (now in the editor's
+/// `TextMechanics`, which keeps it internal), copied for deciding what to lower-case.
+enum EvalSentences {
+    static func node(at location: Int, in document: MarkdownDocument) -> MarkdownNode {
+        document.nodePath(containing: NSRange(location: location, length: 0)).last ?? document.root
+    }
+
+    private static let abbreviations: Set<String> = ["e.g", "i.e", "etc", "vs", "cf", "approx", "mr", "mrs", "ms", "dr", "st", "no", "fig", "ca", "al"]
+
+    static func startsSentence(at start: Int, ns: NSString, document: MarkdownDocument) -> Bool {
+        let text = node(at: start, in: document)
+        var block = text.parent
+        while let current = block, !current.kind.isBlock { block = current.parent }
+        guard let block else { return false }
+        switch block.kind {
+        case .paragraph, .heading: break
+        default: return false
+        }
+        var first: MarkdownNode?
+        block.walk { node in if first == nil, node.kind == .text { first = node } }
+        if let first, first === text, (first.range.location..<start).allSatisfy({ [0x20, 0x2A, 0x5F, 0x7E, 0x22, 0x201C, 0x28].contains(ns.character(at: $0)) }) {
+            return true
+        }
+        var i = start
+        while i > 0, [0x20, 0x2A, 0x5F, 0x7E, 0x5B, 0x28, 0x22, 0x201C].contains(ns.character(at: i - 1)) { i -= 1 }
+        guard i > 0 else { return false }
+        if ns.character(at: i - 1) == 0x0A { return true }
+        guard i < start else { return false }
+        var stop = i - 1
+        let end = ns.character(at: stop)
+        if end == 0x22 || end == 0x201D || end == 0x29, stop > 0 { stop -= 1 }
+        let mark = ns.character(at: stop)
+        if mark == 0x3F || mark == 0x21 { return true }
+        guard mark == 0x2E else { return false }
+        if stop > 0 {
+            let before = ns.character(at: stop - 1)
+            if before == 0x2E || (before >= 0x30 && before <= 0x39) { return false }
+        }
+        var wordStart = stop
+        while wordStart > 0, TextMechanics.isWordCharacter(ns.character(at: wordStart - 1)) || ns.character(at: wordStart - 1) == 0x2E { wordStart -= 1 }
+        let previous = ns.substring(with: NSRange(location: wordStart, length: stop - wordStart)).lowercased()
+        return !abbreviations.contains(previous) && previous.count != 1
+    }
+}
