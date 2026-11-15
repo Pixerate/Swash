@@ -189,6 +189,26 @@ final class SwashEditorController {
         textView.setSelectedRange(storage)
         textView.scrollRangeToVisible(storage)
     }
+
+    /// Accepts the active writing-partner suggestion in the attached editor, if any.
+    @discardableResult
+    func acceptSuggestion() -> Bool {
+        guard let textView = textView, let coordinator = coordinator else { return false }
+        return coordinator.writingPartner.acceptSuggestion(in: textView, coordinator: coordinator)
+    }
+
+    /// Dismisses the active writing-partner suggestion in the attached editor, if any.
+    @discardableResult
+    func dismissSuggestion() -> Bool {
+        guard let textView = textView, let coordinator = coordinator else { return false }
+        return coordinator.writingPartner.dismissSuggestion(in: textView, coordinator: coordinator)
+    }
+
+    /// Whether the attached editor currently has a writing-partner suggestion.
+    var hasSuggestion: Bool {
+        guard let coordinator = coordinator else { return false }
+        return !coordinator.writingPartner.suggestions.isEmpty
+    }
 }
 
 final class SwashLayoutManager: NSLayoutManager {
@@ -416,6 +436,10 @@ class SwashNSTextView: NSTextView {
         let textMaxX = textMinX + (textContainer?.size.width ?? bounds.width)
         if point.x < textMinX || point.x > textMaxX || point.y < textContainerOrigin.y { return .arrow }
         if footnoteLink(at: point) != nil || taskMarkerRange(at: point) != nil { return .pointingHand }
+        if let coordinator = delegate as? SwashTextView.Coordinator,
+           coordinator.writingPartner.suggestion(at: point, in: self, coordinator: coordinator) != nil {
+            return .pointingHand
+        }
         return nil
     }
 
@@ -474,6 +498,11 @@ class SwashNSTextView: NSTextView {
         if event.clickCount == 1, !event.modifierFlags.contains(.shift), let link = footnoteLink(at: point),
            let coordinator = delegate as? SwashTextView.Coordinator {
             coordinator.followFootnote(link, in: self)
+            return
+        }
+        if event.clickCount == 1, !event.modifierFlags.contains(.shift),
+           let coordinator = delegate as? SwashTextView.Coordinator,
+           coordinator.writingPartner.acceptSuggestion(at: point, in: self, coordinator: coordinator) {
             return
         }
         let imageLocation = event.clickCount == 1 ? imageAttachmentLocation(at: point) : nil
@@ -563,18 +592,107 @@ class SwashNSTextView: NSTextView {
 
     private lazy var rotorDelegates: [MarkdownRotorDelegate] = MarkdownRotorDelegate.Kind.allCases.map { MarkdownRotorDelegate(kind: $0, textView: self) }
 
-    /// Headings, links and tables, so VoiceOver users can jump through the document's structure.
+    /// Headings, links, tables and writing-partner suggestions, so VoiceOver users can jump through the document.
     override func accessibilityCustomRotors() -> [NSAccessibilityCustomRotor] {
         rotorDelegates.map { delegate in
             switch delegate.kind {
             case .headings: return NSAccessibilityCustomRotor(rotorType: .heading, itemSearchDelegate: delegate)
             case .links: return NSAccessibilityCustomRotor(rotorType: .link, itemSearchDelegate: delegate)
             case .tables: return NSAccessibilityCustomRotor(rotorType: .table, itemSearchDelegate: delegate)
+            case .suggestions: return NSAccessibilityCustomRotor(label: "Suggestions", itemSearchDelegate: delegate)
             }
         }
     }
 
+    override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
+        let base = super.accessibilityCustomActions() ?? []
+        guard let coordinator = delegate as? SwashTextView.Coordinator,
+              !coordinator.writingPartner.suggestions.isEmpty else { return base.isEmpty ? nil : base }
+        let accept = NSAccessibilityCustomAction(name: "Accept Suggestion") { [weak self, weak coordinator] in
+            guard let self, let coordinator else { return false }
+            return coordinator.writingPartner.acceptSuggestion(in: self, coordinator: coordinator)
+        }
+        let dismiss = NSAccessibilityCustomAction(name: "Dismiss Suggestion") { [weak self, weak coordinator] in
+            guard let self, let coordinator else { return false }
+            return coordinator.writingPartner.dismissSuggestion(in: self, coordinator: coordinator)
+        }
+        return [accept, dismiss] + base
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        if let coordinator = delegate as? SwashTextView.Coordinator,
+           coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
+            return true
+        }
+        return super.accessibilityPerformPress()
+    }
+
+    @objc func acceptSuggestion(_ sender: Any?) {
+        guard let coordinator = delegate as? SwashTextView.Coordinator else { return }
+        _ = coordinator.writingPartner.acceptSuggestion(in: self, coordinator: coordinator)
+    }
+
+    @objc func dismissSuggestion(_ sender: Any?) {
+        guard let coordinator = delegate as? SwashTextView.Coordinator else { return }
+        _ = coordinator.writingPartner.dismissSuggestion(in: self, coordinator: coordinator)
+    }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(acceptSuggestion(_:)) || item.action == #selector(dismissSuggestion(_:)) {
+            guard let coordinator = delegate as? SwashTextView.Coordinator else { return false }
+            return !coordinator.writingPartner.suggestions.isEmpty
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event)
+        if let coordinator = delegate as? SwashTextView.Coordinator,
+           let suggestion = coordinator.writingPartner.suggestion(at: convert(event.locationInWindow, from: nil), in: self, coordinator: coordinator)
+               ?? coordinator.writingPartner.suggestionsForCaret(in: self, coordinator: coordinator).last
+               ?? coordinator.writingPartner.suggestions.last {
+            let accept = NSMenuItem(title: "Accept “\(suggestion.edit.replacement)”", action: #selector(acceptSuggestion(_:)), keyEquivalent: "")
+            accept.target = self
+            let dismiss = NSMenuItem(title: "Dismiss Suggestion", action: #selector(dismissSuggestion(_:)), keyEquivalent: "")
+            dismiss.target = self
+            menu?.insertItem(.separator(), at: 0)
+            menu?.insertItem(dismiss, at: 0)
+            menu?.insertItem(accept, at: 0)
+        }
+        return menu
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        if let coordinator = delegate as? SwashTextView.Coordinator,
+           coordinator.textView(self, doCommandBy: #selector(NSResponder.cancelOperation(_:))) {
+            return
+        }
+        super.cancelOperation(sender)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .option, (event.keyCode == 36 || event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\n"),
+           let coordinator = delegate as? SwashTextView.Coordinator,
+           coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
+            return
+        }
+        if flags.isEmpty, event.keyCode == 53,
+           let coordinator = delegate as? SwashTextView.Coordinator,
+           coordinator.writingPartner.dismissSuggestion(in: self, coordinator: coordinator) {
+            return
+        }
+        super.keyDown(with: event)
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if window?.firstResponder === self,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .option,
+           (event.keyCode == 36 || event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\n"),
+           let coordinator = delegate as? SwashTextView.Coordinator,
+           coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
+            return true
+        }
         if window?.firstResponder === self, let handler = onFormatCommand, let command = FormatCommand.command(for: event) {
             handler(command)
             return true
@@ -811,9 +929,9 @@ class SwashNSTextView: NSTextView {
     }
 }
 
-/// Finds the next or previous heading, link or table for a VoiceOver custom rotor.
+/// Finds the next or previous heading, link, table or writing-partner suggestion for a VoiceOver custom rotor.
 final class MarkdownRotorDelegate: NSObject, NSAccessibilityCustomRotorItemSearchDelegate {
-    enum Kind: CaseIterable { case headings, links, tables }
+    enum Kind: CaseIterable { case headings, links, tables, suggestions }
 
     let kind: Kind
     weak var textView: NSTextView?
@@ -836,7 +954,8 @@ final class MarkdownRotorDelegate: NSObject, NSAccessibilityCustomRotorItemSearc
         if searchParameters.searchDirection == .previous {
             item = items.last { $0.range.location < anchor }
         } else {
-            item = items.first { current == nil ? $0.range.location >= anchor : $0.range.location > anchor }
+            let forward = items.first { current == nil ? $0.range.location >= anchor : $0.range.location > anchor }
+            item = forward ?? (kind == .suggestions && current == nil ? items.last : nil)
         }
         guard let item = item else { return nil }
         let result = NSAccessibilityCustomRotor.ItemResult(targetElement: textView)
@@ -1425,8 +1544,13 @@ struct SwashTextView: NSViewRepresentable {
 
         // MARK: VoiceOver rotor items
 
-        /// Storage ranges and labels of the headings, links or tables in the document, in order.
+        /// Storage ranges and labels of the headings, links, tables or suggestions in the document, in order.
         func rotorItems(_ kind: MarkdownRotorDelegate.Kind, in textView: NSTextView) -> [(range: NSRange, label: String)] {
+            if kind == .suggestions {
+                return writingPartner.suggestions.map {
+                    (storageRange(forRaw: $0.edit.range, in: textView), "\($0.edit.original) → \($0.edit.replacement)")
+                }
+            }
             let text = parent.text
             let document = parent.controller?.formatting(for: text).document ?? MarkdownDocument.parse(text, flavor: parent.flavor)
             var items: [(NSRange, String)] = []
@@ -1451,6 +1575,8 @@ struct SwashTextView: NSViewRepresentable {
                         items.append((node.range, header.isEmpty ? "Table \(index)" : "Table \(index): \(header)"))
                     }
                 }
+            case .suggestions:
+                break
             }
             return items.map { (storageRange(forRaw: $0.0, in: textView), $0.1) }
         }
@@ -1807,7 +1933,7 @@ struct SwashTextView: NSViewRepresentable {
             return attrs
         }
         
-        // Key commands: table-cell navigation, then Notion-style structural editing
+        // Key commands: writing-partner suggestions, table-cell navigation, then Notion-style structural editing
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
                 if let onCommit = parent.onCommit {
@@ -1815,7 +1941,10 @@ struct SwashTextView: NSViewRepresentable {
                     return true
                 }
                 return applyStructuralEdit(in: textView, actionName: "New Line") { MarkdownEditingCommands.newline(text: $0, selection: $1, document: self.cachedDocument(for: $0)) }
+            } else if commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
+                if writingPartner.acceptSuggestionAtCaret(in: textView, coordinator: self) { return true }
             } else if commandSelector == #selector(NSResponder.insertTab(_:)) {
+                if writingPartner.acceptSuggestionAtCaret(in: textView, coordinator: self) { return true }
                 if let onNextCell = parent.onNextCell {
                     onNextCell()
                     return true
@@ -1830,6 +1959,8 @@ struct SwashTextView: NSViewRepresentable {
             } else if commandSelector == #selector(NSResponder.deleteBackward(_:)) {
                 let hidden = parent.isStyled
                 return applyStructuralEdit(in: textView, actionName: "Delete") { MarkdownEditingCommands.backspace(text: $0, selection: $1, markersHidden: hidden, document: self.cachedDocument(for: $0)) }
+            } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                if writingPartner.dismissSuggestion(in: textView, coordinator: self) { return true }
             }
             return false
         }
@@ -2086,6 +2217,9 @@ struct SwashTextView: NSViewRepresentable {
             }
             
             applyFocus(in: textView)
+            if !writingPartner.suggestions.isEmpty {
+                writingPartner.refreshSuggestions(in: textView, coordinator: self)
+            }
             if parent.writingOptions.typewriter {
                 centerCaret(in: textView)
             } else if let origin = savedScrollOrigin, let clipView = textView.enclosingScrollView?.contentView {
@@ -2362,6 +2496,9 @@ struct SwashTextView: NSViewRepresentable {
             cachedStorageCodeBlocks = MarkdownParser.codeRanges(in: textView.string).blockRanges
             
             applyFocus(in: textView)
+            if !writingPartner.suggestions.isEmpty {
+                writingPartner.refreshSuggestions(in: textView, coordinator: self)
+            }
             lastStyledText = textView.string
             lastIsStyled = false
             lastFlavor = parent.flavor

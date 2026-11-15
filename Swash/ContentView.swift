@@ -1797,6 +1797,10 @@ struct ContentView: View {
         case .copyFilePath:
             guard let url = effectiveBaseURL else { NSSound.beep(); return }
             DocumentLinkText.copy(url.path)
+        case .acceptSuggestion:
+            if !editor.acceptSuggestion() { NSSound.beep() }
+        case .dismissSuggestion:
+            if !editor.dismissSuggestion() { NSSound.beep() }
         }
     }
     

@@ -839,6 +839,123 @@ struct InteractionRunner {
              let stats = WritingPartnerStats.load()
              log("writing-partner-learns", "", "\(learn.text) contraction=\(stats.isActive(.contraction))",
                  expect: "I dont dont dont  contraction=false")
+
+             // Suggest mode (#103): offers fixes without changing the text; accepted by keyboard,
+             // pointer, VoiceOver rotor or Edit menu, and dismissed by Esc or typing past
+             defaults.set(WritingPartnerMode.suggest.rawValue, forKey: WritingPartnerDefaults.mode)
+             defaults.set(false, forKey: WritingPartnerDefaults.spelling)
+             for styled in [true, false] {
+                 let mode = styled ? "styled" : "source"
+
+                 // 1. Drawn without changing the text; accepted with Tab (or ⌥⏎); undone as its own step
+                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+                 let b = TextBox(""); let tv = makeEditor(b, styled: styled)
+                 let coordinator = tv.delegate as! SwashTextView.Coordinator
+                 typeEach("I dont ", into: tv)
+                 let overlay = tv.subviews.compactMap { $0 as? WritingPartnerOverlay }.first
+                 let offered = coordinator.writingPartner.suggestions.map { "\($0.edit.original)->\($0.edit.replacement)" }.joined(separator: ",")
+                 log("writing-partner-suggest-drawn-\(mode)", "I dont ",
+                     "text=\(b.text) layers=\(overlay?.suggestionLayers.count ?? 0) offered=\(offered)",
+                     expect: "text=I dont  layers=1 offered=dont->don't")
+
+                 tv.doCommand(by: #selector(NSResponder.insertTab(_:)))
+                 waitForPartner(tv)
+                 log("writing-partner-suggest-accept-key-\(mode)", "Tab after 'I dont '",
+                     "text=\(b.text) layers=\(overlay?.suggestionLayers.count ?? 0)",
+                     expect: "text=I don't  layers=0")
+
+                 tv.undoManager?.undo(); pump(0.3)
+                 typeEach("x", into: tv)
+                 log("writing-partner-suggest-undo-\(mode)", "⌘Z then type 'x'", b.text, expect: "I dont x")
+
+                 // Option-Return (⌥⏎) also accepts a suggestion
+                 let optB = TextBox(""); let tvOpt = makeEditor(optB, styled: styled)
+                 typeEach("so ", into: tvOpt)
+                 tvOpt.doCommand(by: #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)))
+                 waitForPartner(tvOpt)
+                 log("writing-partner-suggest-accept-option-return-\(mode)", "⌥⏎ after 'so '", optB.text, expect: "So ")
+
+                 // 2. Clicking the suggested word accepts it (and shows the pointing hand cursor)
+                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+                 let clickB = TextBox(""); let tvClick = makeEditor(clickB, styled: styled)
+                 let clickCoord = tvClick.delegate as! SwashTextView.Coordinator
+                 typeEach("I dont ", into: tvClick)
+                 let storageRange = clickCoord.storageRange(forRaw: clickCoord.writingPartner.suggestions[0].edit.range, in: tvClick)
+                 let rect = WritingPartnerOverlay.rects(for: storageRange, in: tvClick)[0]
+                 let viewPoint = NSPoint(x: rect.midX, y: rect.midY)
+                 let hand = (tvClick as? SwashNSTextView)?.overrideCursor(at: viewPoint) == .pointingHand
+                 let clickEvent = NSEvent.mouseEvent(with: .leftMouseDown, location: tvClick.convert(viewPoint, to: nil),
+                                                     modifierFlags: [], timestamp: 0, windowNumber: tvClick.window?.windowNumber ?? 0,
+                                                     context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                 tvClick.mouseDown(with: clickEvent)
+                 waitForPartner(tvClick)
+                 let clickOverlay = tvClick.subviews.compactMap { $0 as? WritingPartnerOverlay }.first
+                 log("writing-partner-suggest-accept-pointer-\(mode)", "click 'dont'",
+                     "hand=\(hand) text=\(clickB.text) layers=\(clickOverlay?.suggestionLayers.count ?? 0)",
+                     expect: "hand=true text=I don't  layers=0")
+
+                 // 3. Dismissing with Esc removes the suggestion and counts against its rule
+                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+                 let escB = TextBox(""); let tvEsc = makeEditor(escB, styled: styled)
+                 typeEach("I dont ", into: tvEsc)
+                 tvEsc.doCommand(by: #selector(NSResponder.cancelOperation(_:))); pump(0.05)
+                 let escOverlay = tvEsc.subviews.compactMap { $0 as? WritingPartnerOverlay }.first
+                 let layersAfterFirstEsc = escOverlay?.suggestionLayers.count ?? 0
+                 typeEach("dont ", into: tvEsc)
+                 tvEsc.doCommand(by: #selector(NSResponder.cancelOperation(_:))); pump(0.05)
+                 typeEach("dont ", into: tvEsc)
+                 let escCoord = tvEsc.delegate as! SwashTextView.Coordinator
+                 let escStats = WritingPartnerStats.load()
+                 log("writing-partner-suggest-dismiss-esc-\(mode)", "Esc twice on 'dont'",
+                     "afterFirst=\(layersAfterFirstEsc) text=\(escB.text) active=\(escStats.isActive(.contraction)) thirdOffered=\(!escCoord.writingPartner.suggestions.isEmpty)",
+                     expect: "afterFirst=0 text=I dont dont dont  active=false thirdOffered=false")
+
+                 // 4. Typing on keeps a suggestion on offer; typing well past it (more than
+                 //    `suggestionReach` characters) dismisses it and counts against its rule
+                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+                 let pastB = TextBox(""); let tvPast = makeEditor(pastB, styled: styled)
+                 let filler = "know what to do about this whole thing now "
+                 typeEach("I dont ", into: tvPast)
+                 typeEach("know ", into: tvPast)
+                 let pastCoord = tvPast.delegate as! SwashTextView.Coordinator
+                 let stillOffered = !pastCoord.writingPartner.suggestions.isEmpty
+                 typeEach(String(filler.dropFirst(5)), into: tvPast)
+                 typeEach("dont ", into: tvPast)
+                 typeEach(filler, into: tvPast)
+                 typeEach("dont ", into: tvPast)
+                 let pastStats = WritingPartnerStats.load()
+                 log("writing-partner-suggest-dismiss-typing-past-\(mode)", "keep typing well past 'dont' twice",
+                     "stillOfferedAfterAWord=\(stillOffered) text=\(pastB.text) active=\(pastStats.isActive(.contraction)) thirdOffered=\(!pastCoord.writingPartner.suggestions.isEmpty)",
+                     expect: "stillOfferedAfterAWord=true text=I dont \(filler)dont \(filler)dont  active=false thirdOffered=false")
+
+                 // 5. Editing the suggested word makes the suggestion disappear without penalising the rule
+                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+                 let editB = TextBox(""); let tvEdit = makeEditor(editB, styled: styled)
+                 typeEach("I dont ", into: tvEdit)
+                 tvEdit.doCommand(by: #selector(NSResponder.deleteBackward(_:))); pump(0.05)
+                 tvEdit.doCommand(by: #selector(NSResponder.deleteBackward(_:))); pump(0.05)
+                 let editOverlay = tvEdit.subviews.compactMap { $0 as? WritingPartnerOverlay }.first
+                 let editStats = WritingPartnerStats.load()
+                 log("writing-partner-suggest-edit-disappears-\(mode)", "backspace into 'dont'",
+                     "text=\(editB.text) layers=\(editOverlay?.suggestionLayers.count ?? 0) weight=\(editStats.weight(.contraction))",
+                     expect: "text=I don layers=0 weight=1.0")
+
+                 // 6. VoiceOver announcement, Suggestions rotor and Edit menu acceptance
+                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+                 let voB = TextBox(""); let tvVO = makeEditor(voB, styled: styled)
+                 let voCoord = tvVO.delegate as! SwashTextView.Coordinator
+                 typeEach("I dont ", into: tvVO)
+                 let announced = voCoord.writingPartner.lastAnnouncement ?? ""
+                 let rotor = tvVO.accessibilityCustomRotors().first { $0.label == "Suggestions" }
+                 let item = rotor.flatMap { $0.itemSearchDelegate?.rotor($0, resultFor: NSAccessibilityCustomRotor.SearchParameters()) }
+                 if let range = item?.targetRange { tvVO.setSelectedRange(range) }
+                 (tvVO as? SwashNSTextView)?.acceptSuggestion(nil)
+                 waitForPartner(tvVO)
+                 log("writing-partner-suggest-voiceover-\(mode)", "rotor + Edit › Accept Suggestion",
+                     "announced=\(announced) rotor=\(item?.customLabel ?? "nil") text=\(voB.text)",
+                     expect: "announced=Suggestion: don't for dont rotor=dont → don't text=I don't ")
+             }
+
              defaults.removeObject(forKey: WritingPartnerDefaults.spelling)
              if let savedMode { defaults.set(savedMode, forKey: WritingPartnerDefaults.mode) } else { defaults.removeObject(forKey: WritingPartnerDefaults.mode) }
              if let savedStats { defaults.set(savedStats, forKey: WritingPartnerDefaults.stats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.stats) }

@@ -13,6 +13,7 @@ import PixerateMarkdown
 
 enum DocumentCommand {
     case copyHeadingLink, copyMarkdownLink, copyFilePath
+    case acceptSuggestion, dismissSuggestion
 }
 
 struct DocumentCommandHandlerKey: FocusedValueKey {
@@ -68,6 +69,22 @@ struct DocumentMenuCommands: Commands {
     @FocusedValue(\.outlineVisibility) private var showOutline
 
     var body: some Commands {
+        CommandGroup(after: .undoRedo) {
+            Divider()
+            Button("Accept Suggestion") {
+                if !NSApp.sendAction(#selector(SwashNSTextView.acceptSuggestion(_:)), to: nil, from: nil) {
+                    handler?(.acceptSuggestion)
+                }
+            }
+            .keyboardShortcut(.return, modifiers: .option)
+            .disabled(handler == nil)
+            Button("Dismiss Suggestion") {
+                if !NSApp.sendAction(#selector(SwashNSTextView.dismissSuggestion(_:)), to: nil, from: nil) {
+                    handler?(.dismissSuggestion)
+                }
+            }
+            .disabled(handler == nil)
+        }
         CommandGroup(after: .pasteboard) {
             Divider()
             Button("Copy Heading Link") { handler?(.copyHeadingLink) }
