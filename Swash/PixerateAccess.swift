@@ -59,6 +59,19 @@ final class PixerateAccess {
     /// Set after the server asks Swash to wait (HTTP 429).
     private(set) var pausedUntil: Date?
 
+    var isSignedOut: Bool {
+        account.token == nil || !account.isAuthenticated
+    }
+
+    var isRateLimited: Bool {
+        guard let pausedUntil else { return false }
+        return now() < pausedUntil
+    }
+
+    var fuelBalance: Int {
+        account.fuelBalance
+    }
+
     @ObservationIgnored private let session: URLSession
     @ObservationIgnored private let now: () -> Date
 
@@ -87,6 +100,7 @@ final class PixerateAccess {
     /// The app's instance. Debug builds accept `--demo-auth` (signed in to a fake server, for
     /// working on the UI without an account) and `--demo-unauth` (signed out, nothing stored).
     static func make(arguments: [String] = ProcessInfo.processInfo.arguments) -> PixerateAccess {
+        let access: PixerateAccess
         #if DEBUG
         if arguments.contains("--demo-auth") {
             let config = URLSessionConfiguration.ephemeral
@@ -97,13 +111,16 @@ final class PixerateAccess {
                 tokenStore: InMemoryTokenStore(token: "pix_live_demo_swash", selectedTeamId: "team_demo"),
                 session: session
             )
-            return PixerateAccess(account: account, session: session)
+            access = PixerateAccess(account: account, session: session)
+        } else if arguments.contains("--demo-unauth") {
+            access = PixerateAccess(account: PixerateAccountClient(baseURL: PixerateDefaults.defaultBaseURL, tokenStore: InMemoryTokenStore()))
+        } else {
+            access = PixerateAccess(account: PixerateAccountClient(baseURL: baseURL()))
         }
-        if arguments.contains("--demo-unauth") {
-            return PixerateAccess(account: PixerateAccountClient(baseURL: PixerateDefaults.defaultBaseURL, tokenStore: InMemoryTokenStore()))
-        }
+        #else
+        access = PixerateAccess(account: PixerateAccountClient(baseURL: baseURL()))
         #endif
-        return PixerateAccess(account: PixerateAccountClient(baseURL: baseURL()))
+        return access
     }
 
     // MARK: Account

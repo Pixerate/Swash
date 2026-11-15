@@ -173,6 +173,16 @@ final class WritingPartnerSession {
     /// Most recent VoiceOver announcement for a suggestion.
     private(set) var lastAnnouncement: String?
 
+    // MARK: - Bandleader & Pause Tier (#101)
+    private var bandleader: (any WritingBandleader)?
+    private var pauseDetector: WritingPauseDetector = WritingPauseDetector()
+    private let sessionMemory: BandleaderSessionMemory = BandleaderSessionMemory()
+    private var paragraphVoiceSettings: ParagraphVoiceSettings?
+    private var pauseTask: Task<Void, Never>?
+    private(set) var activeSuggestion: (suggestion: JazzTextSuggestion, paragraph: String, paragraphRange: NSRange)?
+    private var lastKnownParagraphRange: NSRange?
+    private var lastKnownParagraphText: String?
+
     private struct Step {
         var rules: [PunctuationRule]
         var spellingWords: [String]
@@ -200,11 +210,61 @@ final class WritingPartnerSession {
     }
 
     /// True while the partner has nothing to do (for tests).
-    var isIdle: Bool { fixInFlight == nil && pendingBoundaries.isEmpty && !isScheduled }
+    var isIdle: Bool { fixInFlight == nil && pendingBoundaries.isEmpty && !isScheduled && pauseTask == nil }
+
+    /// Whether an inline structural suggestion prompt is currently active.
+    var hasActiveSuggestion: Bool { activeSuggestion != nil }
+
+    /// The active suggestion item, if any.
+    var activeSuggestionItem: JazzTextSuggestion? { activeSuggestion?.suggestion }
+
+    /// Accepts the active structural suggestion, applying it as one undo step through the partner's cursor.
+    func acceptActiveSuggestion() {
+        guard let active = activeSuggestion, let textView, let coordinator else { return }
+        let (suggestion, _, paragraphRange) = active
+        activeSuggestion = nil
+        let overlay = WritingPartnerOverlay.overlay(for: textView)
+        overlay.hideSuggestionPrompt()
+
+        let rawStart = paragraphRange.location + suggestion.range.start
+        let rawEnd = paragraphRange.location + suggestion.range.end
+        let rawLength = max(0, rawEnd - rawStart)
+        let rawRange = NSRange(location: rawStart, length: rawLength)
+        let rawText = coordinator.rawText(of: textView) as NSString
+        guard NSMaxRange(rawRange) <= rawText.length else { return }
+        let original = rawText.substring(with: rawRange)
+
+        let edit = PartnerEdit(
+            range: rawRange,
+            original: original,
+            replacement: suggestion.replacement,
+            rules: [],
+            spellingWords: [],
+            actionName: WritingPartnerDefaults.suggestionActionName
+        )
+        play(Fix(remaining: [edit], boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
+    }
+
+    /// Dismisses the active structural suggestion and teaches the bandleader for the session.
+    func dismissActiveSuggestion() {
+        guard let active = activeSuggestion else { return }
+        let (suggestion, paragraph, _) = active
+        activeSuggestion = nil
+        sessionMemory.dismiss(suggestion: suggestion, in: paragraph)
+        if let textView {
+            let overlay = WritingPartnerOverlay.overlay(for: textView)
+            overlay.hideSuggestionPrompt()
+        }
+    }
 
     /// The person is about to type `string` over `range` (storage offsets). Call only for their own
     /// typing: not for Swash's edits, restyling, SwiftUI updates or Writing Tools.
     func willType(_ string: String?, in range: NSRange, textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        if hasActiveSuggestion {
+            let overlay = WritingPartnerOverlay.overlay(for: textView)
+            overlay.hideSuggestionPrompt()
+            activeSuggestion = nil
+        }
         if let undoManager = textView.undoManager, undoManager.isUndoing || undoManager.isRedoing {
             pendingBoundaries = []
             cancelFix()
@@ -263,6 +323,19 @@ final class WritingPartnerSession {
             textView.isAutomaticSpellingCorrectionEnabled = saved
             savedAutocorrect = nil
         }
+
+        // Pause detection: record typing and back off while editing continues
+        if isOn, WritingPartnerDefaults.provider(defaults) != .none {
+            let rawText = coordinator.rawText(of: textView)
+            if let extracted = BandleaderContextExtractor.extract(from: rawText, caret: raw.location, flavor: coordinator.parent.flavor) {
+                lastKnownParagraphRange = extracted.range
+                lastKnownParagraphText = extracted.paragraph
+                let charCode: unichar = (replacement as NSString).length > 0 ? (replacement as NSString).character(at: 0) : 0
+                pauseDetector.noteTyping(character: charCode, paragraph: extracted.paragraph, range: extracted.range, caret: raw.location, enterEndedSentence: false)
+                schedulePauseCheck(in: textView, coordinator: coordinator)
+            }
+        }
+
         guard isOn, let string, (string as NSString).length == 1, range.length == 0,
               textView.selectedRange().length == 0, !textView.hasMarkedText() else {
             // Anything else (a paste, a deletion, macOS's text replacement) moves the text under the
@@ -284,6 +357,18 @@ final class WritingPartnerSession {
     /// published and styled the change, and one at a time: while the partner's cursor is playing a
     /// fix, new boundaries wait for it.
     func didChange(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        if WritingPartnerDefaults.mode(defaults) != .off && WritingPartnerDefaults.provider(defaults) != .none {
+            let rawText = coordinator.rawText(of: textView)
+            let rawSelection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+            if let current = BandleaderContextExtractor.extract(from: rawText, caret: rawSelection.location, flavor: coordinator.parent.flavor) {
+                if let lastRange = lastKnownParagraphRange, let lastText = lastKnownParagraphText, lastRange != current.range {
+                    pauseDetector.noteLeftParagraph(oldParagraph: lastText, oldRange: lastRange)
+                    triggerImmediatePause(in: textView, coordinator: coordinator)
+                }
+                lastKnownParagraphRange = current.range
+                lastKnownParagraphText = current.paragraph
+            }
+        }
         guard !pendingBoundaries.isEmpty, !isScheduled, fixInFlight == nil else { return }
         isScheduled = true
         DispatchQueue.main.async { [weak self, weak textView, weak coordinator] in
@@ -305,7 +390,6 @@ final class WritingPartnerSession {
         guard selection.length == 0 else { return }
         let stats = WritingPartnerStats.load(defaults)
         let spellingOn = WritingPartnerDefaults.spelling(defaults)
-        let isActive: (PunctuationRule) -> Bool = { $0 == .spelling ? spellingOn : stats.isActive($0) }
         let checker = NSSpellChecker.shared
         let tag = textView.spellCheckerDocumentTag
         let spellingCorrection: (String, NSRange, String) -> String? = { _, range, text in
@@ -325,10 +409,26 @@ final class WritingPartnerSession {
             guard boundary >= 0, boundary < working.length, boundary < caret else { continue }
             let c = working.character(at: boundary)
             guard PunctuateVoice.isWordBoundary(c) || c == 0x0A else { continue }
+
+            // Voice settings per paragraph: disable punctuation for genre (e.g. poem)
+            if let settings = paragraphVoiceSettings,
+               boundary >= settings.paragraphRange.location && boundary <= NSMaxRange(settings.paragraphRange),
+               settings.isPunctuateDisabled {
+                continue
+            }
+
             let text = working as String
             let document = working == raw as NSString ? coordinator.formatting(for: text).document : MarkdownDocument.parse(text, flavor: flavor)
             if shift == 0, let range = PunctuateVoice.checkedRange(text: text, boundary: boundary, document: document) {
                 checked.append(range)
+            }
+            let isActive: (PunctuationRule) -> Bool = { [weak self] rule in
+                if let settings = self?.paragraphVoiceSettings,
+                   boundary >= settings.paragraphRange.location && boundary <= NSMaxRange(settings.paragraphRange),
+                   settings.disabledRules.contains(rule) {
+                    return false
+                }
+                return rule == .spelling ? spellingOn : stats.isActive(rule)
             }
             let edits = PunctuateVoice.edits(text: text, boundary: boundary, document: document, flavor: flavor,
                                              enterEndedLine: pending.enterEndedLine, isActive: isActive,
@@ -519,9 +619,10 @@ final class WritingPartnerSession {
             }
             pendingStep = edit
             let animate = !WritingPartnerOverlay.reduceMotion && textView.window != nil
+            let actionName = edit.actionName ?? WritingPartnerDefaults.actionName
             do {
                 try await director.perform(AgentTextEdit(from: edit.range.location, to: NSMaxRange(edit.range), text: edit.replacement),
-                                           by: Self.agent, actionName: WritingPartnerDefaults.actionName,
+                                           by: Self.agent, actionName: actionName,
                                            options: AgentTypingOptions(selectMs: WritingPartnerOverlay.selectMs, animate: animate))
             } catch {
                 pendingStep = nil
@@ -614,6 +715,8 @@ final class WritingPartnerSession {
 
     /// Stops the fix being played (undo, redo, the partner turned off); nothing partial is left.
     private func cancelFix() {
+        pauseTask?.cancel()
+        pauseTask = nil
         guard fixInFlight != nil else { return }
         fixInFlight?.isCancelled = true
         MainActor.assumeIsolated { target?.clearGhost() }
@@ -647,6 +750,120 @@ final class WritingPartnerSession {
         }
     }
 
+    // MARK: - Pause Scheduling & Bandleader Evaluation
+
+    private func schedulePauseCheck(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        pauseTask?.cancel()
+        let delay = pauseDetector.pauseDelay
+        pauseTask = Task { @MainActor [weak self, weak textView, weak coordinator] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            } catch {
+                return
+            }
+            guard let self, let textView, let coordinator else { return }
+            self.evaluatePause(in: textView, coordinator: coordinator)
+        }
+    }
+
+    private func triggerImmediatePause(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        pauseTask?.cancel()
+        pauseTask = Task { @MainActor [weak self, weak textView, weak coordinator] in
+            guard let self, let textView, let coordinator else { return }
+            self.evaluatePause(in: textView, coordinator: coordinator)
+        }
+    }
+
+    @MainActor
+    private func evaluatePause(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        pauseTask = nil
+        guard WritingPartnerDefaults.mode(defaults) != .off else { return }
+        let provider = WritingPartnerDefaults.provider(defaults)
+        guard provider != .none else { return }
+
+        guard let pause = pauseDetector.checkPause() else { return }
+        let rawText = coordinator.rawText(of: textView)
+        guard let extracted = BandleaderContextExtractor.extract(from: rawText, caret: pause.caret, flavor: coordinator.parent.flavor) else { return }
+
+        let leader = self.bandleader ?? WritingBandleaderFactory.makeBandleader(provider)
+        self.bandleader = leader
+
+        let stats = WritingPartnerStats.load(defaults)
+        let spellingOn = WritingPartnerDefaults.spelling(defaults)
+        let voices = [stats.toVoiceState(spellingOn: spellingOn)]
+        let request = JazzTextLeadRequest(
+            paragraph: extracted.paragraph,
+            before: extracted.before,
+            after: extracted.after,
+            flavor: coordinator.parent.flavor.jazzTextFlavor,
+            voices: voices
+        )
+
+        Task { @MainActor [weak self, weak textView, weak coordinator] in
+            guard let self, let textView, let coordinator else { return }
+            do {
+                guard let response = try await leader.lead(request: request) else { return }
+                self.applyBandleaderResponse(response, for: extracted.paragraph, paragraphRange: extracted.range, in: textView, coordinator: coordinator)
+            } catch {
+                // Quiet fallback to local voices
+            }
+        }
+    }
+
+    private func applyBandleaderResponse(
+        _ response: JazzTextLeadResponse,
+        for paragraph: String,
+        paragraphRange: NSRange,
+        in textView: NSTextView,
+        coordinator: SwashTextView.Coordinator
+    ) {
+        self.paragraphVoiceSettings = ParagraphVoiceSettings.from(response: response, paragraphRange: paragraphRange)
+
+        let filtered = response.suggestions.filter { !self.sessionMemory.isDismissed(suggestion: $0, in: paragraph) }
+        guard let suggestion = filtered.first else { return }
+
+        self.activeSuggestion = (suggestion: suggestion, paragraph: paragraph, paragraphRange: paragraphRange)
+
+        let overlay = WritingPartnerOverlay.overlay(for: textView)
+        let rawStart = paragraphRange.location + suggestion.range.start
+        let rawEnd = paragraphRange.location + suggestion.range.end
+        let storageRange = coordinator.storageRange(forRaw: NSRange(location: rawStart, length: max(0, rawEnd - rawStart)), in: textView)
+        let rects = WritingPartnerOverlay.rects(for: storageRange, in: textView)
+        let targetRect = rects.last ?? WritingPartnerOverlay.caretRect(at: storageRange.location, in: textView) ?? NSRect(x: 20, y: 20, width: 100, height: 20)
+
+        overlay.showSuggestionPrompt(
+            suggestion: suggestion,
+            at: targetRect,
+            onAccept: { [weak self] in self?.acceptActiveSuggestion() },
+            onDismiss: { [weak self] in self?.dismissActiveSuggestion() }
+        )
+    }
+
+    // MARK: - Testing Helpers
+
+    func setBandleaderForTesting(_ bandleader: (any WritingBandleader)?) {
+        self.bandleader = bandleader
+    }
+
+    func setPauseDetectorForTesting(_ detector: WritingPauseDetector) {
+        self.pauseDetector = detector
+    }
+
+    var sessionMemoryForTesting: BandleaderSessionMemory {
+        sessionMemory
+    }
+
+    var paragraphVoiceSettingsForTesting: ParagraphVoiceSettings? {
+        paragraphVoiceSettings
+    }
+
+    @MainActor
+    func triggerPauseCheckForTesting(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        evaluatePause(in: textView, coordinator: coordinator)
+    }
+
+    // MARK: Undo
+
     /// Undoing the partner's step straight away counts against its rules.
     private func observeUndo(_ undoManager: UndoManager?) {
         guard let undoManager, undoManager !== observedUndoManager else { return }
@@ -655,7 +872,8 @@ final class WritingPartnerSession {
         undoObserver = NotificationCenter.default.addObserver(
             forName: .NSUndoManagerDidUndoChange, object: undoManager, queue: .main
         ) { [weak self] notification in
-            let isPartnerStep = (notification.object as? UndoManager)?.redoActionName == WritingPartnerDefaults.actionName
+            let redoName = (notification.object as? UndoManager)?.redoActionName
+            let isPartnerStep = redoName == WritingPartnerDefaults.actionName || redoName == WritingPartnerDefaults.suggestionActionName
             self?.didUndo(isPartnerStep: isPartnerStep)
         }
     }
