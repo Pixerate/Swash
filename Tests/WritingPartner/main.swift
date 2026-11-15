@@ -237,7 +237,6 @@ print("Punctuate tests finished. Moving to bandleader tests...")
 // MARK: - Writing Bandleader Tests (#101)
 
 // 1. None provider
-print("Testing None provider...")
 do {
     let none = NoneWritingBandleader()
     let req = JazzTextLeadRequest(paragraph: "Test paragraph", flavor: .gfm)
@@ -246,7 +245,6 @@ do {
 }
 
 // 2. Pixerate provider mock network and schema contract
-print("Testing Pixerate provider...")
 do {
     let sampleJSON = """
     {
@@ -295,7 +293,6 @@ do {
         voices: [.init(voice: .punctuate, strength: 1.0, kept: 5, undone: 1)]
     )
     let res = try await bandleader.lead(request: req)
-    print("2.1 lead success: \(String(describing: res))")
     check(sent.path == "/api/agent/text-lead", "Pixerate bandleader posts to /api/agent/text-lead")
     check(sent.body != nil, "Pixerate bandleader sends request body")
     if let sentBody = sent.body, let decodedReq = try? JSONDecoder().decode(JazzTextLeadRequest.self, from: sentBody) {
@@ -316,40 +313,32 @@ do {
     check(res?.palette.first?.voice == .punctuate, "Palette voice is punctuate")
     check(res?.palette.first?.strength == 0.0, "Palette voice strength is 0.0")
 
-    // Out of Fuel (402) handled quietly
-    print("2.2 testing fuel...")
-    let fuelBandleader = PixerateWritingBandleader(postHandler: { _, _ in
-        throw PixerateRefusal.outOfFuel
+    // The Basic plan (Pixerate Pro required) handled quietly
+    let basicBandleader = PixerateWritingBandleader(postHandler: { _, _ in
+        throw PixerateRefusal.subscriptionRequired
     })
-    let fuelRes = try await fuelBandleader.lead(request: req)
-    print("2.2 fuel done")
-    check(fuelRes == nil, "Out of fuel (402) returns nil quietly")
+    let basicRes = try await basicBandleader.lead(request: req)
+    check(basicRes == nil, "The Basic plan (Pro required) returns nil quietly")
 
     // Rate limited (429) handled quietly
-    print("2.3 testing rate limit...")
     let rateBandleader = PixerateWritingBandleader(postHandler: { _, _ in
         throw PixerateRefusal.rateLimited(until: Date().addingTimeInterval(60))
     })
     let rateRes = try await rateBandleader.lead(request: req)
-    print("2.3 rate done")
     check(rateRes == nil, "Rate limited (429) returns nil quietly")
 
     // Signed out handled quietly
-    print("2.4 testing sign out...")
     let signoutBandleader = PixerateWritingBandleader(postHandler: { _, _ in
         throw PixerateRefusal.signedOut
     })
     let signoutRes = try await signoutBandleader.lead(request: req)
-    print("2.4 sign out done")
     check(signoutRes == nil, "Signed out returns nil quietly")
 
     // Feature off handled quietly
-    print("2.5 testing feature off...")
     let offBandleader = PixerateWritingBandleader(postHandler: { _, _ in
         throw PixerateRefusal.featureOff
     })
     let offRes = try await offBandleader.lead(request: req)
-    print("2.5 feature off done")
     check(offRes == nil, "Feature off returns nil quietly")
 }
 

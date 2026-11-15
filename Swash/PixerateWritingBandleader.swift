@@ -5,7 +5,7 @@
 //  The Pixerate bandleader provider (#101): calls `POST /api/agent/text-lead` through `PixerateAccess.post`
 //  (GOTCHAS #77) when the person pauses while writing.
 //
-//  Handles `402` (out of Fuel), `429` (rate-limited) and sign-out quietly, falling back to None.
+//  Handles a Basic plan (Pro required), `429` (rate-limited) and sign-out quietly, falling back to None.
 //  Testable with a mock network layer so contributors don't need an account.
 //
 
@@ -52,8 +52,8 @@ nonisolated final class PixerateWritingBandleader: WritingBandleader, @unchecked
             } else {
                 responseData = try await PixerateAccess.shared.post(path: "/api/agent/text-lead", body: body)
             }
-        } catch PixerateRefusal.outOfFuel {
-            // Out of Fuel (402): handled quietly, falling back to None
+        } catch PixerateRefusal.subscriptionRequired {
+            // Needs Pixerate Pro: handled quietly, falling back to None
             return nil
         } catch PixerateRefusal.rateLimited {
             // 429: handled quietly, falling back to None
@@ -81,6 +81,6 @@ nonisolated final class PixerateWritingBandleader: WritingBandleader, @unchecked
 extension WritingBandleaderFactory {
     static func installPixerateBandleader() {
         makePixerateBandleader = { PixerateWritingBandleader() }
-        isPixerateAvailable = { MainActor.assumeIsolated { !PixerateAccess.shared.isSignedOut } }
+        isPixerateAvailable = { MainActor.assumeIsolated { !PixerateAccess.shared.isSignedOut && PixerateAccess.shared.isSubscribed } }
     }
 }

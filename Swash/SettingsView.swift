@@ -305,8 +305,8 @@ private struct WritingPartnerSettingsView: View {
                 LabeledContent("When you pause") {
                     if access.isSignedOut {
                         Text("Basic fixes only").foregroundStyle(.secondary)
-                    } else if access.isOutOfFuel || access.fuelBalance <= 0 {
-                        Text("Out of Fuel: basic fixes only").foregroundStyle(.secondary)
+                    } else if !access.isSubscribed {
+                        Text("Basic plan: fixes as you type only").foregroundStyle(.secondary)
                     } else if let until = access.pausedUntil, until > .now {
                         Text("Paused until \(until, style: .time)").foregroundStyle(.secondary)
                     } else {
@@ -318,11 +318,11 @@ private struct WritingPartnerSettingsView: View {
                 if access.isSignedOut {
                     Text("Signed in to Pixerate (the Account tab), the partner also reads the paragraph you've just written when you pause, and suggests structure such as a list or a heading. Until then, the fixes as you type work on this Mac.")
                         .settingsFooterStyle()
-                } else if access.isOutOfFuel || access.fuelBalance <= 0 {
-                    Text("This team is out of Fuel, so the partner works on this Mac only. Add Fuel on pixerate.com.")
+                } else if !access.isSubscribed {
+                    Text("Reading the paragraph when you pause is part of Pixerate Pro (Settings › Account). On the Basic plan, the fixes as you type work on this Mac.")
                         .settingsFooterStyle()
                 } else {
-                    Text("When you pause, the partner sends the paragraph you've just written to Pixerate and may suggest structure, such as a list or a heading (1 Fuel per turn). Code, math and tables are never sent.")
+                    Text("When you pause, the partner sends the paragraph you've just written to Pixerate and may suggest structure, such as a list or a heading as part of Pixerate Pro. Code, math and tables are never sent.")
                         .settingsFooterStyle()
                 }
             }
