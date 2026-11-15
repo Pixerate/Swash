@@ -88,10 +88,14 @@
 
     const endOfWord = () => caretAt(node, node.length, page);
     const tag = overlay.play('caret', () => ({ caret: endOfWord() }));
-    await overlay.play('checking', () => ({ lines: rects() })).finished;
+    // No `checking` stage here. Flair's own preview plays it once across a whole sentence before
+    // fixing words in it; played on each word, followed by `selecting` on the same word, it reads
+    // as the same background sweep twice.
+    await sleep(180);
     if (!alive()) return tag.stop(), true;
     await overlay.play('selecting', () => ({ lines: rects(), caret: endOfWord() })).finished;
-    await sleep(160);
+    // Typing starts at once, as in Flair's preview: a pause here leaves a moment with no
+    // selection drawn, and the selection then appears a second time under the typed word.
     tag.stop();
     if (!alive()) return true;
 
