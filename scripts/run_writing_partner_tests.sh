@@ -5,12 +5,14 @@
 set -eo pipefail
 cd "$(dirname "$0")/.."
 source scripts/pixerate_markdown.sh
+source scripts/pixerate_account.sh
 OUT="build/writing-partner"; mkdir -p "$OUT"
 # The app target's concurrency settings: Swift 5 mode, MainActor by default, approachable concurrency
-swiftc -O -target arm64-apple-macos14.0 -sdk "$(xcrun --show-sdk-path --sdk macosx)" \
-  -swift-version 5 -default-isolation MainActor \
+swiftc -target arm64-apple-macos14.0 -sdk "$(xcrun --show-sdk-path --sdk macosx)" \
+  -swift-version 5 -default-isolation MainActor -D DEBUG \
   -enable-upcoming-feature NonisolatedNonsendingByDefault -enable-upcoming-feature InferIsolatedConformances \
-  $PIXERATE_MARKDOWN \
-  Swash/MarkdownFlavor.swift Swash/PixerateMarkdownExtensions.swift Swash/SlackMarkdown.swift Swash/WritingPartner.swift \
+  $PIXERATE_MARKDOWN $PIXERATE_ACCOUNT \
+  Swash/MarkdownFlavor.swift Swash/PixerateMarkdownExtensions.swift Swash/SlackMarkdown.swift \
+  Swash/WritingPartner.swift Swash/PixerateAccess.swift Swash/WritingBandleader.swift Swash/PixerateWritingBandleader.swift \
   Tests/WritingPartner/main.swift -o "$OUT/runner"
 "$OUT/runner"

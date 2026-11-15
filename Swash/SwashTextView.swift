@@ -1935,6 +1935,15 @@ struct SwashTextView: NSViewRepresentable {
         
         // Key commands: writing-partner suggestions, table-cell navigation, then Notion-style structural editing
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if writingPartner.hasActiveSuggestion {
+                if commandSelector == #selector(NSResponder.insertTab(_:)) {
+                    writingPartner.acceptActiveSuggestion()
+                    return true
+                } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                    writingPartner.dismissActiveSuggestion()
+                    return true
+                }
+            }
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
                 if let onCommit = parent.onCommit {
                     onCommit()

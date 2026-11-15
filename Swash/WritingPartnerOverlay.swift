@@ -33,7 +33,26 @@ final class WritingPartnerOverlay: NSView {
     static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
     override var isFlipped: Bool { true }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private(set) var suggestionPrompt: SuggestionPromptView?
+
+    var hasActiveSuggestion: Bool {
+        suggestionPrompt != nil && suggestionPrompt?.isHidden == false
+    }
+
+    var activeSuggestion: JazzTextSuggestion? {
+        suggestionPrompt?.currentSuggestion
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let prompt = suggestionPrompt, !prompt.isHidden {
+            let pointInPrompt = convert(point, to: prompt)
+            if prompt.bounds.contains(pointInPrompt) {
+                return prompt.hitTest(pointInPrompt)
+            }
+        }
+        return nil
+    }
 
     init(in textView: NSTextView) {
         super.init(frame: textView.bounds)
@@ -43,6 +62,69 @@ final class WritingPartnerOverlay: NSView {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    // MARK: Structural Suggestion Prompt
+
+    /// Shows an inline prompt for a structural suggestion (`suggestion`) positioned near `rect`.
+    func showSuggestionPrompt(
+        suggestion: JazzTextSuggestion,
+        at rect: NSRect,
+        onAccept: @escaping () -> Void,
+        onDismiss: @escaping () -> Void
+    ) {
+        let prompt: SuggestionPromptView
+        if let existing = suggestionPrompt {
+            prompt = existing
+        } else {
+            prompt = SuggestionPromptView(frame: .zero)
+            addSubview(prompt)
+            suggestionPrompt = prompt
+        }
+
+        prompt.configure(with: suggestion, onAccept: onAccept, onDismiss: onDismiss)
+        let size = SuggestionPromptView.preferredSize(for: suggestion)
+
+        let margin: CGFloat = 12
+        let originX = max(margin, min(rect.minX, bounds.width - size.width - margin))
+        var originY = rect.maxY + 4
+        if originY + size.height > bounds.height - margin {
+            originY = max(margin, rect.minY - size.height - 4)
+        }
+
+        prompt.frame = NSRect(origin: NSPoint(x: originX, y: originY), size: size)
+        prompt.isHidden = false
+
+        if Self.reduceMotion {
+            prompt.alphaValue = 1.0
+        } else {
+            prompt.alphaValue = 0.0
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.18
+                prompt.animator().alphaValue = 1.0
+            }
+        }
+    }
+
+    /// Hides and removes the active structural suggestion prompt.
+    func hideSuggestionPrompt() {
+        guard let prompt = suggestionPrompt, !prompt.isHidden else { return }
+        if Self.reduceMotion {
+            prompt.isHidden = true
+            prompt.removeFromSuperview()
+            suggestionPrompt = nil
+        } else {
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.15
+                prompt.animator().alphaValue = 0.0
+            }, completionHandler: { [weak self, weak prompt] in
+                prompt?.isHidden = true
+                prompt?.removeFromSuperview()
+                if self?.suggestionPrompt === prompt {
+                    self?.suggestionPrompt = nil
+                }
+            })
+        }
+    }
 
     /// The overlay of `textView`, added on first use.
     static func overlay(for textView: NSTextView) -> WritingPartnerOverlay {
@@ -416,6 +498,167 @@ final class WritingPartnerOverlay: NSView {
 private extension FlairRGBA {
     var hex: String {
         String(format: "#%02X%02X%02X", Int((r * 255).rounded()), Int((g * 255).rounded()), Int((b * 255).rounded()))
+    }
+}
+
+// MARK: - Suggestion Prompt View
+
+/// The inline prompt for structural suggestions ("make this a list", heading, math, alert, title).
+/// Accessible by keyboard (Tab to accept, Esc to dismiss) and VoiceOver.
+@MainActor
+final class SuggestionPromptView: NSView {
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let whyLabel = NSTextField(labelWithString: "")
+    private let acceptButton = NSButton(title: "Accept ⇥", target: nil, action: nil)
+    private let dismissButton = NSButton(title: "Dismiss ⎋", target: nil, action: nil)
+    private let iconView = NSImageView()
+
+    var onAccept: (() -> Void)?
+    var onDismiss: (() -> Void)?
+    private(set) var currentSuggestion: JazzTextSuggestion?
+
+    override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setup()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.borderWidth = 1
+        layer?.borderColor = WritingPartnerOverlay.tint.withAlphaComponent(0.4).cgColor
+        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.96).cgColor
+        shadow = NSShadow()
+        shadow?.shadowColor = NSColor.black.withAlphaComponent(0.18)
+        shadow?.shadowOffset = NSSize(width: 0, height: -2)
+        shadow?.shadowBlurRadius = 8
+
+        // Accessibility: group role with full descriptions
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+
+        // Icon
+        iconView.imageScaling = .scaleProportionallyDown
+        iconView.contentTintColor = WritingPartnerOverlay.tint
+        addSubview(iconView)
+
+        // Title
+        titleLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.textColor = NSColor.labelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.isBezeled = false
+        titleLabel.isEditable = false
+        titleLabel.drawsBackground = false
+        addSubview(titleLabel)
+
+        // Why
+        whyLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        whyLabel.textColor = NSColor.secondaryLabelColor
+        whyLabel.lineBreakMode = .byTruncatingTail
+        whyLabel.isBezeled = false
+        whyLabel.isEditable = false
+        whyLabel.drawsBackground = false
+        addSubview(whyLabel)
+
+        // Accept Button
+        acceptButton.bezelStyle = .rounded
+        acceptButton.target = self
+        acceptButton.action = #selector(acceptClicked)
+        acceptButton.keyEquivalent = "\t"
+        acceptButton.toolTip = "Accept suggestion (Tab)"
+        acceptButton.contentTintColor = WritingPartnerOverlay.tint
+        acceptButton.setAccessibilityElement(true)
+        acceptButton.setAccessibilityRole(.button)
+        acceptButton.setAccessibilityLabel("Accept suggestion")
+        addSubview(acceptButton)
+
+        // Dismiss Button
+        dismissButton.bezelStyle = .rounded
+        dismissButton.target = self
+        dismissButton.action = #selector(dismissClicked)
+        dismissButton.keyEquivalent = "\u{1b}"
+        dismissButton.toolTip = "Dismiss suggestion (Escape)"
+        dismissButton.setAccessibilityElement(true)
+        dismissButton.setAccessibilityRole(.button)
+        dismissButton.setAccessibilityLabel("Dismiss suggestion")
+        addSubview(dismissButton)
+    }
+
+    @objc private func acceptClicked() {
+        onAccept?()
+    }
+
+    @objc private func dismissClicked() {
+        onDismiss?()
+    }
+
+    func configure(
+        with suggestion: JazzTextSuggestion,
+        onAccept: @escaping () -> Void,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.currentSuggestion = suggestion
+        self.onAccept = onAccept
+        self.onDismiss = onDismiss
+
+        titleLabel.stringValue = suggestion.kind.title
+        whyLabel.stringValue = suggestion.why
+
+        let symbolName: String
+        switch suggestion.kind {
+        case .list: symbolName = "list.bullet"
+        case .heading: symbolName = "textformat.size"
+        case .math: symbolName = "function"
+        case .title: symbolName = "textformat.characters"
+        case .alert: symbolName = "exclamationmark.triangle"
+        case .quote: symbolName = "quote.opening"
+        }
+        iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: suggestion.kind.title)
+
+        setAccessibilityLabel("Writing partner suggestion: \(suggestion.kind.title). \(suggestion.why). Press Tab to accept, Escape to dismiss.")
+        setAccessibilityChildren([titleLabel, whyLabel, acceptButton, dismissButton])
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        let padX: CGFloat = 10
+        let padY: CGFloat = 7
+        let iconSize: CGFloat = 18
+
+        iconView.frame = NSRect(x: padX, y: (bounds.height - iconSize) / 2, width: iconSize, height: iconSize)
+
+        let buttonH: CGFloat = 22
+        let dismissW: CGFloat = 78
+        let acceptW: CGFloat = 84
+
+        let buttonsX = bounds.width - padX - dismissW - 6 - acceptW
+        acceptButton.frame = NSRect(x: buttonsX, y: (bounds.height - buttonH) / 2, width: acceptW, height: buttonH)
+        dismissButton.frame = NSRect(x: bounds.width - padX - dismissW, y: (bounds.height - buttonH) / 2, width: dismissW, height: buttonH)
+
+        let textX = iconView.frame.maxX + 8
+        let textW = max(50, buttonsX - textX - 8)
+
+        if whyLabel.stringValue.isEmpty {
+            titleLabel.frame = NSRect(x: textX, y: (bounds.height - 16) / 2, width: textW, height: 16)
+            whyLabel.frame = .zero
+        } else {
+            titleLabel.frame = NSRect(x: textX, y: padY, width: textW, height: 15)
+            whyLabel.frame = NSRect(x: textX, y: titleLabel.frame.maxY + 1, width: textW, height: 14)
+        }
+    }
+
+    static func preferredSize(for suggestion: JazzTextSuggestion) -> NSSize {
+        let titleW = (suggestion.kind.title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold)]).width
+        let whyW = (suggestion.why as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .regular)]).width
+        let textW = max(titleW, whyW)
+        let totalW = max(320, min(500, 10 + 18 + 8 + textW + 12 + 84 + 6 + 78 + 10))
+        let height: CGFloat = suggestion.why.isEmpty ? 36 : 46
+        return NSSize(width: totalW, height: height)
     }
 }
 #endif

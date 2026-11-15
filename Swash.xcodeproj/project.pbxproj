@@ -145,6 +145,7 @@
 				PixerateAccess.swift,
 				PixerateAccountSettings.swift,
 				PixerateStore.swift,
+				PixerateWritingBandleader.swift,
 				ServicesProvider.swift,
 				SettingsView.swift,
 				SparkleUpdater.swift,

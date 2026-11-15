@@ -34,6 +34,7 @@ nonisolated enum WritingPartnerMode: String, CaseIterable, Identifiable, Sendabl
 nonisolated enum WritingPartnerDefaults {
     static let mode = "writingPartnerMode"
     static let stats = "writingPartnerStats"
+    static let provider = "writingPartnerProvider"
     /// Whether the partner corrects spelling. Unset, it's on: the partner's fixes are its own undo
     /// steps and learn from undo, so it doesn't follow macOS's "Correct spelling automatically",
     /// which people often turn off for being hard to undo (#98).
@@ -49,6 +50,9 @@ nonisolated enum WritingPartnerDefaults {
         defaults.string(forKey: style) ?? defaultStyle
     }
 
+    /// The undo action name of the partner's structural suggestions.
+    static let suggestionActionName = "Suggestion"
+
     /// Whether the partner corrects spelling: the stored choice, else on.
     static func spelling(_ defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: spelling) == nil ? true : defaults.bool(forKey: spelling)
@@ -56,6 +60,10 @@ nonisolated enum WritingPartnerDefaults {
 
     static func mode(_ defaults: UserDefaults = .standard) -> WritingPartnerMode {
         defaults.string(forKey: mode).flatMap(WritingPartnerMode.init(rawValue:)) ?? .off
+    }
+
+    static func provider(_ defaults: UserDefaults = .standard) -> WritingPartnerProvider {
+        defaults.string(forKey: provider).flatMap(WritingPartnerProvider.init(rawValue:)) ?? .none
     }
 }
 
@@ -136,6 +144,42 @@ nonisolated struct WritingPartnerStats: Codable, Equatable, Sendable {
     func save(_ defaults: UserDefaults = .standard) {
         if let data = try? JSONEncoder().encode(self) { defaults.set(data, forKey: WritingPartnerDefaults.stats) }
     }
+
+    func toVoiceState(spellingOn: Bool = true) -> JazzTextVoiceState {
+        var voiceRules: [String: JazzTextVoiceStats] = [:]
+        var totalKept = 0
+        var totalUndone = 0
+
+        for rule in PunctuationRule.allCases {
+            let key = Self.schemaRuleKey(for: rule)
+            let entry = rules[rule.rawValue]
+            let kept = entry?.kept ?? 0
+            let undone = entry?.undone ?? 0
+            totalKept += kept
+            totalUndone += undone
+            voiceRules[key] = JazzTextVoiceStats(kept: kept, undone: undone)
+        }
+
+        return JazzTextVoiceState(
+            voice: .punctuate,
+            strength: 1.0,
+            kept: totalKept,
+            undone: totalUndone,
+            rules: voiceRules
+        )
+    }
+
+    static func schemaRuleKey(for rule: PunctuationRule) -> String {
+        switch rule {
+        case .pronounI: return "pronoun-i"
+        case .contraction: return "contraction"
+        case .sentenceCase: return "sentence-case"
+        case .terminalPunctuation: return "end-stop"
+        case .spelling: return "spelling"
+        case .capitals: return "capitals"
+        case .clauseComma: return "clause-comma"
+        }
+    }
 }
 
 /// The Punctuate voice: the editor package's text mechanics checks (`TextMechanics` in
@@ -207,6 +251,7 @@ nonisolated struct PartnerEdit: Equatable, Sendable {
     var replacement: String
     var rules: [PunctuationRule]
     var spellingWords: [String]
+    var actionName: String? = nil
 }
 
 /// Where one of the voice's edits landed in the fixed text, and what it did.

@@ -4,6 +4,8 @@
 import Foundation
 import PixerateMarkdown
 
+print("Starting writing partner tests...")
+
 var failures = 0
 var passes = 0
 
@@ -229,6 +231,274 @@ expect("not red but blue ", "Not red but blue ")
 expect("I have nothing but the best ", "I have nothing but the best ")
 expect("It works, but it is slow ", "It works, but it is slow ")
 expect("Ok so ", "Ok so ")
+
+print("Punctuate tests finished. Moving to bandleader tests...")
+
+// MARK: - Writing Bandleader Tests (#101)
+
+// 1. None provider
+print("Testing None provider...")
+do {
+    let none = NoneWritingBandleader()
+    let req = JazzTextLeadRequest(paragraph: "Test paragraph", flavor: .gfm)
+    let res = try await none.lead(request: req)
+    check(res == nil, "None provider returns nil")
+}
+
+// 2. Pixerate provider mock network and schema contract
+print("Testing Pixerate provider...")
+do {
+    let sampleJSON = """
+    {
+      "genre": "poem",
+      "palette": [
+        {
+          "voice": "punctuate",
+          "strength": 0.0,
+          "disabledRules": ["sentenceCase"]
+        }
+      ],
+      "suggestions": [
+        {
+          "kind": "list",
+          "range": { "start": 0, "end": 18 },
+          "replacement": "- First\\n- Second\\n- Third",
+          "why": "Three short lines sound like items"
+        },
+        {
+          "kind": "heading",
+          "range": { "start": 0, "end": 8 },
+          "replacement": "## Overview",
+          "why": "A short summary at the start of a section"
+        }
+      ],
+      "why": "Detected poetic form"
+    }
+    """
+    var sentPath: String?
+    var sentBody: Data?
+    let bandleader = PixerateWritingBandleader(
+        postHandler: { path, body in
+            sentPath = path
+            sentBody = body
+            return sampleJSON.data(using: .utf8)!
+        },
+        teamIdProvider: { "team_mock_123" }
+    )
+    let req = JazzTextLeadRequest(
+        paragraph: "First\nSecond\nThird",
+        before: "Some header\n\n",
+        after: "\n\nFollow up text",
+        flavor: .gfm,
+        voices: [.init(voice: .punctuate, strength: 1.0, kept: 5, undone: 1)]
+    )
+    let res = try await bandleader.lead(request: req)
+    print("2.1 lead success: \(String(describing: res))")
+    check(sentPath == "/api/agent/text-lead", "Pixerate bandleader posts to /api/agent/text-lead")
+    check(sentBody != nil, "Pixerate bandleader sends request body")
+    if let sentBody, let decodedReq = try? JSONDecoder().decode(JazzTextLeadRequest.self, from: sentBody) {
+        check(decodedReq.teamId == "team_mock_123", "Request includes teamId from provider")
+        check(decodedReq.paragraph == "First\nSecond\nThird", "Request has paragraph")
+        check(decodedReq.before == "Some header\n\n", "Request has before context")
+        check(decodedReq.voices.first?.voice == .punctuate, "Request includes voices")
+    } else {
+        check(false, "Failed to decode sent request body")
+    }
+
+    check(res != nil, "Response decoded successfully")
+    check(res?.genre == .poem, "Response has genre 'poem'")
+    check(res?.suggestions.count == 2, "Response has 2 suggestions")
+    check(res?.suggestions[0].kind == .list, "First suggestion is list")
+    check(res?.suggestions[0].kind.title == "Make this a list", "Suggestion title derived from kind")
+    check(res?.suggestions[1].kind == .heading, "Second suggestion is heading")
+    check(res?.palette.first?.voice == .punctuate, "Palette voice is punctuate")
+    check(res?.palette.first?.strength == 0.0, "Palette voice strength is 0.0")
+
+    // Out of Fuel (402) handled quietly
+    print("2.2 testing fuel...")
+    let fuelBandleader = PixerateWritingBandleader(postHandler: { _, _ in
+        throw PixerateRefusal.outOfFuel
+    })
+    let fuelRes = try await fuelBandleader.lead(request: req)
+    print("2.2 fuel done")
+    check(fuelRes == nil, "Out of fuel (402) returns nil quietly")
+
+    // Rate limited (429) handled quietly
+    print("2.3 testing rate limit...")
+    let rateBandleader = PixerateWritingBandleader(postHandler: { _, _ in
+        throw PixerateRefusal.rateLimited(until: Date().addingTimeInterval(60))
+    })
+    let rateRes = try await rateBandleader.lead(request: req)
+    print("2.3 rate done")
+    check(rateRes == nil, "Rate limited (429) returns nil quietly")
+
+    // Signed out handled quietly
+    print("2.4 testing sign out...")
+    let signoutBandleader = PixerateWritingBandleader(postHandler: { _, _ in
+        throw PixerateRefusal.signedOut
+    })
+    let signoutRes = try await signoutBandleader.lead(request: req)
+    print("2.4 sign out done")
+    check(signoutRes == nil, "Signed out returns nil quietly")
+
+    // Feature off handled quietly
+    print("2.5 testing feature off...")
+    let offBandleader = PixerateWritingBandleader(postHandler: { _, _ in
+        throw PixerateRefusal.featureOff
+    })
+    let offRes = try await offBandleader.lead(request: req)
+    print("2.5 feature off done")
+    check(offRes == nil, "Feature off returns nil quietly")
+}
+
+// 3. Pause detection on a manual clock
+print("Testing Pause detection...")
+do {
+    var currentTime = Date(timeIntervalSince1970: 1000)
+    let detector = WritingPauseDetector(pauseDelay: 1.2, clock: { currentTime })
+
+    // Initially, nothing pending
+    check(detector.checkPause() == nil, "No pause on clean state")
+
+    // Typing 'a' (no sentence end)
+    detector.noteTyping(character: unichar(0x61), paragraph: "Hello world a", range: NSRange(location: 0, length: 13), caret: 13)
+    check(!detector.isScheduled, "No pause scheduled after typing normal character 'a'")
+
+    // Typing '.' (sentence end)
+    detector.noteTyping(character: 0x2E, paragraph: "Hello world a.", range: NSRange(location: 0, length: 14), caret: 14)
+    check(detector.isScheduled, "Pause is scheduled after typing period")
+
+    // Advancing time before delay elapsed
+    currentTime = currentTime.addingTimeInterval(0.5)
+    check(detector.checkPause() == nil, "No pause before 1.2s delay elapsed")
+
+    // Typing 'b' keeps advancing deadline (backoff/debouncing)
+    detector.noteTyping(character: unichar(0x62), paragraph: "Hello world a. b", range: NSRange(location: 0, length: 16), caret: 16)
+    currentTime = currentTime.addingTimeInterval(0.8)
+    check(detector.checkPause() == nil, "No pause while person keeps typing within backoff window")
+
+    // Typing '!' (sentence end)
+    detector.noteTyping(character: 0x21, paragraph: "Hello world a. b!", range: NSRange(location: 0, length: 17), caret: 17)
+    currentTime = currentTime.addingTimeInterval(1.3)
+    let pause = detector.checkPause()
+    check(pause != nil, "Pause triggers after sentence end and 1.2s delay")
+    check(pause?.paragraph == "Hello world a. b!", "Pause returns correct paragraph")
+
+    // Second check immediately or after same paragraph revision returns nil (memoized)
+    detector.noteTyping(character: 0x21, paragraph: "Hello world a. b!", range: NSRange(location: 0, length: 17), caret: 17)
+    currentTime = currentTime.addingTimeInterval(1.3)
+    check(detector.checkPause() == nil, "At most one request per paragraph revision")
+
+    // Leaving paragraph triggers immediate pause check
+    detector.noteLeftParagraph(oldParagraph: "New paragraph left behind.", oldRange: NSRange(location: 0, length: 26))
+    let leftPause = detector.checkPause()
+    check(leftPause != nil, "Leaving paragraph triggers pause check")
+    check(leftPause?.paragraph == "New paragraph left behind.", "Pause returns left paragraph")
+}
+
+// 4. Bandleader context extractor privacy tests
+print("Testing Context extractor...")
+do {
+    let doc = """
+    # Intro
+
+    This is the first paragraph.
+
+    ```swift
+    let secret = "private code"
+    ```
+
+    A regular paragraph with the caret inside.
+
+    $$
+    e = mc^2
+    $$
+
+    | Name | Value |
+    | --- | --- |
+    | A | 1 |
+
+    Concluding paragraph.
+    """
+
+    // Caret inside normal paragraph: "A regular paragraph with the caret inside."
+    let normalLoc = (doc as NSString).range(of: "caret inside").location
+    let req = BandleaderContextExtractor.extract(from: doc, caret: normalLoc, flavor: .github)
+    check(req != nil, "Context extracted for normal paragraph")
+    check(req?.paragraph == "A regular paragraph with the caret inside.", "Extracts exact paragraph: \(req?.paragraph ?? "")")
+    check(!(req?.before?.contains("private code") ?? true), "Leaves out fenced code from contextBefore")
+    check(!(req?.after?.contains("e = mc^2") ?? true), "Leaves out display math from contextAfter")
+    check(!(req?.after?.contains("| Name | Value |") ?? true), "Leaves out tables from contextAfter")
+
+    // Caret inside code block: returns nil
+    let codeLoc = (doc as NSString).range(of: "private code").location
+    let codeReq = BandleaderContextExtractor.extract(from: doc, caret: codeLoc, flavor: .github)
+    check(codeReq == nil, "Returns nil when caret is inside a code block")
+
+    // Caret inside display math: returns nil
+    let mathLoc = (doc as NSString).range(of: "mc^2").location
+    let mathReq = BandleaderContextExtractor.extract(from: doc, caret: mathLoc, flavor: .github)
+    check(mathReq == nil, "Returns nil when caret is inside display math")
+
+    // Caret inside table: returns nil
+    let tableLoc = (doc as NSString).range(of: "| Name |").location
+    let tableReq = BandleaderContextExtractor.extract(from: doc, caret: tableLoc, flavor: .github)
+    check(tableReq == nil, "Returns nil when caret is inside a table")
+
+    // Document length limit: never sends whole document
+    let hugeDoc = String(repeating: "Line of text.\n\n", count: 500)
+    let midLoc = hugeDoc.count / 2
+    let hugeReq = BandleaderContextExtractor.extract(from: hugeDoc, caret: midLoc, flavor: .github)
+    check(hugeReq != nil, "Extracts context from large doc")
+    check((hugeReq?.before?.count ?? 0) <= 2000, "Context before capped at 2000 chars")
+    check((hugeReq?.after?.count ?? 0) <= 2000, "Context after capped at 2000 chars")
+}
+
+// 5. Paragraph voice settings tests
+print("Testing Paragraph voice settings...")
+do {
+    let poemResp = JazzTextLeadResponse(
+        genre: .poem,
+        palette: [],
+        suggestions: [],
+        why: "Poetic lines"
+    )
+    let poemSettings = ParagraphVoiceSettings.from(response: poemResp, paragraphRange: NSRange(location: 0, length: 10))
+    check(poemSettings.genre == .poem, "Genre is poem")
+    check(poemSettings.isPunctuateDisabled == true, "Poem disables auto-punctuation")
+
+    let customVoiceResp = JazzTextLeadResponse(
+        genre: .prose,
+        palette: [
+            .init(voice: .punctuate, strength: 1.0, disabledRules: ["sentenceCase"])
+        ],
+        suggestions: [],
+        why: "Standard prose"
+    )
+    let customSettings = ParagraphVoiceSettings.from(response: customVoiceResp, paragraphRange: NSRange(location: 0, length: 10))
+    check(customSettings.genre == .prose, "Genre is prose")
+    check(customSettings.isPunctuateDisabled == false, "Punctuate is enabled for prose")
+    check(customSettings.disabledRules.contains(.sentenceCase), "Disabled rules include sentenceCase")
+}
+
+// 6. Session memory tests
+print("Testing Session memory...")
+do {
+    let memory = BandleaderSessionMemory()
+    let suggestion = JazzTextSuggestion(
+        kind: .list,
+        range: .init(start: 0, end: 10),
+        replacement: "- A\n- B",
+        why: "Three items"
+    )
+    let paragraph = "Item A\nItem B"
+    check(!memory.isDismissed(suggestion: suggestion, in: paragraph), "Suggestion not dismissed initially")
+    memory.dismiss(suggestion: suggestion, in: paragraph)
+    check(memory.isDismissed(suggestion: suggestion, in: paragraph), "Suggestion is dismissed after record")
+
+    // Another paragraph is not affected
+    check(!memory.isDismissed(suggestion: suggestion, in: "Different text"), "Dismissal is scoped to paragraph content")
+}
 
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
