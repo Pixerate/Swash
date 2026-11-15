@@ -35,6 +35,12 @@ struct SwashApp: App {
 /// still opens document (file) URLs itself; views' `onOpenURL` doesn't fire on the document
 /// browser, which is what's on screen when no document is open.
 final class SwashAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        PixerateStore.startIfSignedIn()
+        return true
+    }
+
     func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
         let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)

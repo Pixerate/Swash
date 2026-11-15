@@ -1,6 +1,7 @@
 #!/bin/bash
 # Checks the Pixerate account gate (Swash/PixerateAccess.swift, #60) against a fake server: nothing
-# is sent while signed out or with the feature off, and Fuel, rate-limit and sign-out replies.
+# is sent while signed out, on the Basic plan or with the feature off, and plan, rate-limit and
+# sign-out replies.
 set -eo pipefail
 cd "$(dirname "$0")/.."
 source scripts/pixerate_account.sh

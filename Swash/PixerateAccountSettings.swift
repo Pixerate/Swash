@@ -8,9 +8,11 @@
 
 import SwiftUI
 import PixerateAccount
+import PixerateTeams
 
 struct PixerateAccountSections: View {
     var access: PixerateAccess = .shared
+    var store: PixerateStore = .shared
     @Environment(\.openURL) private var openURL
 
     private var account: PixerateAccountClient { access.account }
@@ -31,21 +33,24 @@ struct PixerateAccountSections: View {
         } header: {
             Text("Pixerate Account")
         } footer: {
-            Text("Swash works fully without an account. Signing in lets the writing partner use Pixerate's model when you pause.")
+            Text("Swash works fully without an account. With Pixerate Pro, the writing partner uses Pixerate's model when you pause.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
 
         Section {
-            Label("Nothing is sent unless you're signed in and the writing partner is on.", systemImage: "lock")
+            Label("None of your writing is sent unless you're signed in to Pixerate Pro and the writing partner is on.", systemImage: "lock")
             Label("Swash sends only the paragraph you're writing and a little context around it, never the whole document, and never code blocks, math or tables.", systemImage: "text.alignleft")
             Label("Pixerate doesn't keep your text. It learns only which suggestions you kept or undid.", systemImage: "hand.raised")
-            Label("Each writing-partner request uses Fuel from your Pixerate team.", systemImage: "fuelpump")
+            Label("The writing partner is part of Pixerate Pro. Everything else in Swash is free.", systemImage: "sparkles")
         } header: {
             Text("Privacy")
         }
         .font(.callout)
-        .task { await access.refresh() }
+        .task {
+            await access.refresh()
+            if account.isAuthenticated { await store.start() }
+        }
     }
 
     @ViewBuilder private var signedOut: some View {
@@ -85,16 +90,30 @@ struct PixerateAccountSections: View {
         } else if let team = account.activeTeam {
             LabeledContent("Team", value: team.name)
         }
-        LabeledContent("Fuel") {
-            Text(account.fuelBalance, format: .number)
-                .monospacedDigit()
-                .foregroundStyle(account.fuelBalance > 0 ? Color.primary : Color.red)
+        LabeledContent("Plan") {
+            Text(access.planName)
+                .foregroundStyle(access.isSubscribed ? Color.accentColor : Color.secondary)
         }
-        if access.isOutOfFuel || account.fuelBalance <= 0 {
-            Text("This team is out of Fuel, so the writing partner works on this device only. Add Fuel on pixerate.com.")
+        if let grant = account.activeTeam?.complimentary, PixerateAccess.planSource(of: account.activeTeam) == .complimentary {
+            if let end = grant.expiresAtDate {
+                Text("Pixerate has given you Pro until \(end, style: .date).")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        } else if access.isSubscribed {
+            Button("Manage Subscription…") { Task { await store.manageSubscription() } }
+        } else {
+            Text("You're on the Basic plan: everything in Swash except the writing partner. Pixerate Pro adds it.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-        } else if let until = access.pausedUntil, until > .now {
+            upgrade
+        }
+        if let message = store.message {
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        if let until = access.pausedUntil, until > .now {
             Text("Pixerate asked Swash to wait. The writing partner resumes \(until, style: .relative).")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -104,5 +123,32 @@ struct PixerateAccountSections: View {
             Spacer()
             Button("Sign Out", role: .destructive) { access.signOut() }
         }
+    }
+
+    @ViewBuilder private var upgrade: some View {
+        if store.products.isEmpty {
+            if store.isBusy {
+                ProgressView().controlSize(.small)
+            } else {
+                Text("Pixerate Pro isn't available from the App Store right now.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            ForEach(store.products) { product in
+                Button("Upgrade to Pro: \(product.displayPrice) \(Self.period(of: product))") {
+                    Task { await store.buy(product) }
+                }
+                .disabled(store.isBusy)
+            }
+        }
+        Button("Restore Purchases") { Task { await store.restore() } }
+            .disabled(store.isBusy)
+    }
+
+    private static func period(of product: AppStoreProductItem) -> String {
+        if product.id.hasSuffix(".yearly") { return "a year" }
+        if product.id.hasSuffix(".monthly") { return "a month" }
+        return ""
     }
 }

@@ -16,6 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = servicesProvider
         GlobalHotKey.shared.register(QuickCaptureShortcut.current)
+        PixerateStore.startIfSignedIn()
         DispatchQueue.main.async {
             DefaultAppManager.shared.checkAndPromptIfNecessary()
         }

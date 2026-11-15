@@ -37,12 +37,17 @@ final class FakeServer: URLProtocol {
         client?.urlProtocolDidFinishLoading(self)
     }
 
-    static func reset(textLead: @escaping () -> (Int, [String: String], String) = { (200, [:], #"{"ok":true}"#) }) {
+    static let proTeam = #"{"id":"t1","name":"Personal","ownerId":"u1","planId":"pro"}"#
+
+    static func reset(
+        team: String = proTeam,
+        textLead: @escaping () -> (Int, [String: String], String) = { (200, [:], #"{"ok":true}"#) }
+    ) {
         seen = []
         reply = { request in
             switch request.url!.path {
             case "/api/teams":
-                return (200, [:], #"{"user":{"id":"u1","email":"a@example.com"},"defaultTeamId":"t1","teams":[{"id":"t1","name":"Personal","ownerId":"u1","fuelBalance":5}]}"#)
+                return (200, [:], #"{"user":{"id":"u1","email":"a@example.com"},"defaultTeamId":"t1","teams":["# + team + "]}")
             case "/api/auth/app/token":
                 return (200, [:], #"{"token":"pix_live_signed_in"}"#)
             case "/api/agent/text-lead":
@@ -124,19 +129,41 @@ do {
     check(String(decoding: FakeServer.seen.last?.body ?? Data(), as: UTF8.self) == #"{"paragraph":"hi"}"#, "sends the body unchanged")
 }
 
-// No Fuel (402): refused, and nothing more is sent until the account is refreshed.
+// The server says the plan needs Pro (402): refused, and nothing more is sent until a refresh.
 do {
-    FakeServer.reset(textLead: { (402, [:], #"{"error":"Insufficient fuel balance."}"#) })
+    FakeServer.reset(textLead: { (402, [:], #"{"error":"AI features are part of Pixerate Pro.","code":"subscription_required"}"#) })
     let access = makeAccess(token: "pix_live_k", featureOn: true)
-    check(await refusal(access) == .outOfFuel, "402 is out of Fuel")
-    check(access.isOutOfFuel, "out of Fuel is remembered")
+    check(await refusal(access) == .subscriptionRequired, "402 needs Pro")
+    check(access.needsSubscription && !access.isSubscribed, "needing Pro is remembered")
     let sent = FakeServer.seen.count
-    check(await refusal(access) == .outOfFuel, "still out of Fuel")
-    check(FakeServer.seen.count == sent, "out of Fuel sends nothing more")
+    check(await refusal(access) == .subscriptionRequired, "still needs Pro")
+    check(FakeServer.seen.count == sent, "needing Pro sends nothing more")
     FakeServer.reset()
     await access.refresh()
-    check(!access.isOutOfFuel, "refresh clears out of Fuel")
+    check(!access.needsSubscription && access.isSubscribed, "refresh clears it")
     check(await refusal(access) == nil, "sends again after a refresh")
+}
+
+// On the Basic plan: refused before anything is sent to the feature.
+do {
+    FakeServer.reset(team: #"{"id":"t1","name":"Personal","ownerId":"u1","planId":"free"}"#)
+    let access = makeAccess(token: "pix_live_k", featureOn: true)
+    check(await refusal(access) == .subscriptionRequired, "Basic is refused")
+    check(FakeServer.seen.map(\.path) == ["/api/teams"], "Basic sends nothing to the feature (\(FakeServer.seen.map(\.path)))")
+    check(access.planName == "Basic", "Basic plan name")
+}
+
+// A complimentary grant counts as Pro until it expires.
+do {
+    let clock = Clock()
+    clock.now = Date(timeIntervalSince1970: 1_800_000_000)
+    FakeServer.reset(team: #"{"id":"t1","name":"Personal","ownerId":"u1","planId":"free","complimentary":{"planId":"pro","expiresAt":"2030-01-01T00:00:00.000Z"}}"#)
+    let access = makeAccess(token: "pix_live_k", featureOn: true, clock: clock)
+    check(await refusal(access) == nil, "comped account is served")
+    check(access.planName == "Pro (complimentary)", "comp plan name")
+    clock.now = Date(timeIntervalSince1970: 1_900_000_000)
+    check(!access.isSubscribed && access.planName == "Basic", "an expired comp is Basic")
+    check(PixerateAccess.planSource(of: nil) == nil, "no team has no plan")
 }
 
 // Rate limited (429): wait for Retry-After before sending again.
@@ -195,7 +222,7 @@ do {
     let fields = (try? JSONSerialization.jsonObject(with: exchange?.body ?? Data())) as? [String: String] ?? [:]
     check(fields["device_name"] == "Swash (Mac)", "device name is the kind of device (\(fields["device_name"] ?? "nil"))")
     check(access.account.isAuthenticated, "signed in")
-    check(access.account.fuelBalance == 5, "Fuel loaded")
+    check(access.planName == "Pro", "plan loaded")
 }
 
 // Server address: PIXERATE_URL, then the default, then pixerate.com.
@@ -217,7 +244,7 @@ do {
     let access = PixerateAccess.make(arguments: ["Swash", "--demo-auth"])
     await access.refresh()
     check(access.account.isAuthenticated, "demo is signed in")
-    check(access.account.teams.count == 2 && access.account.fuelBalance == 42, "demo teams and Fuel")
+    check(access.account.teams.count == 2 && access.isSubscribed, "demo teams, on Pro")
     let unauth = PixerateAccess.make(arguments: ["Swash", "--demo-unauth"])
     check(!unauth.account.isAuthenticated && unauth.account.token == nil, "demo-unauth is signed out")
 }
