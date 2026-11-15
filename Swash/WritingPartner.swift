@@ -34,7 +34,6 @@ nonisolated enum WritingPartnerMode: String, CaseIterable, Identifiable, Sendabl
 nonisolated enum WritingPartnerDefaults {
     static let mode = "writingPartnerMode"
     static let stats = "writingPartnerStats"
-    static let provider = "writingPartnerProvider"
     /// Whether the partner corrects spelling. Unset, it's on: the partner's fixes are its own undo
     /// steps and learn from undo, so it doesn't follow macOS's "Correct spelling automatically",
     /// which people often turn off for being hard to undo (#98).
@@ -62,8 +61,10 @@ nonisolated enum WritingPartnerDefaults {
         defaults.string(forKey: mode).flatMap(WritingPartnerMode.init(rawValue:)) ?? .off
     }
 
+    /// Who answers when the person pauses (#101). Not a choice: Pixerate when signed in (signing in
+    /// is the opt-in, GOTCHAS #77), otherwise nothing; the on-device tier (#102) comes in between.
     static func provider(_ defaults: UserDefaults = .standard) -> WritingPartnerProvider {
-        defaults.string(forKey: provider).flatMap(WritingPartnerProvider.init(rawValue:)) ?? .none
+        WritingBandleaderFactory.isPixerateAvailable() ? .pixerate : .none
     }
 }
 

@@ -12,7 +12,7 @@
 import Foundation
 import PixerateAccount
 
-final class PixerateWritingBandleader: WritingBandleader, @unchecked Sendable {
+nonisolated final class PixerateWritingBandleader: WritingBandleader, @unchecked Sendable {
     typealias PostHandler = @Sendable (_ path: String, _ body: Data) async throws -> Data
     typealias TeamIdProvider = @Sendable () -> String?
 
@@ -33,7 +33,7 @@ final class PixerateWritingBandleader: WritingBandleader, @unchecked Sendable {
             if let teamId = teamIdProvider?() {
                 req.teamId = teamId
             } else if postHandler == nil {
-                req.teamId = PixerateAccess.shared.account.activeTeam?.id
+                req.teamId = await MainActor.run { PixerateAccess.shared.account.activeTeam?.id }
             }
         }
 
@@ -81,5 +81,6 @@ final class PixerateWritingBandleader: WritingBandleader, @unchecked Sendable {
 extension WritingBandleaderFactory {
     static func installPixerateBandleader() {
         makePixerateBandleader = { PixerateWritingBandleader() }
+        isPixerateAvailable = { MainActor.assumeIsolated { !PixerateAccess.shared.isSignedOut } }
     }
 }

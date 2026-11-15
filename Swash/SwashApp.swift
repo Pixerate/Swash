@@ -23,7 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         GlobalHotKey.shared.register(QuickCaptureShortcut.current)
         PixerateStore.startIfSignedIn()
         PixerateAccess.shared.isFeatureEnabled = {
-            WritingPartnerDefaults.mode() == .automatic && WritingPartnerDefaults.provider() == .pixerate
+            WritingPartnerDefaults.mode() != .off
         }
         WritingBandleaderFactory.installPixerateBandleader()
         DispatchQueue.main.async {

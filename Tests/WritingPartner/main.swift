@@ -275,12 +275,14 @@ do {
       "why": "Detected poetic form"
     }
     """
-    var sentPath: String?
-    var sentBody: Data?
+    /// What the stub received. A class, because the @Sendable stub can't mutate captured locals
+    /// (in top-level async code that crashed the runner).
+    final class Sent: @unchecked Sendable { var path: String?; var body: Data? }
+    let sent = Sent()
     let bandleader = PixerateWritingBandleader(
         postHandler: { path, body in
-            sentPath = path
-            sentBody = body
+            sent.path = path
+            sent.body = body
             return sampleJSON.data(using: .utf8)!
         },
         teamIdProvider: { "team_mock_123" }
@@ -294,9 +296,9 @@ do {
     )
     let res = try await bandleader.lead(request: req)
     print("2.1 lead success: \(String(describing: res))")
-    check(sentPath == "/api/agent/text-lead", "Pixerate bandleader posts to /api/agent/text-lead")
-    check(sentBody != nil, "Pixerate bandleader sends request body")
-    if let sentBody, let decodedReq = try? JSONDecoder().decode(JazzTextLeadRequest.self, from: sentBody) {
+    check(sent.path == "/api/agent/text-lead", "Pixerate bandleader posts to /api/agent/text-lead")
+    check(sent.body != nil, "Pixerate bandleader sends request body")
+    if let sentBody = sent.body, let decodedReq = try? JSONDecoder().decode(JazzTextLeadRequest.self, from: sentBody) {
         check(decodedReq.teamId == "team_mock_123", "Request includes teamId from provider")
         check(decodedReq.paragraph == "First\nSecond\nThird", "Request has paragraph")
         check(decodedReq.before == "Some header\n\n", "Request has before context")

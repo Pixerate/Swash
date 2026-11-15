@@ -14,7 +14,7 @@ import PixerateMarkdown
 
 // MARK: - Schema Types (Pixerate/schemas#73)
 
-enum JazzTextFlavor: String, Codable, Sendable, CaseIterable {
+nonisolated enum JazzTextFlavor: String, Codable, Sendable, CaseIterable {
     case commonmark = "commonmark"
     case gfm = "gfm"
     case slack = "slack"
@@ -30,7 +30,7 @@ extension MarkdownFlavor {
     }
 }
 
-enum JazzTextGenre: String, Codable, Sendable, CaseIterable {
+nonisolated enum JazzTextGenre: String, Codable, Sendable, CaseIterable {
     case prose = "prose"
     case notes = "notes"
     case chat = "chat"
@@ -40,7 +40,7 @@ enum JazzTextGenre: String, Codable, Sendable, CaseIterable {
     case heading = "heading"
 }
 
-enum JazzTextSuggestionKind: String, Codable, Sendable, CaseIterable {
+nonisolated enum JazzTextSuggestionKind: String, Codable, Sendable, CaseIterable {
     case list = "list"
     case heading = "heading"
     case math = "math"
@@ -60,13 +60,13 @@ enum JazzTextSuggestionKind: String, Codable, Sendable, CaseIterable {
     }
 }
 
-enum JazzTextVoiceId: String, Codable, Sendable, CaseIterable {
+nonisolated enum JazzTextVoiceId: String, Codable, Sendable, CaseIterable {
     case punctuate = "punctuate"
     case smartTypography = "smart-typography"
     case chat = "chat"
 }
 
-struct JazzTextRange: Codable, Sendable, Equatable {
+nonisolated struct JazzTextRange: Codable, Sendable, Equatable {
     var start: Int
     var end: Int
 
@@ -76,7 +76,7 @@ struct JazzTextRange: Codable, Sendable, Equatable {
     }
 }
 
-struct JazzTextSuggestion: Codable, Sendable, Equatable {
+nonisolated struct JazzTextSuggestion: Codable, Sendable, Equatable {
     var kind: JazzTextSuggestionKind
     var range: JazzTextRange
     var replacement: String
@@ -90,7 +90,7 @@ struct JazzTextSuggestion: Codable, Sendable, Equatable {
     }
 }
 
-struct JazzTextVoice: Codable, Sendable, Equatable {
+nonisolated struct JazzTextVoice: Codable, Sendable, Equatable {
     var voice: JazzTextVoiceId
     var strength: Double
     var disabledRules: [String]?
@@ -122,7 +122,7 @@ struct JazzTextVoice: Codable, Sendable, Equatable {
     }
 }
 
-struct JazzTextVoiceStats: Codable, Sendable, Equatable {
+nonisolated struct JazzTextVoiceStats: Codable, Sendable, Equatable {
     var kept: Int
     var undone: Int
 
@@ -149,7 +149,7 @@ struct JazzTextVoiceStats: Codable, Sendable, Equatable {
     }
 }
 
-struct JazzTextVoiceState: Codable, Sendable, Equatable {
+nonisolated struct JazzTextVoiceState: Codable, Sendable, Equatable {
     var voice: JazzTextVoiceId
     var strength: Double
     var kept: Int
@@ -197,7 +197,7 @@ struct JazzTextVoiceState: Codable, Sendable, Equatable {
     }
 }
 
-struct JazzTextLeadRequest: Codable, Sendable, Equatable {
+nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
     var paragraph: String
     var before: String?
     var after: String?
@@ -251,7 +251,7 @@ struct JazzTextLeadRequest: Codable, Sendable, Equatable {
     }
 }
 
-struct JazzTextLeadResponse: Codable, Sendable, Equatable {
+nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
     var genre: JazzTextGenre
     var palette: [JazzTextVoice]
     var suggestions: [JazzTextSuggestion]
@@ -302,7 +302,7 @@ struct JazzTextLeadResponse: Codable, Sendable, Equatable {
 // MARK: - WritingBandleader Protocol & Providers
 
 /// Remembers suggestions dismissed during the editing session so the bandleader learns for the session.
-final class BandleaderSessionMemory: @unchecked Sendable {
+nonisolated final class BandleaderSessionMemory: @unchecked Sendable {
     private var dismissedSuggestionKeys: Set<String> = []
 
     init() {}
@@ -326,12 +326,12 @@ final class BandleaderSessionMemory: @unchecked Sendable {
     }
 }
 
-protocol WritingBandleader: Sendable {
+nonisolated protocol WritingBandleader: Sendable {
     func lead(request: JazzTextLeadRequest) async throws -> JazzTextLeadResponse?
 }
 
 /// The default bandleader when signed out, offline or switched off: local voices only.
-final class NoneWritingBandleader: WritingBandleader {
+nonisolated final class NoneWritingBandleader: WritingBandleader {
     init() {}
     func lead(request: JazzTextLeadRequest) async throws -> JazzTextLeadResponse? {
         return nil
@@ -339,7 +339,7 @@ final class NoneWritingBandleader: WritingBandleader {
 }
 
 /// The available writing partner providers in Settings › Writing.
-enum WritingPartnerProvider: String, CaseIterable, Identifiable, Sendable {
+nonisolated enum WritingPartnerProvider: String, CaseIterable, Identifiable, Sendable {
     case none
     case pixerate
 
@@ -359,6 +359,10 @@ enum WritingBandleaderFactory {
         NoneWritingBandleader()
     }
 
+    /// Whether Pixerate can answer: signed in. Set by the app (`installPixerateBandleader`); false
+    /// where the account isn't linked (Quick Look, the test runners).
+    nonisolated(unsafe) static var isPixerateAvailable: () -> Bool = { false }
+
     static func makeBandleader(_ provider: WritingPartnerProvider) -> any WritingBandleader {
         switch provider {
         case .none:
@@ -371,7 +375,7 @@ enum WritingBandleaderFactory {
 
 // MARK: - Voice Settings per Paragraph
 
-struct ParagraphVoiceSettings: Sendable, Equatable {
+nonisolated struct ParagraphVoiceSettings: Sendable, Equatable {
     var genre: JazzTextGenre
     var isPunctuateDisabled: Bool
     var disabledRules: Set<PunctuationRule>
@@ -438,7 +442,7 @@ struct ParagraphVoiceSettings: Sendable, Equatable {
 
 // MARK: - Privacy & Context Extraction
 
-enum BandleaderContextExtractor {
+nonisolated enum BandleaderContextExtractor {
     /// Extracts the paragraph at `caret`, leaving out code blocks, math and tables, and never
     /// sending the whole document. Returns `nil` if the caret is inside code, math, or table,
     /// or if the paragraph is empty or exceeds 4000 characters.
@@ -542,7 +546,7 @@ enum BandleaderContextExtractor {
 
     private static func isExcludedAt(_ location: Int, ns: NSString, document: MarkdownDocument) -> Bool {
         let loc = min(location, max(0, ns.length - 1))
-        var node: MarkdownNode? = PunctuateVoice.node(at: loc, in: document)
+        var node: MarkdownNode? = document.nodePath(containing: NSRange(location: loc, length: 0)).last
         while let current = node {
             switch current.kind {
             case .code, .codeBlock, .math, .table:
@@ -628,7 +632,7 @@ enum BandleaderContextExtractor {
 
 // MARK: - Pause Detection
 
-final class WritingPauseDetector: @unchecked Sendable {
+nonisolated final class WritingPauseDetector: @unchecked Sendable {
     typealias Clock = @Sendable () -> Date
 
     var pauseDelay: TimeInterval

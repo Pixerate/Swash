@@ -357,7 +357,7 @@ final class WritingPartnerSession {
     /// published and styled the change, and one at a time: while the partner's cursor is playing a
     /// fix, new boundaries wait for it.
     func didChange(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
-        if WritingPartnerDefaults.mode(defaults) == .automatic && WritingPartnerDefaults.provider(defaults) != .none {
+        if WritingPartnerDefaults.mode(defaults) != .off && WritingPartnerDefaults.provider(defaults) != .none {
             let rawText = coordinator.rawText(of: textView)
             let rawSelection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
             if let current = BandleaderContextExtractor.extract(from: rawText, caret: rawSelection.location, flavor: coordinator.parent.flavor) {
@@ -774,9 +774,10 @@ final class WritingPartnerSession {
         }
     }
 
+    @MainActor
     private func evaluatePause(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
         pauseTask = nil
-        guard WritingPartnerDefaults.mode(defaults) == .automatic else { return }
+        guard WritingPartnerDefaults.mode(defaults) != .off else { return }
         let provider = WritingPartnerDefaults.provider(defaults)
         guard provider != .none else { return }
 
@@ -856,6 +857,7 @@ final class WritingPartnerSession {
         paragraphVoiceSettings
     }
 
+    @MainActor
     func triggerPauseCheckForTesting(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
         evaluatePause(in: textView, coordinator: coordinator)
     }

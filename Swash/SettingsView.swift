@@ -273,7 +273,6 @@ private struct UpdatesSettingsView: View {
 /// Punctuation and capitals as you type (#61).
 private struct WritingPartnerSettingsView: View {
     @AppStorage(WritingPartnerDefaults.mode) private var mode: WritingPartnerMode = .off
-    @AppStorage(WritingPartnerDefaults.provider) private var provider: WritingPartnerProvider = .none
     @State private var stats = WritingPartnerStats.load()
     @State private var spellingOn = WritingPartnerDefaults.spelling()
     private var access: PixerateAccess = .shared
@@ -303,46 +302,27 @@ private struct WritingPartnerSettingsView: View {
             WritingPartnerStyleSection()
 
             Section {
-                Picker("Provider", selection: $provider) {
-                    ForEach(WritingPartnerProvider.allCases) { p in
-                        Text(p.title).tag(p)
-                    }
-                }
-                .disabled(mode != .automatic)
-
-                if provider == .pixerate {
-                    LabeledContent("Status") {
-                        if access.isSignedOut {
-                            Text("Signed out (local voices only)")
-                                .foregroundStyle(.secondary)
-                        } else if access.isOutOfFuel || access.fuelBalance <= 0 {
-                            Text("Out of Fuel (local voices only)")
-                                .foregroundStyle(.secondary)
-                        } else if let until = access.pausedUntil, until > .now {
-                            Text("Paused until \(until, style: .time) (local voices only)")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("Connected")
-                                .foregroundStyle(.green)
-                        }
-                    }
-                }
-            } header: {
-                Text("Bandleader")
-            } footer: {
-                if provider == .pixerate {
+                LabeledContent("When you pause") {
                     if access.isSignedOut {
-                        Text("Sign in to your Pixerate account in the Account tab to use the Pixerate bandleader when you pause. Until then, local voices continue to work.")
-                            .settingsFooterStyle()
+                        Text("Basic fixes only").foregroundStyle(.secondary)
                     } else if access.isOutOfFuel || access.fuelBalance <= 0 {
-                        Text("This team is out of Fuel, so the writing partner works on this device only. Add Fuel on pixerate.com.")
-                            .settingsFooterStyle()
+                        Text("Out of Fuel: basic fixes only").foregroundStyle(.secondary)
+                    } else if let until = access.pausedUntil, until > .now {
+                        Text("Paused until \(until, style: .time)").foregroundStyle(.secondary)
                     } else {
-                        Text("When you pause writing, the bandleader reads the paragraph you're writing to suggest structural improvements and tune voices (1 Fuel per turn). Code, math and tables are never sent.")
-                            .settingsFooterStyle()
+                        Text("Pixerate")
                     }
+                }
+                .disabled(mode == .off)
+            } footer: {
+                if access.isSignedOut {
+                    Text("Signed in to Pixerate (the Account tab), the partner also reads the paragraph you've just written when you pause, and suggests structure such as a list or a heading. Until then, the fixes as you type work on this Mac.")
+                        .settingsFooterStyle()
+                } else if access.isOutOfFuel || access.fuelBalance <= 0 {
+                    Text("This team is out of Fuel, so the partner works on this Mac only. Add Fuel on pixerate.com.")
+                        .settingsFooterStyle()
                 } else {
-                    Text("When you pause, the bandleader reads the paragraph and decides what should play next. Off unless chosen.")
+                    Text("When you pause, the partner sends the paragraph you've just written to Pixerate and may suggest structure, such as a list or a heading (1 Fuel per turn). Code, math and tables are never sent.")
                         .settingsFooterStyle()
                 }
             }
