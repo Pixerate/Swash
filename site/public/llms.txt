@@ -1,0 +1,17 @@
+# Swash
+
+> Swash is a free, open-source, agent-native Markdown editor for the Mac (iPhone and iPad are coming). Its writing partner follows behind you as you type and fixes spelling, capitals, apostrophes and end punctuation, so you can write without going back.
+
+## What it does
+
+- Writing partner: fixes typos, capitalises sentences and the pronoun "I", adds apostrophes to contractions, and ends paragraphs with a full stop or question mark. Each fix is its own undo step, each rule learns from what you undo, and code, math, HTML, links, front matter and tables are never touched. It runs on the device and is turned on in Settings › Writing. Grammar, formatting and smart typography are planned.
+- Editor: Formatted, Source and Split views of plain Markdown files; editable tables, clickable to-dos, an outline, Focus Mode and Typewriter Scrolling; KaTeX math and Mermaid diagrams rendered offline; CommonMark, GitHub and Slack flavours.
+- Agent tools: an AI agent can read and edit the open document over the Model Context Protocol (get_text, find_text, insert_text, replace_text, replace_range, replace_selection, set_selection, format_text, set_block_type). Off by default; Mac only.
+- Mac integration: Quick Note, Quick Look, Shortcuts, Services, import from Word/RTF/HTML/ODT, export to PDF/HTML/rich text, Apple Intelligence Writing Tools.
+
+## Links
+
+- [Website](https://swash.pixerate.com/)
+- [Source code and issues](https://github.com/Pixerate/Swash)
+- [Download for Mac](https://github.com/Pixerate/Swash/releases/latest/download/Swash-macOS.dmg): macOS 15.7 or later
+- [Licence](https://github.com/Pixerate/Swash/blob/main/LICENSE): MIT

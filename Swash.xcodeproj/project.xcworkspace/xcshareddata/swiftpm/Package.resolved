@@ -1,13 +1,22 @@
 {
-  "originHash" : "ae07b4f08c6c2e5ed4c170ebf54f0fcf48cd48597826e67e3576400a79a9dadf",
+  "originHash" : "d00799b475a373f879f3208a9f38c5170abe12463c4c907c2ad4932f8647c25a",
   "pins" : [
     {
       "identity" : "editor",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Pixerate/editor",
       "state" : {
-        "revision" : "0f4e4d8037b74d6cdf00790113f1a1fa11a115ec",
-        "version" : "0.67.0"
+        "revision" : "a7f637319a8379b354cac9dc9d821928f6218f80",
+        "version" : "0.73.0"
+      }
+    },
+    {
+      "identity" : "flair",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Pixerate/flair",
+      "state" : {
+        "revision" : "a6bb761f71ae97cd7956d058978fd19dfc21b908",
+        "version" : "0.135.1"
       }
     },
     {

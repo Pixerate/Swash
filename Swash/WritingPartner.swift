@@ -33,16 +33,24 @@ nonisolated enum WritingPartnerMode: String, CaseIterable, Identifiable, Sendabl
 nonisolated enum WritingPartnerDefaults {
     static let mode = "writingPartnerMode"
     static let stats = "writingPartnerStats"
-    /// Whether the partner corrects spelling. Unset, it follows the system's "Correct spelling
-    /// automatically" (the editor's own autocorrect is off while the partner is on).
+    /// Whether the partner corrects spelling. Unset, it's on: the partner's fixes are its own undo
+    /// steps and learn from undo, so it doesn't follow macOS's "Correct spelling automatically",
+    /// which people often turn off for being hard to undo (#98).
     static let spelling = "writingPartnerSpelling"
     /// The undo action name of the partner's edits.
     static let actionName = "Punctuation"
+    /// How the partner's fixes look: the id of a Flair text treatment (#100).
+    static let style = "writingPartnerStyle"
+    /// The style when none is chosen: a ribbon curling away under what changed.
+    static let defaultStyle = "ribbon-curl"
 
-    /// Whether the partner corrects spelling: the stored choice, else `systemDefault` (the system's
-    /// "Correct spelling automatically").
-    static func spelling(_ defaults: UserDefaults = .standard, systemDefault: Bool) -> Bool {
-        defaults.object(forKey: spelling) == nil ? systemDefault : defaults.bool(forKey: spelling)
+    static func style(_ defaults: UserDefaults = .standard) -> String {
+        defaults.string(forKey: style) ?? defaultStyle
+    }
+
+    /// Whether the partner corrects spelling: the stored choice, else on.
+    static func spelling(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: spelling) == nil ? true : defaults.bool(forKey: spelling)
     }
 
     static func mode(_ defaults: UserDefaults = .standard) -> WritingPartnerMode {
@@ -62,6 +70,10 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
     case terminalPunctuation
     /// A misspelt word, as the system's spell checker would autocorrect it (`becuase` → `because`).
     case spelling
+    /// Words always written in capitals: `ok` → `OK`.
+    case capitals
+    /// A comma before `but` when it joins two clauses: "It works, but it's slow".
+    case clauseComma
 
     var title: String {
         switch self {
@@ -70,6 +82,8 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
         case .sentenceCase: return "Capitals at the start of sentences"
         case .terminalPunctuation: return "Full stops and question marks"
         case .spelling: return "Spelling"
+        case .capitals: return "Capitals in OK"
+        case .clauseComma: return "Commas before “but”"
         }
     }
 }
@@ -177,6 +191,14 @@ nonisolated enum PunctuateVoice {
         if isActive(.contraction), let edit = itsBefore(word: word, at: start, ns: ns, document: document) {
             edits.append(edit)
         }
+        // `id` and `ill` used as a pronoun and verb ("id like", "ill be") are "I'd" and "I'll"
+        if isActive(.contraction), let edit = pronounContractionBefore(word: word, at: start, ns: ns, document: document) {
+            edits.append(edit)
+        }
+        // "but" starting a new clause takes a comma after the clause before it
+        if flavor != .slack, isActive(.clauseComma), let edit = commaBeforeBut(word: word, at: start, ns: ns, document: document) {
+            edits.append(edit)
+        }
         // Enter at the end of a line ends its sentence: give it a full stop or a question mark
         if typed == newline, flavor != .slack, isActive(.terminalPunctuation),
            let edit = terminalPunctuation(ns: ns, lineEnd: boundary, document: document, enterEndedLine: enterEndedLine) {
@@ -243,8 +265,12 @@ nonisolated enum PunctuateVoice {
     private static let pronounForms: [String: String] = ["i": "I", "i'm": "I'm", "i've": "I've", "i'd": "I'd", "i'll": "I'll",
                                                          "i’m": "I’m", "i’ve": "I’ve", "i’d": "I’d", "i’ll": "I’ll"]
 
+    /// Words always written in capitals. Only lowercase spellings are changed (`Ok` and `oK` might be names).
+    static let capitalWords: [String: String] = ["ok": "OK"]
+
     private static func fixedWord(_ word: String, flavor: MarkdownFlavor, isActive: (PunctuationRule) -> Bool) -> (word: String, rule: PunctuationRule)? {
         if isActive(.pronounI), let fixed = pronounForms[word] { return (fixed, .pronounI) }
+        if flavor != .slack, isActive(.capitals), let fixed = capitalWords[word] { return (fixed, .capitals) }
         guard isActive(.contraction) else { return nil }
         let lower = word.lowercased()
         guard let fixed = contractions[lower] else { return nil }
@@ -278,6 +304,76 @@ nonisolated enum PunctuateVoice {
         let fixed: String
         if previous == "its" { fixed = "it's" } else if previous == "ITS" { fixed = "IT'S" } else if previous == "Its" { fixed = "It's" } else { return nil }
         return PunctuationEdit(range: previousRange, replacement: fixed, rules: [.contraction])
+    }
+
+    /// The word before the one at `start`, when a single space separates them, and the line up to
+    /// the end of `word` with where the earlier word is in it.
+    private static func previousWord(before start: Int, word: String, ns: NSString)
+        -> (range: NSRange, text: String, line: String, offsetInLine: Int)? {
+        guard start >= 2, ns.character(at: start - 1) == 0x20 else { return nil }
+        var previousStart = start - 1
+        while previousStart > 0, isWordCharacter(ns.character(at: previousStart - 1)) { previousStart -= 1 }
+        let range = NSRange(location: previousStart, length: start - 1 - previousStart)
+        guard range.length > 0 else { return nil }
+        var lineStart = previousStart
+        while lineStart > 0, ns.character(at: lineStart - 1) != newline { lineStart -= 1 }
+        let line = ns.substring(with: NSRange(location: lineStart, length: start + (word as NSString).length - lineStart))
+        return (range, ns.substring(with: range), line, previousStart - lineStart)
+    }
+
+    /// The tagger's word class of the word at UTF-16 `offset` in `line`.
+    private static func lexicalClass(at offset: Int, in line: String) -> NLTag? {
+        let tagger = NLTagger(tagSchemes: [.lexicalClass])
+        tagger.string = line
+        guard let index = Range(NSRange(location: offset, length: 0), in: line)?.lowerBound else { return nil }
+        return tagger.tag(at: index, unit: .word, scheme: .lexicalClass).0
+    }
+
+    /// `id` and `ill` are words ("the id field", "I feel ill") and missed apostrophes ("id like",
+    /// "ill be there"). Once the next word is finished, the tagger reads the earlier one in its
+    /// line: as a pronoun or a verb it's "I'd" or "I'll"; as a noun or adjective it stays.
+    static func pronounContractionBefore(word: String, at start: Int, ns: NSString, document: MarkdownDocument) -> PunctuationEdit? {
+        guard let previous = previousWord(before: start, word: word, ns: ns) else { return nil }
+        let forms = ["id": "I'd", "Id": "I'd", "ill": "I'll", "Ill": "I'll"]
+        guard let fixed = forms[previous.text], isProse(previous.range, ns: ns, document: document),
+              let tag = lexicalClass(at: previous.offsetInLine, in: previous.line), tag == .pronoun || tag == .verb else { return nil }
+        return PunctuationEdit(range: previous.range, replacement: fixed, rules: [.contraction])
+    }
+
+    /// Words before "but" that make it mean "except" ("nothing but the truth"): no comma.
+    private static let exceptBefore: Set<String> = ["nothing", "anything", "everything", "all", "none", "nobody", "anyone",
+                                                     "everyone", "no", "any", "every", "last", "next", "not", "only"]
+
+    /// "but" starts a new clause when the word after it begins one (a pronoun, article, preposition
+    /// or adverb: "but it", "but the", "but for now") and the clause before it has a verb and at
+    /// least two words. "small but mighty" and "not red but blue" get no comma.
+    static func commaBeforeBut(word: String, at start: Int, ns: NSString, document: MarkdownDocument) -> PunctuationEdit? {
+        guard let but = previousWord(before: start, word: word, ns: ns), but.text.lowercased() == "but",
+              word.lowercased() != "also", isProse(but.range, ns: ns, document: document),
+              let before = previousWord(before: but.range.location, word: but.text, ns: ns),
+              !exceptBefore.contains(before.text.lowercased()) else { return nil }
+        // The clause before "but": back to the start of its sentence or line
+        var clauseStart = before.range.location
+        while clauseStart > 0 {
+            let c = ns.character(at: clauseStart - 1)
+            if c == newline || c == 0x2E || c == 0x3F || c == 0x21 || c == 0x3B || c == 0x3A || c == 0x2C { break }
+            clauseStart -= 1
+        }
+        let clause = ns.substring(with: NSRange(location: clauseStart, length: NSMaxRange(before.range) - clauseStart))
+        let tagger = NLTagger(tagSchemes: [.lexicalClass])
+        tagger.string = clause
+        var words = 0
+        var hasVerb = false
+        tagger.enumerateTags(in: clause.startIndex..<clause.endIndex, unit: .word, scheme: .lexicalClass,
+                             options: [.omitWhitespace, .omitPunctuation]) { tag, _ in
+            words += 1
+            if tag == .verb { hasVerb = true }
+            return true
+        }
+        guard words >= 2, hasVerb,
+              let tag = lexicalClass(at: but.offsetInLine + but.range.length + 1, in: but.line),
+              [.pronoun, .determiner, .preposition, .adverb].contains(tag) else { return nil }
+        return PunctuationEdit(range: NSRange(location: NSMaxRange(before.range), length: 0), replacement: ",", rules: [.clauseComma])
     }
 
     // MARK: Where prose is
@@ -460,5 +556,103 @@ nonisolated enum PunctuateVoice {
         let first = words[0].lowercased().trimmingCharacters(in: CharacterSet.letters.inverted.subtracting(CharacterSet(charactersIn: "'’")))
         let mark = questionWords.contains(first) ? "?" : "."
         return PunctuationEdit(range: NSRange(location: lineEnd, length: 0), replacement: mark, rules: [.terminalPunctuation])
+    }
+}
+
+/// One edit the partner's cursor plays out (#878): it selects `range` (whole words, in the text
+/// before the fix) and types `replacement` over it, as a person would retype a word. Each is its
+/// own undo step; undoing it counts against `rules`, and tells the spell checker `spellingWords`
+/// are words.
+nonisolated struct PartnerEdit: Equatable, Sendable {
+    var range: NSRange
+    /// The text `range` held when the fix was worked out: the edit is played only if it's still there.
+    var original: String
+    var replacement: String
+    var rules: [PunctuationRule]
+    var spellingWords: [String]
+}
+
+/// Where one of the voice's edits landed in the fixed text, and what it did.
+nonisolated struct PartnerMark: Equatable, Sendable {
+    var range: NSRange
+    var rules: [PunctuationRule]
+    /// The word a spelling fix replaced.
+    var spellingWord: String?
+}
+
+extension PunctuateVoice {
+    /// The fix that turns `old` into `new`, as whole-word edits from left to right. `marks` say where
+    /// the voice's edits landed in `new`, so each edit carries the rules that made it.
+    static func partnerEdits(from old: NSString, to new: NSString, marks: [PartnerMark]) -> [PartnerEdit] {
+        let (changedBefore, changedAfter) = changedRanges(from: old, to: new)
+        // Widen each change to the words it touches, and merge changes in the same word
+        var pairs: [(before: NSRange, after: NSRange)] = []
+        for (before, after) in zip(changedBefore, changedAfter) {
+            let pair = (word(around: before, in: old), word(around: after, in: new))
+            if let last = pairs.last, pair.0.location <= NSMaxRange(last.before) {
+                pairs[pairs.count - 1] = (NSUnionRange(last.before, pair.0), NSUnionRange(last.after, pair.1))
+            } else {
+                pairs.append(pair)
+            }
+        }
+        return pairs.map { before, after in
+            let touching = marks.filter { $0.range.location <= NSMaxRange(after) && NSMaxRange($0.range) >= after.location }
+            var rules: [PunctuationRule] = []
+            for rule in touching.flatMap(\.rules) where !rules.contains(rule) { rules.append(rule) }
+            let original = old.substring(with: before)
+            let spelling = touching.compactMap(\.spellingWord).filter { original.contains($0) }
+            return PartnerEdit(range: before, original: original, replacement: new.substring(with: after),
+                               rules: rules, spellingWords: spelling)
+        }
+    }
+
+    /// `range` widened to the whole words it touches (a full stop added after a word takes the word).
+    static func word(around range: NSRange, in text: NSString) -> NSRange {
+        var start = range.location
+        var end = NSMaxRange(range)
+        while start > 0, isWordCharacter(text.character(at: start - 1)) { start -= 1 }
+        while end < text.length, isWordCharacter(text.character(at: end)) { end += 1 }
+        return NSRange(location: start, length: end - start)
+    }
+
+    /// Where `new` differs from `old`: each run of changed characters, as ranges in both.
+    static func changedRanges(from old: NSString, to new: NSString) -> (before: [NSRange], after: [NSRange]) {
+        // Trim the common prefix and suffix, then diff what's left character by character
+        let limit = min(old.length, new.length)
+        var prefix = 0
+        while prefix < limit, old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
+        var suffix = 0
+        while suffix < limit - prefix, old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
+        let oldMiddle = (0..<(old.length - prefix - suffix)).map { old.character(at: prefix + $0) }
+        let newMiddle = (0..<(new.length - prefix - suffix)).map { new.character(at: prefix + $0) }
+        let difference = newMiddle.difference(from: oldMiddle)
+        var removed = IndexSet()
+        var inserted = IndexSet()
+        for change in difference {
+            switch change {
+            case .remove(let offset, _, _): removed.insert(offset)
+            case .insert(let offset, _, _): inserted.insert(offset)
+            }
+        }
+        // Pair each run of changes in the old text with the run at the same place in the new one
+        var before: [NSRange] = []
+        var after: [NSRange] = []
+        var oldIndex = 0
+        var newIndex = 0
+        while oldIndex < oldMiddle.count || newIndex < newMiddle.count {
+            if !removed.contains(oldIndex) && !inserted.contains(newIndex), oldIndex < oldMiddle.count, newIndex < newMiddle.count {
+                oldIndex += 1
+                newIndex += 1
+                continue
+            }
+            let oldStart = oldIndex
+            let newStart = newIndex
+            while removed.contains(oldIndex) { oldIndex += 1 }
+            while inserted.contains(newIndex) { newIndex += 1 }
+            if oldIndex == oldStart && newIndex == newStart { break }
+            before.append(NSRange(location: prefix + oldStart, length: oldIndex - oldStart))
+            after.append(NSRange(location: prefix + newStart, length: newIndex - newStart))
+        }
+        return (before, after)
     }
 }

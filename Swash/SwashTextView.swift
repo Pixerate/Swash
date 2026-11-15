@@ -264,6 +264,11 @@ final class SwashLayoutManager: NSLayoutManager {
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         fillIndentedTextBlocks(forGlyphRange: glyphsToShow, at: origin)
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+        // The writing partner's layers that go behind the text (a ribbon passing under the letters):
+        // drawn here, after the background and before the glyphs (#100)
+        if let view = firstTextView, let context = NSGraphicsContext.current?.cgContext {
+            WritingPartnerOverlay.existing(in: view)?.drawUnderText(in: context)
+        }
         
         guard let textStorage = textStorage else { return }
         let charRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)

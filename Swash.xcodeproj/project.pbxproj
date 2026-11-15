@@ -12,6 +12,8 @@
 		046013C430045F6A00853817 /* PixerateMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C330045F6A00853817 /* PixerateMarkdown */; };
 		046013C630045F6A00853817 /* PixerateCore in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = 046013C530045F6A00853817 /* PixerateCore */; };
 		046013C830045F6A00853817 /* PixerateCore in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C730045F6A00853817 /* PixerateCore */; };
+		0460F1A630045F6A00853817 /* FlairEffects in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = 0460F1A530045F6A00853817 /* FlairEffects */; };
+		0460F1A830045F6A00853817 /* FlairEffects in Frameworks */ = {isa = PBXBuildFile; productRef = 0460F1A730045F6A00853817 /* FlairEffects */; };
 		046013F230045F6A00853817 /* PixerateAccount in Frameworks */ = {isa = PBXBuildFile; productRef = 046013F130045F6A00853817 /* PixerateAccount */; };
 		0460137130045F6800853817 /* SwashQuickLookExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0460137030045F6800853817 /* SwashQuickLookExtension.appex */; platformFilters = (macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0460138130045F6800853817 /* SwashShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0460138030045F6800853817 /* SwashShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -258,6 +260,7 @@
 				046013C230045F6A00853817 /* PixerateMarkdown in Frameworks */,
 				046013E230045F6A00853817 /* PixerateStickers in Frameworks */,
 				046013C630045F6A00853817 /* PixerateCore in Frameworks */,
+				0460F1A630045F6A00853817 /* FlairEffects in Frameworks */,
 				046013F230045F6A00853817 /* PixerateAccount in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -269,6 +272,7 @@
 				0460AE0530045F6A00853817 /* MacAppKitExtras in Frameworks */,
 				046013C430045F6A00853817 /* PixerateMarkdown in Frameworks */,
 				046013C830045F6A00853817 /* PixerateCore in Frameworks */,
+				0460F1A830045F6A00853817 /* FlairEffects in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -351,6 +355,7 @@
 				046013C130045F6A00853817 /* PixerateMarkdown */,
 				046013E130045F6A00853817 /* PixerateStickers */,
 				046013C530045F6A00853817 /* PixerateCore */,
+				0460F1A530045F6A00853817 /* FlairEffects */,
 				046013F130045F6A00853817 /* PixerateAccount */,
 			);
 			productName = Swash;
@@ -378,6 +383,7 @@
 				0460AE0330045F6A00853817 /* MacAppKitExtras */,
 				046013C330045F6A00853817 /* PixerateMarkdown */,
 				046013C730045F6A00853817 /* PixerateCore */,
+				0460F1A730045F6A00853817 /* FlairEffects */,
 			);
 			productName = SwashQuickLookExtension;
 			productReference = 0460137030045F6800853817 /* SwashQuickLookExtension.appex */;
@@ -535,6 +541,7 @@
 				0460AE0130045F6A00853817 /* XCLocalSwiftPackageReference "Packages/MacAppKitExtras" */,
 				046013E030045F6A00853817 /* XCLocalSwiftPackageReference "Packages/PixerateStickers" */,
 				046013C030045F6A00853817 /* XCRemoteSwiftPackageReference "editor" */,
+				0460F1A030045F6A00853817 /* XCRemoteSwiftPackageReference "flair" */,
 				046013F030045F6A00853817 /* XCRemoteSwiftPackageReference "PixerateAccount" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -1473,7 +1480,7 @@
 			repositoryURL = "https://github.com/Pixerate/editor";
 			requirement = {
 				kind = upToNextMinorVersion;
-				minimumVersion = 0.67.0;
+				minimumVersion = 0.73.0;
 			};
 		};
 		046013F030045F6A00853817 /* XCRemoteSwiftPackageReference "PixerateAccount" */ = {
@@ -1482,6 +1489,14 @@
 			requirement = {
 				kind = upToNextMinorVersion;
 				minimumVersion = 0.2.0;
+			};
+		};
+		0460F1A030045F6A00853817 /* XCRemoteSwiftPackageReference "flair" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Pixerate/flair";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.135.1;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -1536,6 +1551,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 046013F030045F6A00853817 /* XCRemoteSwiftPackageReference "PixerateAccount" */;
 			productName = PixerateAccount;
+		};
+		0460F1A530045F6A00853817 /* FlairEffects */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0460F1A030045F6A00853817 /* XCRemoteSwiftPackageReference "flair" */;
+			productName = FlairEffects;
+		};
+		0460F1A730045F6A00853817 /* FlairEffects */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0460F1A030045F6A00853817 /* XCRemoteSwiftPackageReference "flair" */;
+			productName = FlairEffects;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

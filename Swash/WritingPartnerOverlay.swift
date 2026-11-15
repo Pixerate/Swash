@@ -3,15 +3,27 @@
 //  Swash
 //
 //  What the writing partner (#61) shows over the Mac editor. It draws in layers over the text view
-//  and never touches the text:
-//  - a soft gradient that sweeps across the word or line it's checking;
-//  - its own insertion point, in the partner's colour, which goes to a word it's fixing, selects it,
-//    stays at the end of the fix, then fades.
-//  With Reduce Motion on, the sweep is skipped and the cursor and selection only fade.
+//  and never touches the text. The look is a Flair text treatment (#100), `ribbon-curl` unless
+//  another is chosen in Settings › Writing; this file says where the text is and which stage is
+//  playing, and Flair plans and draws it:
+//  - `checking`: a sweep across a word or line the partner looked at and left alone;
+//  - `caret`: its own insertion point, in the partner's colour and with no name tag, as the editor
+//    package's `AgentTextDirector` moves it (#878);
+//  - `selecting`, then `typing`: it selects the word it's fixing and types the new word over it
+//    (drawn here, not written into the text, until the edit lands);
+//  - `landed`: what changed, as the treatment shows it (a ribbon, a tint), until it fades.
+//  With Reduce Motion on, Flair holds each stage still and fades it.
+//
+//  A treatment's layers are either behind the text or above it, so a ribbon can pass under the
+//  letters and back over them. The layers above are this view's. The layers behind are drawn by the
+//  text view itself, between its background and its glyphs (`SwashLayoutManager.drawBackground`
+//  calls `drawUnderText`), because a view over the text can't draw under it.
 //
 
 #if os(macOS)
 import AppKit
+import FlairEffects
+import PixerateCore
 import QuartzCore
 
 final class WritingPartnerOverlay: NSView {
@@ -72,146 +84,293 @@ final class WritingPartnerOverlay: NSView {
             .offsetBy(dx: textView.textContainerOrigin.x, dy: textView.textContainerOrigin.y)
     }
 
-    // MARK: Checking
+    // MARK: The treatment
 
-    /// Sweeps a soft gradient across `rects`, left to right.
-    func sweep(_ rects: [NSRect]) {
-        guard !Self.reduceMotion, let root = layer else { return }
-        for (index, rect) in rects.enumerated() {
-            let gradient = CAGradientLayer()
-            gradient.frame = rect.insetBy(dx: -2, dy: 1)
-            gradient.cornerRadius = 3
-            gradient.startPoint = CGPoint(x: 0, y: 0.5)
-            gradient.endPoint = CGPoint(x: 1, y: 0.5)
-            let colour = Self.tint.withAlphaComponent(0.22).cgColor
-            let clear = Self.tint.withAlphaComponent(0).cgColor
-            gradient.colors = [clear, colour, clear]
-            gradient.locations = [-0.4, -0.2, 0]
-            root.addSublayer(gradient)
+    /// The chosen treatment with the partner's values, resolved once for a style and appearance.
+    struct Look {
+        let id: String
+        let dark: Bool
+        let stages: FlairJSON
 
-            let duration = 0.32 + 0.0015 * Double(rect.width)
-            let move = CABasicAnimation(keyPath: "locations")
-            move.fromValue = [-0.4, -0.2, 0]
-            move.toValue = [1, 1.2, 1.4]
-            move.duration = duration
-            move.beginTime = CACurrentMediaTime() + Double(index) * 0.08
-            move.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            move.fillMode = .both
-            move.isRemovedOnCompletion = false
-            gradient.add(move, forKey: "sweep")
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration + Double(index) * 0.08 + 0.05) {
-                gradient.removeFromSuperlayer()
-            }
+        func plan(_ stage: FlairTextTreatmentStage, at time: Double, over target: FlairTreatmentTarget) -> FlairTextTreatmentPlan {
+            FlairTextTreatments.planResolved(stages, stage: stage, time: max(0, time), target: target,
+                                             reduceMotion: WritingPartnerOverlay.reduceMotion)
         }
+    }
+
+    /// The look for a treatment id (the default when it's unknown) in a light or dark appearance:
+    /// the partner's colour, the treatment's dark variant where it has one, and no name tag.
+    static func look(id: String, dark: Bool) -> Look? {
+        guard let treatment = FlairTextTreatments.treatment(id: id)
+                ?? FlairTextTreatments.treatment(id: WritingPartnerDefaults.defaultStyle)
+                ?? FlairTextTreatments.all.first else { return nil }
+        let values = treatment.values(values: [
+            "color": .string(rgba(tint)?.hex ?? "#AF52DE"),
+            "darkTheme": .bool(dark),
+            "nameTag": .bool(false),
+        ])
+        return Look(id: treatment.id, dark: dark, stages: FlairTextTreatments.resolve(treatment, values: values))
+    }
+
+    static func isDark(_ view: NSView) -> Bool {
+        view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
+    static func rgba(_ color: NSColor?) -> FlairRGBA? {
+        guard let c = color?.usingColorSpace(.sRGB) else { return nil }
+        return FlairRGBA(Double(c.redComponent), Double(c.greenComponent), Double(c.blueComponent), Double(c.alphaComponent))
+    }
+
+    static func caret(_ rect: NSRect) -> FlairTreatmentCaret {
+        FlairTreatmentCaret(x: Double(rect.midX), y: Double(rect.minY), height: Double(rect.height))
+    }
+
+    private let renderer = FlairTextTreatmentRenderer()
+    private var look: Look?
+
+    // MARK: Under the text
+
+    /// The overlay of `textView`, if it has one.
+    static func existing(in textView: NSTextView) -> WritingPartnerOverlay? {
+        textView.subviews.lazy.compactMap { $0 as? WritingPartnerOverlay }.first
+    }
+
+    /// Whether the text view draws the layers behind its text itself (the editor's own layout
+    /// manager does). Elsewhere they go in this view, over the text and under the layers above.
+    private(set) var drawsUnderText = false
+    /// What the layers behind the text last covered, to have the text view draw it again.
+    private var underRect: NSRect = .zero
+
+    /// Draws the layers that go behind the text, in the text view's coordinates. Called by the
+    /// layout manager after the background and before the glyphs.
+    func drawUnderText(in context: CGContext) {
+        guard drawsUnderText, !(renderer.behindLayer.sublayers ?? []).isEmpty else { return }
+        context.saveGState()
+        renderer.behindLayer.render(in: context)
+        context.restoreGState()
+    }
+
+    /// Has the text view draw again where the layers behind its text are, and were.
+    private func redrawUnderText(_ plans: [FlairTextTreatmentPlan], in textView: NSTextView) {
+        var rect = NSRect.zero
+        for layer in plans.flatMap(\.layers) where layer.z == "behind" {
+            // Room for a glow, and for a ribbon's edge
+            rect = rect.union(layer.frame.insetBy(dx: -((layer.glow ?? 0) + 6), dy: -((layer.glow ?? 0) + 6)))
+        }
+        let dirty = rect.union(underRect)
+        underRect = rect
+        if !dirty.isEmpty { textView.setNeedsDisplay(dirty) }
+    }
+
+    /// The look for the chosen style and the text view's appearance, resolved again when either changes.
+    private func currentLook(in textView: NSTextView) -> Look? {
+        let id = WritingPartnerDefaults.style()
+        let dark = Self.isDark(textView)
+        if let look, look.dark == dark, look.id == id || FlairTextTreatments.treatment(id: id) == nil { return look }
+        look = Self.look(id: id, dark: dark)
+        return look
+    }
+
+    // MARK: Stages
+
+    /// A stage that plays to its end on its own: a `checking` sweep, or a `landed` fix.
+    private struct Playback {
+        let stage: FlairTextTreatmentStage
+        let start: Double
+        var target: FlairTreatmentTarget
+        /// The raw range of a landed fix, to follow its rectangles while the director still reports it.
+        var range: NSRange?
+    }
+
+    private var playbacks: [Playback] = []
+    /// When the partner's cursor, its selection and its typing each began, in ms.
+    private var caretStart: Double?
+    private var selectStart: Double?
+    private var typingStart: Double?
+    private var timer: Timer?
+
+    private static var now: Double { CACurrentMediaTime() * 1000 }
+
+    /// Sweeps across `rects`: what the partner looked at and left alone.
+    func sweep(_ rects: [NSRect]) {
+        guard !rects.isEmpty else { return }
+        playbacks.append(Playback(stage: .checking, start: Self.now, target: FlairTreatmentTarget(lines: rects)))
+        render()
     }
 
     // MARK: The partner's cursor
 
-    private var caret: CALayer?
-    private var selections: [CALayer] = []
-    private var blinkWork: DispatchWorkItem?
+    /// How long the partner's cursor holds a word selected before typing over it, in ms. The
+    /// treatments' `selecting` stage takes as long, so typing starts as the selection finishes.
+    static let selectMs: Double = 180
 
-    /// How long the partner's cursor takes to select what it fixes before the fix lands.
-    static var selectDuration: TimeInterval { reduceMotion ? 0 : 0.18 }
+    private weak var carets: AgentCaretStore?
+    private weak var target: WritingPartnerTarget?
+    private var subscription: UUID?
 
-    /// Puts the partner's cursor at the start of `ranges` (storage offsets, before the fix) and
-    /// selects them, as if it were about to type over them.
-    func select(_ ranges: [NSRange], in textView: NSTextView) {
-        clearCursor()
-        guard let root = layer, let first = ranges.first else { return }
-        let duration = Self.selectDuration
-        for range in ranges {
-            for rect in Self.rects(for: range, in: textView) {
-                let selection = CALayer()
-                selection.backgroundColor = Self.tint.withAlphaComponent(0.22).cgColor
-                selection.cornerRadius = 2
-                selection.anchorPoint = CGPoint(x: 0, y: 0.5)
-                selection.frame = rect
-                root.addSublayer(selection)
-                selections.append(selection)
-                if duration > 0 {
-                    let grow = CABasicAnimation(keyPath: "bounds.size.width")
-                    grow.fromValue = 0
-                    grow.toValue = rect.width
-                    grow.duration = duration
-                    grow.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                    selection.add(grow, forKey: "grow")
+    /// Draws the carets in `carets`, in the text of `target`.
+    func attach(carets: AgentCaretStore, target: WritingPartnerTarget) {
+        if let subscription { self.carets?.unsubscribe(subscription) }
+        self.carets = carets
+        self.target = target
+        subscription = carets.subscribe { [weak self] _ in
+            self?.render()
+            // What a fix changed is measured again once the editor has restyled it
+            DispatchQueue.main.async { [weak self] in self?.render() }
+        }
+    }
+
+    /// Redraws every playing stage from the director's state, and keeps drawing while any plays.
+    func render(animated: Bool = true) {
+        draw()
+        if timer == nil, isPlaying {
+            let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                self.draw()
+                if !self.isPlaying { self.stop() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            self.timer = timer
+        }
+    }
+
+    private var isPlaying: Bool { !playbacks.isEmpty || !(carets?.carets.isEmpty ?? true) }
+
+    private func stop() {
+        timer?.invalidate()
+        timer = nil
+        clear()
+    }
+
+    /// Removes everything drawn, over the text and under it.
+    private func clear() {
+        renderer.clear()
+        renderer.behindLayer.removeFromSuperlayer()
+        renderer.aboveLayer.removeFromSuperlayer()
+        if let textView = target?.textView ?? (superview as? NSTextView) { redrawUnderText([], in: textView) }
+    }
+
+    /// One frame: the plan of every stage at this moment, drawn by Flair's renderer.
+    private func draw() {
+        guard let root = layer else { return }
+        let textView = target?.textView ?? (superview as? NSTextView)
+        guard let textView, let look = currentLook(in: textView) else { return }
+        frame = textView.bounds
+        let now = Self.now
+        var plans: [FlairTextTreatmentPlan] = []
+        var font: NSFont?
+
+        // The partner's cursor: its selection, or the word it is typing, and the caret
+        var live: [FlairTextTreatmentPlan] = []
+        let carets = self.carets?.carets ?? []
+        if carets.isEmpty {
+            caretStart = nil
+            selectStart = nil
+            typingStart = nil
+        } else if let target, let coordinator = target.coordinator {
+            caretStart = caretStart ?? now
+            let storage = { (agent: NSRange) -> NSRange in
+                coordinator.storageRange(forRaw: target.realRange(forAgent: agent), in: textView)
+            }
+            for caret in carets {
+                let head = caretRect(atAgent: caret.head, in: textView, coordinator: coordinator, target: target).map(Self.caret)
+                // What it just changed: the `landed` stage starts, and runs on after the cursor has gone
+                for range in caret.changed {
+                    let lines = Self.rects(for: storage(range), in: textView)
+                    guard !lines.isEmpty else { continue }
+                    let end = Self.caretRect(at: NSMaxRange(storage(range)), in: textView).map(Self.caret)
+                    let landed = FlairTreatmentTarget(lines: lines, caret: end ?? head)
+                    if let index = playbacks.firstIndex(where: { $0.stage == .landed && $0.range == range }) {
+                        playbacks[index].target = landed
+                    } else {
+                        playbacks.append(Playback(stage: .landed, start: now, target: landed, range: range))
+                    }
+                }
+                if let ghost = target.ghost, let layout = ghostLayout(ghost, in: textView, coordinator: coordinator) {
+                    // Typing begins while the selection still shows, so nothing is drawn behind the word twice
+                    typingStart = typingStart ?? now
+                    font = layout.attributes[.font] as? NSFont
+                    let background = textView.drawsBackground ? textView.backgroundColor : NSColor.textBackgroundColor
+                    let typing = FlairTreatmentTarget(lines: layout.covered, caret: head, text: ghost.text,
+                                                      color: Self.rgba(layout.attributes[.foregroundColor] as? NSColor ?? textView.textColor),
+                                                      background: Self.rgba(background))
+                    live.append(look.plan(.typing, at: now - (typingStart ?? now), over: typing))
+                } else if caret.selection.length > 0 {
+                    typingStart = nil
+                    selectStart = selectStart ?? now
+                    let lines = Self.rects(for: storage(caret.selection), in: textView)
+                    live.append(look.plan(.selecting, at: now - (selectStart ?? now), over: FlairTreatmentTarget(lines: lines, caret: head)))
+                } else {
+                    selectStart = nil
+                    typingStart = nil
+                }
+                if let head {
+                    live.append(look.plan(.caret, at: now - (caretStart ?? now), over: FlairTreatmentTarget(caret: head)))
                 }
             }
         }
-        guard let start = Self.caretRect(at: first.location, in: textView),
-              let end = Self.caretRect(at: NSMaxRange(ranges.last ?? first), in: textView) else { return }
-        let caret = CALayer()
-        caret.backgroundColor = Self.tint.cgColor
-        caret.cornerRadius = 1
-        caret.frame = end
-        root.addSublayer(caret)
-        self.caret = caret
-        if duration > 0 {
-            let move = CABasicAnimation(keyPath: "position")
-            move.fromValue = CGPoint(x: start.midX, y: start.midY)
-            move.toValue = CGPoint(x: end.midX, y: end.midY)
-            move.duration = duration
-            move.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            caret.add(move, forKey: "move")
+
+        // Sweeps and landed fixes, until each is done
+        playbacks.removeAll { playback in
+            let plan = look.plan(playback.stage, at: now - playback.start, over: playback.target)
+            if plan.done { return true }
+            plans.append(plan)
+            return false
         }
+        plans += live
+
+        guard !plans.isEmpty else {
+            clear()
+            return
+        }
+        drawsUnderText = textView.layoutManager is SwashLayoutManager
+        if drawsUnderText {
+            renderer.behindLayer.removeFromSuperlayer()
+        } else if renderer.behindLayer.superlayer == nil {
+            // A text view that only draws its own text: both go over it, the "behind" layers first
+            root.insertSublayer(renderer.behindLayer, at: 0)
+        }
+        if renderer.aboveLayer.superlayer == nil { root.addSublayer(renderer.aboveLayer) }
+        renderer.contentsScale = window?.backingScaleFactor ?? 2
+        renderer.draw(plans, font: font)
+        if drawsUnderText { redrawUnderText(plans, in: textView) }
     }
 
-    /// The fix landed over `ranges` (storage offsets, after the fix): show it selected for a moment
-    /// with the partner's cursor at its end, then fade both.
-    func landed(_ ranges: [NSRange], in textView: NSTextView) {
-        guard let root = layer else { return }
-        for selection in selections { selection.removeFromSuperlayer() }
-        selections = []
-        for range in ranges {
-            for rect in Self.rects(for: range, in: textView) {
-                let selection = CALayer()
-                selection.backgroundColor = Self.tint.withAlphaComponent(0.22).cgColor
-                selection.cornerRadius = 2
-                selection.frame = rect
-                root.addSublayer(selection)
-                selections.append(selection)
+    /// The partner's insertion point at `position` (an offset in the director's text): inside or at
+    /// the end of the word being typed, it follows the drawn word.
+    private func caretRect(atAgent position: Int, in textView: NSTextView, coordinator: SwashTextView.Coordinator,
+                           target: WritingPartnerTarget) -> NSRect? {
+        if let ghost = target.ghost, let layout = ghostLayout(ghost, in: textView, coordinator: coordinator) {
+            let typed = (ghost.text as NSString).length
+            let offset = position - ghost.range.location
+            if offset >= 0, offset <= typed {
+                let prefix = NSAttributedString(string: (ghost.text as NSString).substring(to: offset), attributes: layout.attributes)
+                return NSRect(x: layout.origin.x + prefix.size().width - 1, y: layout.line.minY, width: 2, height: layout.line.height)
             }
         }
-        if let last = ranges.last, let end = Self.caretRect(at: NSMaxRange(last), in: textView) {
-            if caret == nil {
-                let caret = CALayer()
-                caret.backgroundColor = Self.tint.cgColor
-                caret.cornerRadius = 1
-                root.addSublayer(caret)
-                self.caret = caret
-            }
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            caret?.frame = end
-            CATransaction.commit()
+        let raw = target.realPosition(forAgent: position)
+        let location = coordinator.storageRange(forRaw: NSRange(location: raw, length: 0), in: textView).location
+        return Self.caretRect(at: location, in: textView)
+    }
+
+    /// Where the word being typed goes: over the word it replaces (`covered`), in that word's font.
+    private func ghostLayout(_ ghost: (range: NSRange, text: String), in textView: NSTextView,
+                             coordinator: SwashTextView.Coordinator) -> (origin: NSPoint, line: NSRect, attributes: [NSAttributedString.Key: Any], covered: [NSRect])? {
+        guard let storage = textView.textStorage, storage.length > 0 else { return nil }
+        let range = coordinator.storageRange(forRaw: ghost.range, in: textView)
+        guard let caret = Self.caretRect(at: range.location, in: textView) else { return nil }
+        let index = min(range.location, storage.length - 1)
+        var attributes: [NSAttributedString.Key: Any] = [:]
+        for key in [NSAttributedString.Key.font, .foregroundColor, .kern] {
+            if let value = storage.attribute(key, at: index, effectiveRange: nil) { attributes[key] = value }
         }
-        let work = DispatchWorkItem { [weak self] in self?.fadeCursor() }
-        blinkWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+        return (NSPoint(x: caret.minX + 1, y: caret.minY), caret, attributes, Self.rects(for: range, in: textView))
     }
+}
 
-    /// The fix didn't land (the text changed under it): take the cursor away.
-    func cancel() {
-        fadeCursor()
-    }
-
-    private func fadeCursor() {
-        let layers = selections + (caret.map { [$0] } ?? [])
-        selections = []
-        caret = nil
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(0.3)
-        CATransaction.setCompletionBlock { layers.forEach { $0.removeFromSuperlayer() } }
-        for layer in layers { layer.opacity = 0 }
-        CATransaction.commit()
-    }
-
-    private func clearCursor() {
-        blinkWork?.cancel()
-        for layer in selections + (caret.map { [$0] } ?? []) { layer.removeFromSuperlayer() }
-        selections = []
-        caret = nil
+private extension FlairRGBA {
+    var hex: String {
+        String(format: "#%02X%02X%02X", Int((r * 255).rounded()), Int((g * 255).rounded()), Int((b * 255).rounded()))
     }
 }
 #endif

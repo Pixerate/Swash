@@ -5,10 +5,11 @@ set -eo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/pixerate_markdown.sh
 source scripts/pixerate_core.sh
+source scripts/flair_effects.sh
 OUT="build/editor-audit"; mkdir -p "$OUT"
 SDK="$(xcrun --show-sdk-path --sdk macosx)"
 EXTRAS="$(scripts/build_mac_appkit_extras.sh)"
-CORE="$PIXERATE_MARKDOWN Swash/PixerateMarkdownExtensions.swift Swash/SlackMarkdown.swift Swash/PlatformTypes.swift Swash/EditorSupport.swift Swash/RichContentRenderer.swift Swash/MarkdownEditorStyler.swift Swash/CodeHighlightTheme.swift Swash/FormatCommands.swift Swash/MarkdownFlavor.swift Swash/FolderAccessManager.swift Swash/MarkdownParser.swift Swash/MarkdownPreviewView.swift Swash/DetectedLink.swift Swash/InteractiveTableView.swift Swash/SwashTextView.swift Swash/WritingPartner.swift Swash/WritingPartnerSession.swift Swash/WritingPartnerOverlay.swift Swash/FolderIndex.swift Swash/WritingModes.swift Swash/EditorTypography.swift Swash/ImageInsertion.swift"
+CORE="$PIXERATE_MARKDOWN $PIXERATE_CORE Swash/PixerateMarkdownExtensions.swift Swash/SlackMarkdown.swift Swash/PlatformTypes.swift Swash/EditorSupport.swift Swash/RichContentRenderer.swift Swash/MarkdownEditorStyler.swift Swash/CodeHighlightTheme.swift Swash/FormatCommands.swift Swash/MarkdownFlavor.swift Swash/FolderAccessManager.swift Swash/MarkdownParser.swift Swash/MarkdownPreviewView.swift Swash/DetectedLink.swift Swash/InteractiveTableView.swift Swash/SwashTextView.swift Swash/WritingPartner.swift Swash/WritingPartnerSession.swift Swash/WritingPartnerOverlay.swift Swash/FolderIndex.swift Swash/WritingModes.swift Swash/EditorTypography.swift Swash/ImageInsertion.swift"
 what="${1:-all}"
 
 if [[ $what == render || $what == all ]]; then

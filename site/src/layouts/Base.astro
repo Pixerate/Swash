@@ -1,0 +1,91 @@
+---
+import '../styles/global.css';
+import { DOWNLOAD, MIN_MACOS, REPO } from '../data/features';
+
+interface Props {
+  title: string;
+  description: string;
+}
+const { title, description } = Astro.props;
+const site = Astro.site ?? new URL('https://swash.pixerate.com');
+const canonical = new URL(Astro.url.pathname, site).href;
+const image = new URL('/og.png', site).href;
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'Swash',
+  description,
+  url: site.href,
+  image,
+  applicationCategory: 'ProductivityApplication',
+  operatingSystem: `macOS ${MIN_MACOS} or later`,
+  downloadUrl: DOWNLOAD,
+  license: 'https://opensource.org/licenses/MIT',
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+  publisher: { '@type': 'Organization', name: 'Pixerate', url: 'https://pixerate.com' },
+  sameAs: [REPO],
+};
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#fbf9fc" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0d061a" media="(prefers-color-scheme: dark)" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Swash" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={image} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={image} />
+
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+
+    {/* Inlined so the theme is set before the first paint. It always follows the system. */}
+    <script is:inline>
+      (() => {
+        const dark = window.matchMedia('(prefers-color-scheme: dark)');
+        const apply = (isDark) => {
+          document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
+        };
+        apply(dark.matches);
+        dark.addEventListener('change', (e) => apply(e.matches));
+      })();
+    </script>
+  </head>
+  <body>
+    <slot />
+    {/* Entry and exit animations for [data-reveal] elements (global.css). */}
+    <script is:inline>
+      (() => {
+        if (!('IntersectionObserver' in window) || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        document.documentElement.classList.add('reveal-on');
+        const watch = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              const el = entry.target;
+              el.classList.toggle('in', entry.isIntersecting);
+              // Out of view above the viewport: it has left. Below: it has yet to arrive.
+              el.classList.toggle('gone', !entry.isIntersecting && entry.boundingClientRect.top < 0);
+            }
+          },
+          { threshold: 0.12, rootMargin: '0px 0px -6% 0px' },
+        );
+        for (const el of document.querySelectorAll('[data-reveal]')) watch.observe(el);
+      })();
+    </script>
+  </body>
+</html>

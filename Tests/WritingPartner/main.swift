@@ -76,7 +76,7 @@ expect("Ask McDonalds now ", "Ask McDonalds now ")
 
 // Capitals at the start of sentences
 expect("hello world. this is it ", "Hello world. This is it ")
-expect("Really? yes! ok ", "Really? Yes! Ok ")
+expect("Really? yes! ok ", "Really? Yes! OK ")
 expect("See e.g. this one ", "See e.g. this one ")
 expect("It costs 3.50 today ", "It costs 3.50 today ")
 expect("Wait... and then ", "Wait... and then ")
@@ -174,8 +174,58 @@ do {
     kept.save(defaults)
     check(WritingPartnerStats.load(defaults) == kept, "stats round-trip")
     check(WritingPartnerDefaults.mode(defaults) == .off, "off by default")
+    check(WritingPartnerDefaults.spelling(defaults), "spelling on by default")
+    defaults.set(false, forKey: WritingPartnerDefaults.spelling)
+    check(!WritingPartnerDefaults.spelling(defaults), "an explicit choice wins")
     defaults.removePersistentDomain(forName: "swash-writing-partner-tests")
 }
+
+// The partner's cursor plays a fix as whole-word edits, left to right, each with its own rules (#878)
+do {
+    let old = "so its teh end" as NSString
+    let new = "So it's the end." as NSString
+    let marks = [
+        PartnerMark(range: NSRange(location: 0, length: 2), rules: [.sentenceCase]),
+        PartnerMark(range: NSRange(location: 3, length: 4), rules: [.contraction]),
+        PartnerMark(range: NSRange(location: 8, length: 3), rules: [.spelling], spellingWord: "teh"),
+        PartnerMark(range: NSRange(location: 15, length: 1), rules: [.terminalPunctuation]),
+    ]
+    let edits = PunctuateVoice.partnerEdits(from: old, to: new, marks: marks)
+    check(edits.map(\.original) == ["so", "its", "teh", "end"], "whole words selected: \(edits.map(\.original))")
+    check(edits.map(\.replacement) == ["So", "it's", "the", "end."], "whole words typed: \(edits.map(\.replacement))")
+    check(edits.map(\.rules) == [[.sentenceCase], [.contraction], [.spelling], [.terminalPunctuation]], "rules per edit: \(edits.map(\.rules))")
+    check(edits[2].spellingWords == ["teh"] && edits[0].spellingWords.isEmpty, "the spelling word goes with its edit")
+    check(edits.map(\.range) == [NSRange(location: 0, length: 2), NSRange(location: 3, length: 3), NSRange(location: 7, length: 3),
+                                  NSRange(location: 11, length: 3)], "ranges in the text before the fix: \(edits.map(\.range))")
+    // Played left to right, each on the text the earlier ones left, they make the fixed text
+    var text = old as String
+    var shift = 0
+    for edit in edits {
+        let range = NSRange(location: edit.range.location + shift, length: edit.range.length)
+        text = (text as NSString).replacingCharacters(in: range, with: edit.replacement)
+        shift += (edit.replacement as NSString).length - edit.range.length
+    }
+    check(text == new as String, "edits replay to the fix: \(text)")
+    // Two changes in one word are one edit
+    let merged = PunctuateVoice.partnerEdits(from: "i dont" as NSString, to: "I don't" as NSString, marks: [])
+    check(merged.map(\.replacement) == ["I", "don't"], "one edit per word: \(merged.map(\.replacement))")
+    let both = PunctuateVoice.partnerEdits(from: "dont" as NSString, to: "Don't" as NSString,
+                                           marks: [PartnerMark(range: NSRange(location: 0, length: 5), rules: [.contraction, .sentenceCase])])
+    check(both.count == 1 && both[0].replacement == "Don't" && both[0].rules == [.contraction, .sentenceCase], "capital and apostrophe in one word")
+}
+
+// "ok" → "OK", "id like" → "I'd like", and a comma before "but" that starts a clause
+expect("this is ok but for now id like to see what can be done to make it better\n",
+       "This is OK, but for now I'd like to see what can be done to make it better.\n")
+expect("ill be there soon ", "I'll be there soon ")
+expect("I feel ill today ", "I feel ill today ")
+expect("the id field is empty ", "The id field is empty ")
+expect("I tried but it failed ", "I tried, but it failed ")
+expect("it was cheap but good ", "It was cheap but good ")
+expect("not red but blue ", "Not red but blue ")
+expect("I have nothing but the best ", "I have nothing but the best ")
+expect("It works, but it is slow ", "It works, but it is slow ")
+expect("Ok so ", "Ok so ")
 
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
