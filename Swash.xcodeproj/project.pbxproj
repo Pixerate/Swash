@@ -144,6 +144,7 @@
 				"Rendering/swash-render.html",
 				PixerateAccess.swift,
 				PixerateAccountSettings.swift,
+				PixerateStore.swift,
 				ServicesProvider.swift,
 				SettingsView.swift,
 				SparkleUpdater.swift,
@@ -1487,7 +1488,7 @@
 			repositoryURL = "https://github.com/Pixerate/PixerateAccount";
 			requirement = {
 				kind = upToNextMinorVersion;
-				minimumVersion = 0.1.0;
+				minimumVersion = 0.2.0;
 			};
 		};
 		0460F1A030045F6A00853817 /* XCRemoteSwiftPackageReference "flair" */ = {

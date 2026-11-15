@@ -21,6 +21,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.appearance = NSAppearance(named: name == "dark" ? .darkAqua : .aqua)
         }
         GlobalHotKey.shared.register(QuickCaptureShortcut.current)
+        PixerateStore.startIfSignedIn()
         DispatchQueue.main.async {
             DefaultAppManager.shared.checkAndPromptIfNecessary()
         }
