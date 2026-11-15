@@ -303,9 +303,14 @@ final class WritingPartnerSession {
                 if edit.range.location <= boundary { shift += delta }
             }
         }
-        overlay.sweep(checked.flatMap { WritingPartnerOverlay.rects(for: coordinator.storageRange(forRaw: $0, in: textView), in: textView) })
         let edits = PunctuateVoice.partnerEdits(from: raw as NSString, to: working, marks: marks)
-        guard !edits.isEmpty else { return }
+        guard !edits.isEmpty else {
+            // The sweep is for what it looked at and left alone. A word it is about to fix goes
+            // straight to the selection: a sweep and then a selection over the same word reads as
+            // the same thing drawn twice (#100).
+            overlay.sweep(checked.flatMap { WritingPartnerOverlay.rects(for: coordinator.storageRange(forRaw: $0, in: textView), in: textView) })
+            return
+        }
         play(Fix(remaining: edits, boundaries: boundaries, isRetry: isRetry), in: textView, coordinator: coordinator)
     }
 

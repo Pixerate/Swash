@@ -39,6 +39,14 @@ nonisolated enum WritingPartnerDefaults {
     static let spelling = "writingPartnerSpelling"
     /// The undo action name of the partner's edits.
     static let actionName = "Punctuation"
+    /// How the partner's fixes look: the id of a Flair text treatment (#100).
+    static let style = "writingPartnerStyle"
+    /// The style when none is chosen: a ribbon curling away under what changed.
+    static let defaultStyle = "ribbon-curl"
+
+    static func style(_ defaults: UserDefaults = .standard) -> String {
+        defaults.string(forKey: style) ?? defaultStyle
+    }
 
     /// Whether the partner corrects spelling: the stored choice, else on.
     static func spelling(_ defaults: UserDefaults = .standard) -> Bool {

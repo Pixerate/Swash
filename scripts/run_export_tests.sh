@@ -4,6 +4,7 @@ set -eo pipefail
 cd "$(dirname "$0")/.."
 source scripts/pixerate_markdown.sh
 source scripts/pixerate_core.sh
+source scripts/flair_effects.sh
 OUT="build/export"; mkdir -p "$OUT"
 SDK="$(xcrun --show-sdk-path --sdk macosx)"
 EXTRAS="$(scripts/build_mac_appkit_extras.sh)"

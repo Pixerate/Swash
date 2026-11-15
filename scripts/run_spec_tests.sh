@@ -5,6 +5,7 @@ set -e
 cd "$(dirname "$0")/.."
 source scripts/pixerate_markdown.sh
 source scripts/pixerate_core.sh
+source scripts/flair_effects.sh
 
 BUILD_DIR="build/spec-runner"
 mkdir -p "$BUILD_DIR"

@@ -754,20 +754,43 @@ struct InteractionRunner {
                  waitForPartner(tvFast)
                  log("writing-partner-fast-\(mode)", lines, fast.text, expect: linesFixed)
              }
-             // The partner's cursor and selection show while a fix is on its way, and go afterwards
-             do {
+             // The partner's cursor and selection show while a fix is on its way, and go afterwards:
+             // in the default style (the ribbon, which plays on for a moment after the fix lands)
+             // and in another (#100)
+             let savedStyle = defaults.string(forKey: WritingPartnerDefaults.style)
+             for style in [WritingPartnerDefaults.defaultStyle, "soft-sweep"] {
                  defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+                 if style == WritingPartnerDefaults.defaultStyle { defaults.removeObject(forKey: WritingPartnerDefaults.style) }
+                 else { defaults.set(style, forKey: WritingPartnerDefaults.style) }
                  let v = TextBox(""); let tvV = makeEditor(v, styled: true)
                  for ch in "so i " { tvV.insertText(String(ch), replacementRange: tvV.selectedRange()) }
                  pump(0.08)
                  let overlay = tvV.subviews.compactMap { $0 as? WritingPartnerOverlay }.first
                  let during = overlay?.layer?.sublayers?.count ?? 0
                  let textDuring = v.text
-                 waitForPartner(tvV); pump(1.0)
+                 waitForPartner(tvV); pump(0.45)
+                 let landing = overlay?.layer?.sublayers?.count ?? 0
+                 // The layers behind the text are drawn by the text view, under its glyphs: a picture
+                 // of the editor mid-landing shows the ribbon passing under the letters
+                 let under = overlay?.drawsUnderText ?? false
+                 if style == WritingPartnerDefaults.defaultStyle, let rep = tvV.bitmapImageRepForCachingDisplay(in: tvV.bounds) {
+                     tvV.cacheDisplay(in: tvV.bounds, to: rep)
+                     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "build/editor-audit/partner-landing.png"))
+                     // And without the overlay: only what the text view drew under its glyphs
+                     overlay?.isHidden = true
+                     if let underOnly = tvV.bitmapImageRepForCachingDisplay(in: tvV.bounds) {
+                         tvV.cacheDisplay(in: tvV.bounds, to: underOnly)
+                         try? underOnly.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "build/editor-audit/partner-landing-under.png"))
+                     }
+                     overlay?.isHidden = false
+                 }
+                 pump(2.6)
                  let afterwards = overlay?.layer?.sublayers?.count ?? 0
-                 log("writing-partner-cursor", "so i ", "during=\(during > 0) unchangedYet=\(textDuring == "so i ") afterwards=\(afterwards) text=\(v.text)",
-                     expect: "during=true unchangedYet=true afterwards=0 text=So I ")
+                 log("writing-partner-cursor-\(style)", "so i ",
+                     "during=\(during > 0) unchangedYet=\(textDuring == "so i ") landing=\(landing > 0) under=\(under) afterwards=\(afterwards) text=\(v.text)",
+                     expect: "during=true unchangedYet=true landing=true under=true afterwards=0 text=So I ")
              }
+             if let savedStyle { defaults.set(savedStyle, forKey: WritingPartnerDefaults.style) } else { defaults.removeObject(forKey: WritingPartnerDefaults.style) }
              // The partner takes over autocorrect: spelling fixes come from the system spell checker,
              // through the partner, and the text view's own autocorrect is off while it's on
              for styled in [true, false] {

@@ -295,6 +295,8 @@ private struct WritingPartnerSettingsView: View {
                     .settingsFooterStyle()
             }
 
+            WritingPartnerStyleSection()
+
             Section {
                 ForEach(PunctuationRule.allCases.filter { $0 != .spelling }, id: \.self) { rule in
                     LabeledContent(rule.title) {
