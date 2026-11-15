@@ -768,13 +768,27 @@ struct InteractionRunner {
                  let overlay = tvV.subviews.compactMap { $0 as? WritingPartnerOverlay }.first
                  let during = overlay?.layer?.sublayers?.count ?? 0
                  let textDuring = v.text
-                 waitForPartner(tvV); pump(0.2)
+                 waitForPartner(tvV); pump(0.45)
                  let landing = overlay?.layer?.sublayers?.count ?? 0
+                 // The layers behind the text are drawn by the text view, under its glyphs: a picture
+                 // of the editor mid-landing shows the ribbon passing under the letters
+                 let under = overlay?.drawsUnderText ?? false
+                 if style == WritingPartnerDefaults.defaultStyle, let rep = tvV.bitmapImageRepForCachingDisplay(in: tvV.bounds) {
+                     tvV.cacheDisplay(in: tvV.bounds, to: rep)
+                     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "build/editor-audit/partner-landing.png"))
+                     // And without the overlay: only what the text view drew under its glyphs
+                     overlay?.isHidden = true
+                     if let underOnly = tvV.bitmapImageRepForCachingDisplay(in: tvV.bounds) {
+                         tvV.cacheDisplay(in: tvV.bounds, to: underOnly)
+                         try? underOnly.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "build/editor-audit/partner-landing-under.png"))
+                     }
+                     overlay?.isHidden = false
+                 }
                  pump(2.6)
                  let afterwards = overlay?.layer?.sublayers?.count ?? 0
                  log("writing-partner-cursor-\(style)", "so i ",
-                     "during=\(during > 0) unchangedYet=\(textDuring == "so i ") landing=\(landing > 0) afterwards=\(afterwards) text=\(v.text)",
-                     expect: "during=true unchangedYet=true landing=true afterwards=0 text=So I ")
+                     "during=\(during > 0) unchangedYet=\(textDuring == "so i ") landing=\(landing > 0) under=\(under) afterwards=\(afterwards) text=\(v.text)",
+                     expect: "during=true unchangedYet=true landing=true under=true afterwards=0 text=So I ")
              }
              if let savedStyle { defaults.set(savedStyle, forKey: WritingPartnerDefaults.style) } else { defaults.removeObject(forKey: WritingPartnerDefaults.style) }
              // The partner takes over autocorrect: spelling fixes come from the system spell checker,

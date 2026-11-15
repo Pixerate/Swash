@@ -14,6 +14,11 @@
 //  - `landed`: what changed, as the treatment shows it (a ribbon, a tint), until it fades.
 //  With Reduce Motion on, Flair holds each stage still and fades it.
 //
+//  A treatment's layers are either behind the text or above it, so a ribbon can pass under the
+//  letters and back over them. The layers above are this view's. The layers behind are drawn by the
+//  text view itself, between its background and its glyphs (`SwashLayoutManager.drawBackground`
+//  calls `drawUnderText`), because a view over the text can't draw under it.
+//
 
 #if os(macOS)
 import AppKit
@@ -123,6 +128,40 @@ final class WritingPartnerOverlay: NSView {
     private let renderer = FlairTextTreatmentRenderer()
     private var look: Look?
 
+    // MARK: Under the text
+
+    /// The overlay of `textView`, if it has one.
+    static func existing(in textView: NSTextView) -> WritingPartnerOverlay? {
+        textView.subviews.lazy.compactMap { $0 as? WritingPartnerOverlay }.first
+    }
+
+    /// Whether the text view draws the layers behind its text itself (the editor's own layout
+    /// manager does). Elsewhere they go in this view, over the text and under the layers above.
+    private(set) var drawsUnderText = false
+    /// What the layers behind the text last covered, to have the text view draw it again.
+    private var underRect: NSRect = .zero
+
+    /// Draws the layers that go behind the text, in the text view's coordinates. Called by the
+    /// layout manager after the background and before the glyphs.
+    func drawUnderText(in context: CGContext) {
+        guard drawsUnderText, !(renderer.behindLayer.sublayers ?? []).isEmpty else { return }
+        context.saveGState()
+        renderer.behindLayer.render(in: context)
+        context.restoreGState()
+    }
+
+    /// Has the text view draw again where the layers behind its text are, and were.
+    private func redrawUnderText(_ plans: [FlairTextTreatmentPlan], in textView: NSTextView) {
+        var rect = NSRect.zero
+        for layer in plans.flatMap(\.layers) where layer.z == "behind" {
+            // Room for a glow, and for a ribbon's edge
+            rect = rect.union(layer.frame.insetBy(dx: -((layer.glow ?? 0) + 6), dy: -((layer.glow ?? 0) + 6)))
+        }
+        let dirty = rect.union(underRect)
+        underRect = rect
+        if !dirty.isEmpty { textView.setNeedsDisplay(dirty) }
+    }
+
     /// The look for the chosen style and the text view's appearance, resolved again when either changes.
     private func currentLook(in textView: NSTextView) -> Look? {
         let id = WritingPartnerDefaults.style()
@@ -200,9 +239,15 @@ final class WritingPartnerOverlay: NSView {
     private func stop() {
         timer?.invalidate()
         timer = nil
+        clear()
+    }
+
+    /// Removes everything drawn, over the text and under it.
+    private func clear() {
         renderer.clear()
         renderer.behindLayer.removeFromSuperlayer()
         renderer.aboveLayer.removeFromSuperlayer()
+        if let textView = target?.textView ?? (superview as? NSTextView) { redrawUnderText([], in: textView) }
     }
 
     /// One frame: the plan of every stage at this moment, drawn by Flair's renderer.
@@ -275,18 +320,20 @@ final class WritingPartnerOverlay: NSView {
         plans += live
 
         guard !plans.isEmpty else {
-            renderer.clear()
-            renderer.behindLayer.removeFromSuperlayer()
-            renderer.aboveLayer.removeFromSuperlayer()
+            clear()
             return
         }
-        if renderer.behindLayer.superlayer == nil {
-            // The text view draws its own text, so both go over it, the "behind" layers first
-            root.addSublayer(renderer.behindLayer)
-            root.addSublayer(renderer.aboveLayer)
+        drawsUnderText = textView.layoutManager is SwashLayoutManager
+        if drawsUnderText {
+            renderer.behindLayer.removeFromSuperlayer()
+        } else if renderer.behindLayer.superlayer == nil {
+            // A text view that only draws its own text: both go over it, the "behind" layers first
+            root.insertSublayer(renderer.behindLayer, at: 0)
         }
+        if renderer.aboveLayer.superlayer == nil { root.addSublayer(renderer.aboveLayer) }
         renderer.contentsScale = window?.backingScaleFactor ?? 2
         renderer.draw(plans, font: font)
+        if drawsUnderText { redrawUnderText(plans, in: textView) }
     }
 
     /// The partner's insertion point at `position` (an offset in the director's text): inside or at
