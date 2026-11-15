@@ -1,5 +1,5 @@
 {
-  "originHash" : "ca9eb8aa5552871b4aa5e54153acc4c5862660505d9ab5525e82604491fc4efc",
+  "originHash" : "d00799b475a373f879f3208a9f38c5170abe12463c4c907c2ad4932f8647c25a",
   "pins" : [
     {
       "identity" : "editor",
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Pixerate/PixerateAccount",
       "state" : {
-        "revision" : "40752e0e1779edb7b5f48596873fccd0e72ada4e",
-        "version" : "0.1.1"
+        "revision" : "e9f4c2bf30e3be2bcec24687c9ceb0b6d52d02cd",
+        "version" : "0.2.0"
       }
     },
     {

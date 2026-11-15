@@ -4,8 +4,10 @@
 //
 //  The opt-in Pixerate account (#60). Swash works fully without it; signing in only enables the
 //  writing partner's server features (#61), which call the Pixerate server when the writer pauses.
-//  Every request to the server goes through `PixerateAccess.post`, which refuses before anything
-//  is sent unless the person is signed in and the feature that asks has been turned on.
+//  Those features are part of Pixerate Pro (a paid or complimentary subscription); the Basic plan
+//  has everything else. Every request to the server goes through `PixerateAccess.post`, which
+//  refuses before anything is sent unless the person is signed in, on Pro, and the feature that
+//  asks has been turned on.
 //
 
 import Foundation
@@ -28,8 +30,9 @@ nonisolated enum PixerateRefusal: Error, Equatable {
     case signedOut
     /// Signed in, but the feature that asked is off.
     case featureOff
-    /// The account's team has no Fuel left. Nothing more is sent until the account is refreshed.
-    case outOfFuel
+    /// The account is on the Basic plan; the feature needs Pixerate Pro. Nothing is sent until the
+    /// account is refreshed or Pro is bought.
+    case subscriptionRequired
     /// The server asked Swash to wait. Nothing is sent before this time.
     case rateLimited(until: Date)
     /// Any other failure, with the server's message when it gave one.
@@ -50,8 +53,9 @@ final class PixerateAccess {
     /// so nothing can be sent by default.
     @ObservationIgnored var isFeatureEnabled: () -> Bool = { false }
 
-    /// Set after the server reports no Fuel. Cleared by `refresh()` or a request that succeeds.
-    private(set) var isOutOfFuel = false
+    /// Set after the server reports the account needs Pro. Cleared by `refresh()` or a request
+    /// that succeeds.
+    private(set) var needsSubscription = false
     /// Set after the server asks Swash to wait (HTTP 429).
     private(set) var pausedUntil: Date?
 
@@ -137,15 +141,47 @@ final class PixerateAccess {
     }
 
     private func resetRefusals() {
-        isOutOfFuel = false
+        needsSubscription = false
         pausedUntil = nil
+    }
+
+    // MARK: Plan
+
+    /// Plans that never count as Pixerate Pro.
+    nonisolated static let freePlanIds: Set<String> = ["free", ""]
+
+    /// Where Pro comes from: `.billing` (App Store or web), `.complimentary` (granted by Pixerate),
+    /// or `nil` on the Basic plan or signed out.
+    nonisolated enum PlanSource: Equatable { case billing, complimentary }
+
+    nonisolated static func planSource(of team: Team?, at date: Date = Date()) -> PlanSource? {
+        guard let team else { return nil }
+        if !freePlanIds.contains(team.planId) { return .billing }
+        if let grant = team.complimentary, !freePlanIds.contains(grant.planId), grant.isActive(at: date) {
+            return .complimentary
+        }
+        return nil
+    }
+
+    /// Whether the active team has Pixerate Pro, paid or complimentary.
+    var isSubscribed: Bool {
+        account.isAuthenticated && Self.planSource(of: account.activeTeam, at: now()) != nil && !needsSubscription
+    }
+
+    /// "Pro", "Pro (complimentary)" or "Basic".
+    var planName: String {
+        switch Self.planSource(of: account.activeTeam, at: now()) {
+        case .billing: return "Pro"
+        case .complimentary: return "Pro (complimentary)"
+        case nil: return "Basic"
+        }
     }
 
     // MARK: Requests
 
     /// POSTs `body` (JSON) to `path` on the Pixerate server as the signed-in person, and returns the
     /// response body. Throws `PixerateRefusal`, without sending anything, when signed out, when the
-    /// feature is off, after the server reported no Fuel, or while it has asked Swash to wait.
+    /// feature is off, on the Basic plan, or while the server has asked Swash to wait.
     func post(path: String, body: Data) async throws -> Data {
         guard isFeatureEnabled() else { throw PixerateRefusal.featureOff }
         guard account.token != nil else { throw PixerateRefusal.signedOut }
@@ -153,7 +189,7 @@ final class PixerateAccess {
             await account.restoreSession()
             guard account.isAuthenticated else { throw PixerateRefusal.signedOut }
         }
-        if isOutOfFuel { throw PixerateRefusal.outOfFuel }
+        if !isSubscribed { throw PixerateRefusal.subscriptionRequired }
         if let pausedUntil {
             if now() < pausedUntil { throw PixerateRefusal.rateLimited(until: pausedUntil) }
             self.pausedUntil = nil
@@ -167,15 +203,16 @@ final class PixerateAccess {
         }
         switch http.statusCode {
         case 200..<300:
-            isOutOfFuel = false
+            needsSubscription = false
             return data
         case 401:
             // The key was revoked or has expired: the account is signed out.
             account.signOut()
             throw PixerateRefusal.signedOut
         case 402:
-            isOutOfFuel = true
-            throw PixerateRefusal.outOfFuel
+            // `subscription_required`: the server's view of the plan wins until the next refresh.
+            needsSubscription = true
+            throw PixerateRefusal.subscriptionRequired
         case 429:
             let seconds = http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init) ?? 30
             let until = now().addingTimeInterval(max(1, seconds))
@@ -189,7 +226,7 @@ final class PixerateAccess {
 }
 
 #if DEBUG
-/// The fake server behind `--demo-auth`: one person, two teams, some Fuel.
+/// The fake server behind `--demo-auth`: one person on Pro, and a Basic team.
 final class DemoPixerateURLProtocol: URLProtocol {
     override nonisolated class func canInit(with request: URLRequest) -> Bool { true }
     override nonisolated class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -204,8 +241,8 @@ final class DemoPixerateURLProtocol: URLProtocol {
             body = """
             {"user":{"id":"user_demo","email":"writer@example.com","displayName":"Demo Writer"},
              "defaultTeamId":"team_demo",
-             "teams":[{"id":"team_demo","name":"Personal","ownerId":"user_demo","fuelBalance":42},
-                      {"id":"team_studio","name":"Studio","ownerId":"user_other","fuelBalance":0}]}
+             "teams":[{"id":"team_demo","name":"Personal","ownerId":"user_demo","planId":"pro"},
+                      {"id":"team_studio","name":"Studio","ownerId":"user_other","planId":"free"}]}
             """
         default:
             status = 404
