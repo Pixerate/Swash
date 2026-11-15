@@ -218,6 +218,9 @@ nonisolated struct WritingPartnerStats: Codable, Equatable, Sendable {
         case .spelling: return "spelling"
         case .capitals: return "capitals"
         case .clauseComma: return "clause-comma"
+        case .curlyQuotes: return "curly-quotes"
+        case .dashes: return "dashes"
+        case .ellipses: return "ellipses"
         }
     }
 }

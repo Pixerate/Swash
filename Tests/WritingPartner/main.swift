@@ -232,7 +232,6 @@ expect("I have nothing but the best ", "I have nothing but the best ")
 expect("It works, but it is slow ", "It works, but it is slow ")
 expect("Ok so ", "Ok so ")
 
-print("Punctuate tests finished. Moving to bandleader tests...")
 
 // MARK: - Writing Bandleader Tests (#101)
 
@@ -473,7 +472,6 @@ do {
 }
 
 // 6. Session memory tests
-print("Testing Session memory...")
 do {
     let memory = BandleaderSessionMemory()
     let suggestion = JazzTextSuggestion(
@@ -489,6 +487,8 @@ do {
 
     // Another paragraph is not affected
     check(!memory.isDismissed(suggestion: suggestion, in: "Different text"), "Dismissal is scoped to paragraph content")
+}
+
 // Typography (#104): curly quotes, dashes and ellipses, from the editor's checks, only when turned on
 do {
     let all: (PunctuationRule) -> Bool = { _ in true }
