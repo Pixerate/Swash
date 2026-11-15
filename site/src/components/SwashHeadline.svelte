@@ -79,8 +79,15 @@
     // The headline's size follows the window's width.
     let resizing: ReturnType<typeof setTimeout>;
     const onResize = () => {
+      // The plain headline shows while the size changes: the canvas would still hold the words
+      // at their old size until the shader has the new ones
+      if (mounted) shown = false;
       clearTimeout(resizing);
-      resizing = setTimeout(refresh, 150);
+      resizing = setTimeout(async () => {
+        refresh();
+        await mounted?.ready();
+        if (!gone && mounted) shown = true;
+      }, 150);
     };
     addEventListener('resize', onResize);
 

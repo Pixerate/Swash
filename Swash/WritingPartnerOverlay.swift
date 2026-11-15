@@ -121,6 +121,14 @@ final class WritingPartnerOverlay: NSView {
         return FlairRGBA(Double(c.redComponent), Double(c.greenComponent), Double(c.blueComponent), Double(c.alphaComponent))
     }
 
+    /// A colour as `view` shows it. A system colour (the text's, the page's) read outside a drawing
+    /// pass resolves in the appearance the thread last drew in, which need not be the view's.
+    static func rgba(_ color: NSColor?, in view: NSView) -> FlairRGBA? {
+        var resolved: FlairRGBA?
+        view.effectiveAppearance.performAsCurrentDrawingAppearance { resolved = rgba(color) }
+        return resolved
+    }
+
     static func caret(_ rect: NSRect) -> FlairTreatmentCaret {
         FlairTreatmentCaret(x: Double(rect.midX), y: Double(rect.minY), height: Double(rect.height))
     }
@@ -252,9 +260,18 @@ final class WritingPartnerOverlay: NSView {
 
     /// One frame: the plan of every stage at this moment, drawn by Flair's renderer.
     private func draw() {
-        guard let root = layer else { return }
-        let textView = target?.textView ?? (superview as? NSTextView)
-        guard let textView, let look = currentLook(in: textView) else { return }
+        guard let textView = target?.textView ?? (superview as? NSTextView) else { return }
+        // Colours are read in the text view's own appearance. A system colour (the text's, the
+        // page's, the partner's tint) read from a timer resolves in whatever appearance happens to
+        // be current, which is not the window's: in Light Mode the old word was then covered in
+        // the Dark Mode page colour while the new one was typed.
+        textView.effectiveAppearance.performAsCurrentDrawingAppearance {
+            self.drawFrame(in: textView)
+        }
+    }
+
+    private func drawFrame(in textView: NSTextView) {
+        guard let root = layer, let look = currentLook(in: textView) else { return }
         frame = textView.bounds
         let now = Self.now
         var plans: [FlairTextTreatmentPlan] = []
@@ -292,8 +309,8 @@ final class WritingPartnerOverlay: NSView {
                     font = layout.attributes[.font] as? NSFont
                     let background = textView.drawsBackground ? textView.backgroundColor : NSColor.textBackgroundColor
                     let typing = FlairTreatmentTarget(lines: layout.covered, caret: head, text: ghost.text,
-                                                      color: Self.rgba(layout.attributes[.foregroundColor] as? NSColor ?? textView.textColor),
-                                                      background: Self.rgba(background))
+                                                      color: Self.rgba(layout.attributes[.foregroundColor] as? NSColor ?? textView.textColor, in: textView),
+                                                      background: Self.rgba(background, in: textView))
                     live.append(look.plan(.typing, at: now - (typingStart ?? now), over: typing))
                 } else if caret.selection.length > 0 {
                     typingStart = nil

@@ -790,6 +790,21 @@ struct InteractionRunner {
                      "during=\(during > 0) unchangedYet=\(textDuring == "so i ") landing=\(landing > 0) under=\(under) afterwards=\(afterwards) text=\(v.text)",
                      expect: "during=true unchangedYet=true landing=true under=true afterwards=0 text=So I ")
              }
+             // The partner's colours follow the editor's own appearance. A system colour read from
+             // its timer resolves in the appearance the thread last drew in (after the system
+             // switches between Light and Dark that can be the other one), and the page colour it
+             // covers the old word with was then the Dark Mode one in a light window.
+             for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+                 let v = TextBox("so I "); let tvV = makeEditor(v, styled: true)
+                 tvV.appearance = NSAppearance(named: appearance)
+                 NSAppearance.current = NSAppearance(named: appearance == .aqua ? .darkAqua : .aqua)
+                 let page = WritingPartnerOverlay.rgba(tvV.backgroundColor, in: tvV)?.r ?? -1
+                 let ink = WritingPartnerOverlay.rgba(tvV.textColor, in: tvV)?.r ?? -1
+                 let stale = WritingPartnerOverlay.rgba(tvV.backgroundColor)?.r ?? -1
+                 let ok = name == "light" ? (page > 0.9 && ink < 0.2) : (page < 0.3 && ink > 0.8)
+                 log("writing-partner-colours-\(name)", "so I ", "page and text as the editor shows them=\(ok) (read without its appearance, the page is \(stale > 0.5 ? "light" : "dark"))",
+                     expect: "page and text as the editor shows them=true (read without its appearance, the page is \(name == "light" ? "dark" : "light"))")
+             }
              if let savedStyle { defaults.set(savedStyle, forKey: WritingPartnerDefaults.style) } else { defaults.removeObject(forKey: WritingPartnerDefaults.style) }
              // The partner takes over autocorrect: spelling fixes come from the system spell checker,
              // through the partner, and the text view's own autocorrect is off while it's on

@@ -9,8 +9,8 @@
   //
   // The partner's look is Flair's `ribbon-curl` text treatment, the same kind of treatment the
   // app's partner can draw with: its caret (with no name tag, as in the app), the selection, the word typed over the
-  // old one, and a ribbon curling away under what changed. Until Flair has loaded (or if it
-  // can't), the fixes are shown with plain CSS instead.
+  // old one, and a ribbon curling away under what changed. The demo waits for Flair to load before
+  // it starts; if it can't load, or takes too long, the fixes are shown with plain CSS instead.
 
   type Status = 'plain' | 'selected' | 'typing' | 'fixed';
   interface Word {
@@ -62,6 +62,20 @@
 
   let overlay: TextTreatmentOverlay | null = null;
   let flair: typeof import('@pixerate/flair/embed') | null = null;
+  /** Flair once it has loaded, waiting to be used from the start of the next run. */
+  let arrived: typeof import('@pixerate/flair/embed') | null = null;
+  /** Settles when Flair has loaded, has failed to, or has taken too long for the first run to wait. */
+  let flairSettled: Promise<void> = Promise.resolve();
+
+  /**
+   * Takes Flair into use. Only between runs: a run that began with the plain CSS fixes finishes
+   * with them, so the two looks are never on screen together.
+   */
+  function adopt() {
+    if (!arrived || overlay) return;
+    flair = arrived;
+    overlay = arrived.mountTextTreatment(page, TREATMENT, { values: treatmentValues() as never });
+  }
 
   let run = 0;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -102,6 +116,7 @@
 
     // The new word is drawn over the old one, letter by letter, and only then written into the text.
     let typed = '';
+    // The ribbon is not part of typing (Flair 0.135.2): it arrives when the fix has landed
     const typing = overlay.play('typing', () => {
       const line = rects()[0];
       return {
@@ -147,6 +162,10 @@
     const mine = ++run;
     const alive = () => mine === run;
     while (alive()) {
+      // The first run waits for Flair (a moment, on a first visit), showing the finished text
+      await flairSettled;
+      if (!alive()) return;
+      adopt();
       overlay?.clear();
       lines = fresh(false);
       fixes = 0;
@@ -193,13 +212,13 @@
     }
     let gone = false;
     // Flair is fetched once the demo is on screen; the first fixes may play in CSS before it arrives.
-    import('@pixerate/flair/embed')
+    const loading = import('@pixerate/flair/embed')
       .then((module) => {
-        if (gone) return;
-        flair = module;
-        overlay = module.mountTextTreatment(page, TREATMENT, { values: treatmentValues() as never });
+        if (!gone) arrived = module;
       })
       .catch((err) => console.warn('Swash: Flair not loaded, showing fixes without the treatment.', err));
+    // On a slow connection the demo starts without it after a few seconds, and takes it up on a later run
+    flairSettled = Promise.race([loading, sleep(4000)]);
 
     const themeWatch = new MutationObserver(() => overlay?.setValues(treatmentValues() as never));
     themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
