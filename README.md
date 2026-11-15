@@ -56,7 +56,7 @@
 - **Capture from anywhere.** Send selected text from any app to a new Swash note with the Services menu, or create notes and count words with Shortcuts.
 - **A real Mac app.** Light and Dark Mode, autosave and version history, iCloud Drive with help sorting out conflicting edits, VoiceOver, system spellcheck (kept out of your code blocks), undo everything, and automatic updates.
 - **Private by design.** No tracking, and no account needed: everything above works without one. Your files stay where you put them.
-- **Optional Pixerate account.** Sign in with a Pixerate account in Settings › Account to let the coming writing partner use Pixerate's model when you pause. The writing partner is part of Pixerate Pro, which you can buy in Settings through the App Store; everything else in Swash is free. None of your writing is sent unless you're signed in to Pro and the writing partner is on. Then Swash sends only the paragraph you're writing and a little context around it, never the whole document, code blocks, math or tables. Pixerate doesn't keep your text.
+- **Optional Pixerate account.** Sign in with a Pixerate account in Settings › Account to let the coming writing partner use Pixerate's model when you pause. The writing partner is part of Pixerate Pro, which you can buy in Settings through the App Store; everything else in Swash is free. None of your writing is sent unless you're signed in to Pro and the writing partner is on. Then Swash sends only the paragraph you're writing and a little context around it, never the whole document, code blocks, math or tables. Pixerate doesn't keep your text. [What the writing partner sends](docs/writing-partner-privacy.md).
 
 ---
 
