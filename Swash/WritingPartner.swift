@@ -462,3 +462,101 @@ nonisolated enum PunctuateVoice {
         return PunctuationEdit(range: NSRange(location: lineEnd, length: 0), replacement: mark, rules: [.terminalPunctuation])
     }
 }
+
+/// One edit the partner's cursor plays out (#878): it selects `range` (whole words, in the text
+/// before the fix) and types `replacement` over it, as a person would retype a word. Each is its
+/// own undo step; undoing it counts against `rules`, and tells the spell checker `spellingWords`
+/// are words.
+nonisolated struct PartnerEdit: Equatable, Sendable {
+    var range: NSRange
+    /// The text `range` held when the fix was worked out: the edit is played only if it's still there.
+    var original: String
+    var replacement: String
+    var rules: [PunctuationRule]
+    var spellingWords: [String]
+}
+
+/// Where one of the voice's edits landed in the fixed text, and what it did.
+nonisolated struct PartnerMark: Equatable, Sendable {
+    var range: NSRange
+    var rules: [PunctuationRule]
+    /// The word a spelling fix replaced.
+    var spellingWord: String?
+}
+
+extension PunctuateVoice {
+    /// The fix that turns `old` into `new`, as whole-word edits from left to right. `marks` say where
+    /// the voice's edits landed in `new`, so each edit carries the rules that made it.
+    static func partnerEdits(from old: NSString, to new: NSString, marks: [PartnerMark]) -> [PartnerEdit] {
+        let (changedBefore, changedAfter) = changedRanges(from: old, to: new)
+        // Widen each change to the words it touches, and merge changes in the same word
+        var pairs: [(before: NSRange, after: NSRange)] = []
+        for (before, after) in zip(changedBefore, changedAfter) {
+            let pair = (word(around: before, in: old), word(around: after, in: new))
+            if let last = pairs.last, pair.0.location <= NSMaxRange(last.before) {
+                pairs[pairs.count - 1] = (NSUnionRange(last.before, pair.0), NSUnionRange(last.after, pair.1))
+            } else {
+                pairs.append(pair)
+            }
+        }
+        return pairs.map { before, after in
+            let touching = marks.filter { $0.range.location <= NSMaxRange(after) && NSMaxRange($0.range) >= after.location }
+            var rules: [PunctuationRule] = []
+            for rule in touching.flatMap(\.rules) where !rules.contains(rule) { rules.append(rule) }
+            let original = old.substring(with: before)
+            let spelling = touching.compactMap(\.spellingWord).filter { original.contains($0) }
+            return PartnerEdit(range: before, original: original, replacement: new.substring(with: after),
+                               rules: rules, spellingWords: spelling)
+        }
+    }
+
+    /// `range` widened to the whole words it touches (a full stop added after a word takes the word).
+    static func word(around range: NSRange, in text: NSString) -> NSRange {
+        var start = range.location
+        var end = NSMaxRange(range)
+        while start > 0, isWordCharacter(text.character(at: start - 1)) { start -= 1 }
+        while end < text.length, isWordCharacter(text.character(at: end)) { end += 1 }
+        return NSRange(location: start, length: end - start)
+    }
+
+    /// Where `new` differs from `old`: each run of changed characters, as ranges in both.
+    static func changedRanges(from old: NSString, to new: NSString) -> (before: [NSRange], after: [NSRange]) {
+        // Trim the common prefix and suffix, then diff what's left character by character
+        let limit = min(old.length, new.length)
+        var prefix = 0
+        while prefix < limit, old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
+        var suffix = 0
+        while suffix < limit - prefix, old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
+        let oldMiddle = (0..<(old.length - prefix - suffix)).map { old.character(at: prefix + $0) }
+        let newMiddle = (0..<(new.length - prefix - suffix)).map { new.character(at: prefix + $0) }
+        let difference = newMiddle.difference(from: oldMiddle)
+        var removed = IndexSet()
+        var inserted = IndexSet()
+        for change in difference {
+            switch change {
+            case .remove(let offset, _, _): removed.insert(offset)
+            case .insert(let offset, _, _): inserted.insert(offset)
+            }
+        }
+        // Pair each run of changes in the old text with the run at the same place in the new one
+        var before: [NSRange] = []
+        var after: [NSRange] = []
+        var oldIndex = 0
+        var newIndex = 0
+        while oldIndex < oldMiddle.count || newIndex < newMiddle.count {
+            if !removed.contains(oldIndex) && !inserted.contains(newIndex), oldIndex < oldMiddle.count, newIndex < newMiddle.count {
+                oldIndex += 1
+                newIndex += 1
+                continue
+            }
+            let oldStart = oldIndex
+            let newStart = newIndex
+            while removed.contains(oldIndex) { oldIndex += 1 }
+            while inserted.contains(newIndex) { newIndex += 1 }
+            if oldIndex == oldStart && newIndex == newStart { break }
+            before.append(NSRange(location: prefix + oldStart, length: oldIndex - oldStart))
+            after.append(NSRange(location: prefix + newStart, length: newIndex - newStart))
+        }
+        return (before, after)
+    }
+}
