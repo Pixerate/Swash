@@ -17,6 +17,7 @@ jobs:
   release:
     name: Build, Package & Release
     runs-on: macos-26
+    timeout-minutes: 45
     env:
       # Secrets can't be read in a step's `if`, so expose only whether this one is set.
       HAS_PIXERATE_PACKAGES_TOKEN: ${{ secrets.PIXERATE_PACKAGES_TOKEN != '' }}
@@ -80,15 +81,18 @@ jobs:
           fi
 
           echo "Importing Apple Code Signing Certificate..."
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security default-keychain -s $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
-          echo "$MACOS_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
-          security import $CERTIFICATE_PATH -k $KEYCHAIN_PATH -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign -T /usr/bin/xcodebuild
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          CERTIFICATE_PATH="$RUNNER_TEMP/certificate.p12"
+          echo "$MACOS_CERTIFICATE" | base64 --decode -o "$CERTIFICATE_PATH"
+          security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign -T /usr/bin/xcodebuild -T /usr/bin/security
+          rm -f "$CERTIFICATE_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
           IDENTITY="$EXPLICIT_IDENTITY"
           if [ -z "$IDENTITY" ]; then
@@ -107,10 +111,14 @@ jobs:
         env:
           PIXERATE_PACKAGES_TOKEN: ${{ secrets.PIXERATE_PACKAGES_TOKEN }}
         run: |
-          rm -rf Packages/PixerateStickers
+          rm -rf "$RUNNER_TEMP/stickers" Packages/PixerateStickers
           git clone --depth 1 --branch v0.9.0 \
             "https://x-access-token:${PIXERATE_PACKAGES_TOKEN}@github.com/Pixerate/stickers.git" \
-            Packages/PixerateStickers
+            "$RUNNER_TEMP/stickers"
+          mkdir -p Packages/PixerateStickers
+          cp "$RUNNER_TEMP/stickers/Package.swift" Packages/PixerateStickers/
+          cp -R "$RUNNER_TEMP/stickers/swift" Packages/PixerateStickers/
+          rm -rf "$RUNNER_TEMP/stickers"
           test -d Packages/PixerateStickers/swift/Sources/PixerateStickers/Resources/Stickers.xcassets
 
       - name: Build macOS App
