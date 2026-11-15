@@ -7,7 +7,7 @@
   // Only fixes the app makes today are shown.
   //
   // The partner's look is Flair's `ribbon-curl` text treatment, the same kind of treatment the
-  // app's partner can draw with: its caret and name tag, the selection, the word typed over the
+  // app's partner can draw with: its caret (with no name tag, as in the app), the selection, the word typed over the
   // old one, and a ribbon curling away under what changed. Until Flair has loaded (or if it
   // can't), the fixes are shown with plain CSS instead.
 
@@ -22,7 +22,6 @@
   }
 
   const TREATMENT = 'ribbon-curl';
-  const LABEL = 'Swash';
 
   const SCRIPT: [raw: string, fix?: string][][] = [
     [['i', 'I'], ['started'], ['writing'], ['and'], ['didnt', 'didn’t'], ['look'], ['back', 'back.']],
@@ -58,7 +57,7 @@
   const isDark = () => document.documentElement.dataset.theme === 'dark';
   const cssColor = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   /** The treatment's values for the page's theme: the partner's colour, and its frost for light or dark pages. */
-  const treatmentValues = () => ({ color: cssColor('--partner'), darkTheme: isDark(), sparkles: 6 });
+  const treatmentValues = () => ({ color: cssColor('--partner'), darkTheme: isDark(), sparkles: 6, nameTag: false });
 
   /** The partner's fix, drawn by the treatment over the word's own text. */
   async function fixWithTreatment(word: Word, l: number, w: number, alive: () => boolean) {
@@ -75,7 +74,7 @@
     measure.font = font;
 
     const endOfWord = () => caretAt(node, node.length, page);
-    const tag = overlay.play('caret', () => ({ caret: endOfWord(), label: LABEL }));
+    const tag = overlay.play('caret', () => ({ caret: endOfWord() }));
     await overlay.play('checking', () => ({ lines: rects() })).finished;
     if (!alive()) return tag.stop(), true;
     await overlay.play('selecting', () => ({ lines: rects(), caret: endOfWord() })).finished;
@@ -91,7 +90,6 @@
         lines: rects(),
         text: typed,
         caret: line && { x: line.x + measure.measureText(typed).width, y: line.y, height: line.height },
-        label: LABEL,
         color: style.color,
         background: cssColor('--surface'),
         font,
@@ -223,7 +221,7 @@
       <p>
         {#each line as word, w}
           {#if word.shown || word.status === 'typing'}
-            <span class="word {word.status}" data-word="{l}-{w}">{word.shown}</span>{#if word.status === 'selected' || word.status === 'typing'}<span class="partner"><b>{LABEL}</b></span>{/if}{#if caret && caret.line === l && caret.word === w}<span class="caret"></span>{/if}{' '}
+            <span class="word {word.status}" data-word="{l}-{w}">{word.shown}</span>{#if word.status === 'selected' || word.status === 'typing'}<span class="partner"></span>{/if}{#if caret && caret.line === l && caret.word === w}<span class="caret"></span>{/if}{' '}
           {/if}
         {/each}
         {#if caret && caret.line === l && !line[caret.word]?.shown}<span class="caret"></span>{/if}
@@ -327,20 +325,6 @@
   .partner {
     position: relative;
     background: var(--partner);
-  }
-  .partner b {
-    position: absolute;
-    left: 0;
-    bottom: 100%;
-    padding: 1px 6px;
-    border-radius: 5px 5px 5px 0;
-    background: var(--partner);
-    color: var(--page);
-    font-size: 0.625rem;
-    font-weight: 700;
-    line-height: 1.5;
-    letter-spacing: 0.02em;
-    white-space: nowrap;
   }
   @keyframes blink {
     50% {
