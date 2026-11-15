@@ -7,3 +7,9 @@ node_modules/
 # SwiftPM
 Packages/*/.build/
 Packages/*/.swiftpm/
+
+# Marketing site (site/) and Firebase App Hosting
+site/dist/
+site/.astro/
+.apphosting/
+.firebase/

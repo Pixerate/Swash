@@ -12,7 +12,7 @@
   <b>Swash</b> is a fast, native Markdown editor for the Mac. You type in formatted text, with headings, lists, tables, images, math and diagrams shown as they'll look, while your notes stay plain <code>.md</code> files you can open anywhere.
 </p>
 
-[**Download for Mac**](https://github.com/Pixerate/Swash/releases/latest) • [Features](#-features) • [Shortcuts](#%EF%B8%8F-keyboard-shortcuts) • [Build from source](#-build-from-source)
+[**Download for Mac**](https://github.com/Pixerate/Swash/releases/latest) • [Website](https://swash.pixerate.com) • [Features](#-features) • [Shortcuts](#%EF%B8%8F-keyboard-shortcuts) • [Build from source](#-build-from-source)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshot-dark.png">
