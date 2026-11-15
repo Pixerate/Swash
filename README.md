@@ -111,14 +111,6 @@ xcodebuild -scheme Swash -configuration Release -derivedDataPath build CODE_SIGN
 open build/Build/Products/Release/Swash.app
 ```
 
-### Writing partner in open-source builds
-
-Swash never requires an account or an internet connection to write. Open-source builds can use the writing partner in three ways:
-
-- **On device (Foundation Models):** Local punctuation and spelling checks run entirely on your Mac with no network requests.
-- **Self-hosted server:** Point Swash at your own local or on-prem model (such as Ollama or an internal service) via **Settings › Account › Advanced › Server address** or the `PIXERATE_URL` environment variable. See [`docs/writing-partner-server.md`](./docs/writing-partner-server.md) for the endpoint schema and reference server implementation.
-- **Not at all:** Without signing in or configuring a server, Swash functions entirely offline.
-
 Contributors: see [`AGENTS.md`](./AGENTS.md) for the workflow, [`GOTCHAS.md`](./GOTCHAS.md) for known pitfalls and [`docs/RELEASING.md`](./docs/RELEASING.md) for how releases are built and signed.
 
 ---
