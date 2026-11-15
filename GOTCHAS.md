@@ -337,3 +337,8 @@
 ## 82. New Files That Use PixerateAccess Must Stay Out of the Quick Look Extension
 - **Issue**: The synchronised `Swash/` folder is also a member of `SwashQuickLookExtension`, so a new file there compiles into Quick Look too. Files that use `PixerateAccess` or `PixerateAccount` would break the Quick Look build, which excludes them.
 - **Solution**: Add such files (like `PixerateStore.swift`) to the `Exceptions for "Swash" folder in "SwashQuickLookExtension" target` list in `project.pbxproj`, next to `PixerateAccountSettings.swift`, and build the `SwashQuickLookExtension` scheme to check.
+
+## 83. Foundation Models On-Device Bandleader & Swift Concurrency Isolation
+- **Issue**: Integrating Apple's on-device `FoundationModels` framework requires `@available(macOS 26.0, *)` and `#if canImport(FoundationModels)`. The `@Generable` macro produces types conforming to `ConvertibleFromGeneratedContent`, which are gated to macOS 26+. Additionally, in Swift test runners using `-default-isolation MainActor`, closures escaping across asynchronous concurrency boundaries (such as mock post/generation handlers) must be annotated `@MainActor @Sendable` and shared static test state must be marked `nonisolated(unsafe)` to avoid protocol witness table retain crashes (`KERN_PROTECTION_FAILURE` / Bus error 10).
+- **Solution**: Gate guided generation types and session calls with `@available(macOS 26.0, *)` inside `#if canImport(FoundationModels)`. Provide fallback implementations returning `nil` or unavailable status for earlier macOS versions and non-supported hardware. In test fixtures, annotate test closures with `@MainActor @Sendable` and capture mock state via `nonisolated(unsafe) static var` properties.
+

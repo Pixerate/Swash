@@ -26,6 +26,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             WritingPartnerDefaults.mode() != .off
         }
         WritingBandleaderFactory.installPixerateBandleader()
+        WritingBandleaderFactory.installOnDeviceBandleader()
         DispatchQueue.main.async {
             DefaultAppManager.shared.checkAndPromptIfNecessary()
         }
