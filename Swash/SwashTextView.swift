@@ -732,6 +732,10 @@ class SwashNSTextView: NSTextView {
     }
     
     @objc private func handleWindowUpdated() {
+        if self.window?.isKeyWindow == true {
+            let flavor = self.flavor
+            MainActor.assumeIsolated { WritingPartnerActiveVoice.shared.documentFlavor = flavor }
+        }
         guard let coordinator = self.delegate as? SwashTextView.Coordinator else { return }
         let winURL = self.window?.representedURL ?? (self.window.flatMap { NSDocumentController.shared.document(for: $0)?.fileURL })
         if let docURL = winURL, coordinator.lastBaseURL != docURL {
@@ -1110,6 +1114,9 @@ struct SwashTextView: NSViewRepresentable {
         guard let textView = nsView.documentView as? SwashNSTextView else { return }
         textView.isStyled = isStyled
         textView.flavor = flavor
+        if textView.window?.isKeyWindow == true {
+            MainActor.assumeIsolated { WritingPartnerActiveVoice.shared.documentFlavor = flavor }
+        }
         textView.onFormatCommand = onFormatCommand
         
         context.coordinator.isUpdatingFromSwiftUI = true

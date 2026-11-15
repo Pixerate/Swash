@@ -396,6 +396,7 @@ struct ContentView: View {
     
     /// Remembers this document as the quick-note target and checks for iCloud conflicts.
     private func documentWindowBecameKey() {
+        WritingPartnerActiveVoice.shared.documentFlavor = document.flavor
         QuickCaptureController.shared.target = QuickCaptureTarget(title: documentTitle, window: window) { note in
             let updated = QuickCaptureText.appending(note, to: document.text)
             let end = NSRange(location: (updated as NSString).length, length: 0)

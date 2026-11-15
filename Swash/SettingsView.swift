@@ -270,15 +270,35 @@ private struct UpdatesSettingsView: View {
 
 // MARK: - Writing partner
 
-/// Punctuation and capitals as you type (#61).
+/// Punctuation and capitals as you type (#61, #105).
 private struct WritingPartnerSettingsView: View {
     @AppStorage(WritingPartnerDefaults.mode) private var mode: WritingPartnerMode = .off
-    @State private var stats = WritingPartnerStats.load()
+    @AppStorage("markdownFlavor") private var defaultFlavor: MarkdownFlavor = .github
+    private let activeVoice = WritingPartnerActiveVoice.shared
+    @State private var proseStats = WritingPartnerStats.load(voice: .punctuate)
+    @State private var chatStats = WritingPartnerStats.load(voice: .chat)
     @State private var spellingOn = WritingPartnerDefaults.spelling()
     private var access: PixerateAccess = .shared
     @AppStorage(WritingPartnerDefaults.curlyQuotes) private var curlyQuotes = false
     @AppStorage(WritingPartnerDefaults.dashes) private var dashes = false
     @AppStorage(WritingPartnerDefaults.ellipses) private var ellipses = false
+
+    private var flavor: MarkdownFlavor {
+        activeVoice.currentFlavor(default: defaultFlavor)
+    }
+
+    private var voice: WritingPartnerVoice {
+        WritingPartnerVoice(flavor: flavor)
+    }
+
+    private var stats: WritingPartnerStats {
+        voice == .chat ? chatStats : proseStats
+    }
+
+    private func reloadStats() {
+        proseStats = WritingPartnerStats.load(voice: .punctuate)
+        chatStats = WritingPartnerStats.load(voice: .chat)
+    }
 
     var body: some View {
         Form {
@@ -293,10 +313,14 @@ private struct WritingPartnerSettingsView: View {
                     set: { UserDefaults.standard.set($0, forKey: WritingPartnerDefaults.spelling); spellingOn = $0 }
                 ))
                 .disabled(mode == .off)
+                LabeledContent("Voice") {
+                    Text(WritingPartnerVoice.summary(for: flavor))
+                        .foregroundStyle(.secondary)
+                }
             } header: {
                 Text("Writing Partner")
             } footer: {
-                Text("When you finish a word, Swash gives it a capital, an apostrophe or a comma it needs (i → I, dont → don't, id like → I'd like, ok → OK, a capital to start a sentence, a comma before “but” that starts a new clause), and pressing Return at the end of a sentence adds its full stop or question mark. With Correct spelling on, it also fixes misspellings, in place of macOS's autocorrect. In Suggest mode, each fix is underlined for you to accept (Tab, ⌥⏎ or click) or dismiss (Esc). Each fix is its own step: press ⌘Z to undo it, and an undone or dismissed spelling fix leaves that word alone. Code, math, links' addresses and tables are never changed. These fixes never leave this Mac.")
+                Text("When you finish a word, Swash gives it a capital, an apostrophe or a comma it needs (i → I, dont → don't, id like → I'd like, ok → OK, a capital to start a sentence, a comma before “but” that starts a new clause), and pressing Return at the end of a sentence adds its full stop or question mark. With Correct spelling on, it also fixes misspellings, in place of macOS's autocorrect. In Suggest mode, each fix is underlined for you to accept (Tab, ⌥⏎ or click) or dismiss (Esc). Each fix is its own step: press ⌘Z to undo it, and an undone or dismissed spelling fix leaves that word alone. Code, math, links' addresses and tables are never changed. In Slack documents the Chat voice keeps a light touch: apostrophes, capital I and spelling only. These fixes never leave this Mac.")
                     .settingsFooterStyle()
                 Link("What the writing partner sends", destination: URL(string: "https://github.com/Pixerate/Swash/blob/main/docs/writing-partner-privacy.md")!)
                     .font(.footnote)
@@ -345,7 +369,10 @@ private struct WritingPartnerSettingsView: View {
             Section {
                 ForEach(PunctuationRule.allCases.filter { $0 != .spelling && (!$0.isTypography || WritingPartnerDefaults.isRuleEnabled($0)) }, id: \.self) { rule in
                     LabeledContent(rule.title) {
-                        if stats.isActive(rule) {
+                        if !voice.rules.contains(rule) {
+                            Text("Off in Chat")
+                                .foregroundStyle(.tertiary)
+                        } else if stats.isActive(rule) {
                             Text("On")
                                 .foregroundStyle(.secondary)
                         } else {
@@ -358,11 +385,11 @@ private struct WritingPartnerSettingsView: View {
                 Text("What It Has Learned")
             } footer: {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Undoing a fix straight away makes its kind less likely; undo it twice in a row and it stops.")
+                    Text("Chat and Punctuate learn from ⌘Z separately: undoing a fix straight away makes its kind less likely in that voice, and two undos in a row stop it.")
                         .settingsFooterStyle()
                     Button("Reset") {
-                        UserDefaults.standard.removeObject(forKey: WritingPartnerDefaults.stats)
-                        stats = WritingPartnerStats()
+                        UserDefaults.standard.removeObject(forKey: WritingPartnerDefaults.statsKey(for: voice))
+                        reloadStats()
                     }
                     .disabled(stats.rules.isEmpty)
                 }
@@ -371,7 +398,10 @@ private struct WritingPartnerSettingsView: View {
         .formStyle(.grouped)
         .scrollDisabled(true)
         .fixedSize(horizontal: false, vertical: true)
-        .onAppear { stats = WritingPartnerStats.load() }
+        .onAppear { reloadStats() }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            reloadStats()
+        }
     }
 }
 

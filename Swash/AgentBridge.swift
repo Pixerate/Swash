@@ -109,6 +109,7 @@ final class AgentBridge {
     func detach(_ session: AgentDocumentSession) {
         disconnect(session)
         sessions.removeValue(forKey: ObjectIdentifier(session))
+        if sessions.isEmpty { WritingPartnerActiveVoice.shared.documentFlavor = nil }
         refresh()
     }
 
@@ -214,6 +215,9 @@ struct AgentToolsHookup: ViewModifier {
         session.readOnlyReason = readOnlyReason
         session.flavor = flavor
         session.name = name
+        if attached() || WritingPartnerActiveVoice.shared.documentFlavor == nil {
+            WritingPartnerActiveVoice.shared.documentFlavor = flavor
+        }
     }
 }
 #endif

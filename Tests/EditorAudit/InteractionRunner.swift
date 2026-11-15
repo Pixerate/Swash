@@ -21,10 +21,10 @@ func findTextView(in v: NSView) -> NSTextView? {
 }
 
 var windows: [NSWindow] = []
-func makeEditor(_ box: TextBox, styled: Bool = true, writing: WritingOptions = WritingOptions(), baseURL: URL? = nil) -> NSTextView {
+func makeEditor(_ box: TextBox, styled: Bool = true, flavor: MarkdownFlavor = .github, writing: WritingOptions = WritingOptions(), baseURL: URL? = nil) -> NSTextView {
     let binding = Binding<String>(get: { box.text }, set: { box.text = $0 })
     let editor = SwashTextView(text: binding, selectedRange: .constant(nil), selectionRect: .constant(nil),
-                               isStyled: styled, flavor: .github, baseURL: baseURL, writingOptions: writing)
+                               isStyled: styled, flavor: flavor, baseURL: baseURL, writingOptions: writing)
     let host = NSHostingView(rootView: editor.frame(width: 600, height: 600))
     host.frame = NSRect(x: 0, y: 0, width: 600, height: 600)
     let win = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
@@ -707,7 +707,9 @@ struct InteractionRunner {
         do { let defaults = UserDefaults.standard
              let savedMode = defaults.string(forKey: WritingPartnerDefaults.mode)
              let savedStats = defaults.data(forKey: WritingPartnerDefaults.stats)
+             let savedChatStats = defaults.data(forKey: WritingPartnerDefaults.chatStats)
              defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+             defaults.removeObject(forKey: WritingPartnerDefaults.chatStats)
              func typeEach(_ text: String, into tv: NSTextView) {
                  for ch in text { tv.insertText(String(ch), replacementRange: tv.selectedRange()); pump(0.05) }
                  waitForPartner(tv)
@@ -955,10 +957,38 @@ struct InteractionRunner {
                      "announced=\(announced) rotor=\(item?.customLabel ?? "nil") text=\(voB.text)",
                      expect: "announced=Suggestion: don't for dont rotor=dont → don't text=I don't ")
              }
+             // Slack flavour (#105): the Chat voice fixes apostrophes and capital I, leaves lowercase
+             // starts, message ends, ok, lol, :emoji: and Slack syntax alone, and learns separately
+             defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+             defaults.removeObject(forKey: WritingPartnerDefaults.chatStats)
+             // The Suggest-mode cases above leave the mode on Suggest
+             defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+             for styled in [true, false] {
+                 let mode = styled ? "styled" : "source"
+                 let slack = TextBox(""); let tvSlack = makeEditor(slack, styled: styled, flavor: .slack)
+                 typeEach("ok lol <@U123> <#C456|dont> <!here> :thumbsup: <https://x.y|dont i> *dont* _i dont_ ~cant~ i tried but it failed\n", into: tvSlack)
+                 log("writing-partner-slack-\(mode)", "", slack.text,
+                     expect: "ok lol <@U123> <#C456|dont> <!here> :thumbsup: <https://x.y|dont i> *dont* _i dont_ ~cant~ I tried but it failed\n")
+             }
+             // Undoing capital I twice in Slack stops it in Chat without stopping it in prose documents
+             defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+             defaults.removeObject(forKey: WritingPartnerDefaults.chatStats)
+             let slackUndo = TextBox(""); let tvSlackUndo = makeEditor(slackUndo, styled: false, flavor: .slack)
+             typeEach("so i ", into: tvSlackUndo); tvSlackUndo.undoManager?.undo(); pump()
+             typeEach("i ", into: tvSlackUndo); tvSlackUndo.undoManager?.undo(); pump()
+             typeEach("i dont ", into: tvSlackUndo)
+             let proseAfterSlack = TextBox(""); let tvProseAfterSlack = makeEditor(proseAfterSlack, styled: false, flavor: .github)
+             typeEach("so i ", into: tvProseAfterSlack)
+             let chatLearned = WritingPartnerStats.load(voice: .chat)
+             let proseLearned = WritingPartnerStats.load(voice: .punctuate)
+             log("writing-partner-slack-separate-stats", "",
+                 "slack=\(slackUndo.text) prose=\(proseAfterSlack.text) chatI=\(chatLearned.isActive(.pronounI)) proseI=\(proseLearned.isActive(.pronounI))",
+                 expect: "slack=so i i i don't  prose=So I  chatI=false proseI=true")
 
              defaults.removeObject(forKey: WritingPartnerDefaults.spelling)
              if let savedMode { defaults.set(savedMode, forKey: WritingPartnerDefaults.mode) } else { defaults.removeObject(forKey: WritingPartnerDefaults.mode) }
              if let savedStats { defaults.set(savedStats, forKey: WritingPartnerDefaults.stats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.stats) }
+             if let savedChatStats { defaults.set(savedChatStats, forKey: WritingPartnerDefaults.chatStats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.chatStats) }
         }
 
         try? out.write(toFile: CommandLine.arguments[1], atomically: true, encoding: .utf8)

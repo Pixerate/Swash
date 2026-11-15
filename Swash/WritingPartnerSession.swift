@@ -12,8 +12,23 @@
 
 #if os(macOS)
 import AppKit
+import Observation
 import PixerateCore
 import PixerateMarkdown
+
+/// Tracks the most recently active document's flavour so Settings › Writing can show which voice
+/// is playing even when the Settings window is key (#105).
+@MainActor
+@Observable
+final class WritingPartnerActiveVoice {
+    static let shared = WritingPartnerActiveVoice()
+
+    var documentFlavor: MarkdownFlavor?
+
+    func currentFlavor(default defaultFlavor: MarkdownFlavor) -> MarkdownFlavor {
+        documentFlavor ?? defaultFlavor
+    }
+}
 
 /// The editor as the partner's director sees it: the raw Markdown, with the word the partner is
 /// typing shown in place of the word it replaces. The frames of typing are never written into the
@@ -184,6 +199,7 @@ final class WritingPartnerSession {
     private var lastKnownParagraphText: String?
 
     private struct Step {
+        var voice: WritingPartnerVoice
         var rules: [PunctuationRule]
         var spellingWords: [String]
         /// Where the person's caret was (raw) before it, to put it back if it's undone.
@@ -298,10 +314,12 @@ final class WritingPartnerSession {
             refreshSuggestions(in: textView, coordinator: coordinator)
         }
         if !applied.isEmpty {
-            // Typing on after a fix keeps it
-            var stats = WritingPartnerStats.load(defaults)
-            for step in applied { for rule in step.rules { stats.kept(rule) } }
-            stats.save(defaults)
+            // Typing on after a fix keeps it in the voice that made it
+            for step in applied {
+                var stats = WritingPartnerStats.load(defaults, voice: step.voice)
+                for rule in step.rules where rule != .spelling { stats.kept(rule) }
+                stats.save(defaults, voice: step.voice)
+            }
             applied = []
         }
         let mode = WritingPartnerDefaults.mode(defaults)
@@ -388,7 +406,9 @@ final class WritingPartnerSession {
         let raw = coordinator.rawText(of: textView)
         let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
         guard selection.length == 0 else { return }
-        let stats = WritingPartnerStats.load(defaults)
+        let flavor = coordinator.parent.flavor
+        let voice = WritingPartnerVoice(flavor: flavor)
+        let stats = WritingPartnerStats.load(defaults, voice: voice)
         let spellingOn = WritingPartnerDefaults.spelling(defaults)
         /// The rule's switch and what the partner has learned; the pause tier may hold rules back per paragraph below.
         let ruleIsOn: (PunctuationRule) -> Bool = { rule in
@@ -400,7 +420,6 @@ final class WritingPartnerSession {
         let spellingCorrection: (String, NSRange, String) -> String? = { _, range, text in
             checker.correction(forWordRange: range, in: text, language: checker.language(), inSpellDocumentWithTag: tag)
         }
-        let flavor = coordinator.parent.flavor
         let overlay = WritingPartnerOverlay.overlay(for: textView)
 
         // Each boundary in order, on the text as the earlier ones left it
@@ -651,7 +670,8 @@ final class WritingPartnerSession {
     private func committed(_ range: NSRange, text: String, caretBefore: Int) {
         let delta = (text as NSString).length - range.length
         if let edit = pendingStep {
-            applied.append(Step(rules: edit.rules, spellingWords: edit.spellingWords, caretBefore: caretBefore))
+            let voice = coordinator.map { WritingPartnerVoice(flavor: $0.parent.flavor) } ?? .punctuate
+            applied.append(Step(voice: voice, rules: edit.rules, spellingWords: edit.spellingWords, caretBefore: caretBefore))
         }
         let move = { (location: Int) -> Int in location >= NSMaxRange(range) ? location + delta : location }
         pendingBoundaries = pendingBoundaries.map { (move($0.location), $0.enterEndedLine) }
@@ -885,7 +905,15 @@ final class WritingPartnerSession {
 
     private func didUndo(isPartnerStep: Bool) {
         guard isPartnerStep, let step = applied.popLast() else { return }
-        penalize(rules: step.rules, spellingWords: step.spellingWords, in: textView)
+        // Undoing a spelling fix says the word is right: the spell checker leaves it alone in this
+        // document. Other rules learn to fix less, in the voice that made the fix.
+        var stats = WritingPartnerStats.load(defaults, voice: step.voice)
+        for rule in step.rules where rule != .spelling { stats.undone(rule) }
+        stats.save(defaults, voice: step.voice)
+        if let textView {
+            let tag = textView.spellCheckerDocumentTag
+            for word in step.spellingWords { NSSpellChecker.shared.ignoreWord(word, inSpellDocumentWithTag: tag) }
+        }
         // Undo selects the restored word; put the caret back where the person was typing, after
         // the editor has restyled the change
         let caret = step.caretBefore
