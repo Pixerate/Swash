@@ -13,7 +13,6 @@
 		046013C630045F6A00853817 /* PixerateCore in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = 046013C530045F6A00853817 /* PixerateCore */; };
 		046013C830045F6A00853817 /* PixerateCore in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C730045F6A00853817 /* PixerateCore */; };
 		046013F230045F6A00853817 /* PixerateAccount in Frameworks */ = {isa = PBXBuildFile; productRef = 046013F130045F6A00853817 /* PixerateAccount */; };
-		046013F530045F6A00853817 /* PixerateTeams in Frameworks */ = {isa = PBXBuildFile; productRef = 046013F430045F6A00853817 /* PixerateTeams */; };
 		0460137130045F6800853817 /* SwashQuickLookExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0460137030045F6800853817 /* SwashQuickLookExtension.appex */; platformFilters = (macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0460138130045F6800853817 /* SwashShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0460138030045F6800853817 /* SwashShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0460139130045F6800853817 /* SwashThumbnailExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0460139030045F6800853817 /* SwashThumbnailExtension.appex */; platformFilters = (macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -260,7 +259,6 @@
 				046013E230045F6A00853817 /* PixerateStickers in Frameworks */,
 				046013C630045F6A00853817 /* PixerateCore in Frameworks */,
 				046013F230045F6A00853817 /* PixerateAccount in Frameworks */,
-				046013F530045F6A00853817 /* PixerateTeams in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -354,7 +352,6 @@
 				046013E130045F6A00853817 /* PixerateStickers */,
 				046013C530045F6A00853817 /* PixerateCore */,
 				046013F130045F6A00853817 /* PixerateAccount */,
-				046013F430045F6A00853817 /* PixerateTeams */,
 			);
 			productName = Swash;
 			productReference = 0460134030045F6800853817 /* Swash.app */;
@@ -539,7 +536,6 @@
 				046013E030045F6A00853817 /* XCLocalSwiftPackageReference "Packages/PixerateStickers" */,
 				046013C030045F6A00853817 /* XCRemoteSwiftPackageReference "editor" */,
 				046013F030045F6A00853817 /* XCRemoteSwiftPackageReference "PixerateAccount" */,
-				046013F330045F6A00853817 /* XCRemoteSwiftPackageReference "teams" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 0460134130045F6800853817 /* Products */;
@@ -1488,14 +1484,6 @@
 				minimumVersion = 0.2.0;
 			};
 		};
-		046013F330045F6A00853817 /* XCRemoteSwiftPackageReference "teams" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Pixerate/teams";
-			requirement = {
-				kind = upToNextMinorVersion;
-				minimumVersion = 0.25.0;
-			};
-		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1548,11 +1536,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 046013F030045F6A00853817 /* XCRemoteSwiftPackageReference "PixerateAccount" */;
 			productName = PixerateAccount;
-		};
-		046013F430045F6A00853817 /* PixerateTeams */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 046013F330045F6A00853817 /* XCRemoteSwiftPackageReference "teams" */;
-			productName = PixerateTeams;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

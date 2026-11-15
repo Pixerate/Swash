@@ -249,5 +249,9 @@ do {
     check(!unauth.account.isAuthenticated && unauth.account.token == nil, "demo-unauth is signed out")
 }
 
+// Purchases carry the token the server derives for the team (deriveAppAccountToken in @pixerate/teams).
+check(PixerateAccountToken.uuid(teamId: "t1").uuidString.lowercased() == "cc207aed-d9f0-5d15-a499-f892bbf9390e",
+      "purchase token matches the server's")
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

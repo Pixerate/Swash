@@ -1,5 +1,5 @@
 {
-  "originHash" : "e0c9af65fd24fcc3775a65961a3f6e4eb06fe441a2c451b35cf1f3e6d072a8bb",
+  "originHash" : "ae07b4f08c6c2e5ed4c170ebf54f0fcf48cd48597826e67e3576400a79a9dadf",
   "pins" : [
     {
       "identity" : "editor",
@@ -26,15 +26,6 @@
       "state" : {
         "revision" : "ab7d71291238df6e0492143b120c9b696a35f603",
         "version" : "2.10.1"
-      }
-    },
-    {
-      "identity" : "teams",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Pixerate/teams",
-      "state" : {
-        "revision" : "28167500586274947661d3cba3079812c0999ed6",
-        "version" : "0.25.0"
       }
     }
   ],

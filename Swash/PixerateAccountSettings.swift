@@ -8,7 +8,7 @@
 
 import SwiftUI
 import PixerateAccount
-import PixerateTeams
+import StoreKit
 
 struct PixerateAccountSections: View {
     var access: PixerateAccess = .shared
@@ -101,7 +101,7 @@ struct PixerateAccountSections: View {
                     .foregroundStyle(.secondary)
             }
         } else if access.isSubscribed {
-            Button("Manage Subscription…") { Task { await store.manageSubscription() } }
+            Button("Manage Subscription…") { openURL(PixerateStore.manageSubscriptionsURL) }
         } else {
             Text("You're on the Basic plan: everything in Swash except the writing partner. Pixerate Pro adds it.")
                 .font(.footnote)
@@ -146,7 +146,7 @@ struct PixerateAccountSections: View {
             .disabled(store.isBusy)
     }
 
-    private static func period(of product: AppStoreProductItem) -> String {
+    private static func period(of product: Product) -> String {
         if product.id.hasSuffix(".yearly") { return "a year" }
         if product.id.hasSuffix(".monthly") { return "a month" }
         return ""
