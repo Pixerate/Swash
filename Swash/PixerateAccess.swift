@@ -70,18 +70,46 @@ final class PixerateAccess {
 
     // MARK: Server address
 
+    /// Validates a server address string, returning a clean URL if valid (must be http or https with a host).
+    nonisolated static func validateServerAddress(_ candidate: String) -> URL? {
+        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              let host = url.host, !host.isEmpty else {
+            return nil
+        }
+        return url
+    }
+
     /// `PIXERATE_URL` from the environment, else the `pixerateBaseURL` default, else pixerate.com.
     nonisolated static func baseURL(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         defaults: UserDefaults = .standard
     ) -> URL {
         for candidate in [environment["PIXERATE_URL"], defaults.string(forKey: PixerateDefaults.baseURL)] {
-            if let candidate, let url = URL(string: candidate.trimmingCharacters(in: .whitespaces)),
-               let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http", url.host != nil {
+            if let candidate, let url = validateServerAddress(candidate) {
                 return url
             }
         }
         return PixerateDefaults.defaultBaseURL
+    }
+
+    /// Sets or removes the custom server address in `UserDefaults` and updates the account client.
+    func setBaseURL(_ url: URL?, defaults: UserDefaults = .standard) {
+        if let url {
+            defaults.set(url.absoluteString, forKey: PixerateDefaults.baseURL)
+        } else {
+            defaults.removeObject(forKey: PixerateDefaults.baseURL)
+        }
+        account.baseURL = Self.baseURL(defaults: defaults)
+        resetRefusals()
+    }
+
+    /// Resets the server address back to `https://pixerate.com`.
+    func resetServerAddress(defaults: UserDefaults = .standard) {
+        setBaseURL(nil, defaults: defaults)
     }
 
     /// The app's instance. Debug builds accept `--demo-auth` (signed in to a fake server, for

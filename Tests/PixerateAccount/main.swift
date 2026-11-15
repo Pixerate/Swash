@@ -86,9 +86,9 @@ func check(_ condition: Bool, _ message: String, line: Int = #line) {
     if condition { passes += 1 } else { failures += 1; print("FAIL (line \(line)): \(message)") }
 }
 
-func refusal(_ access: PixerateAccess, path: String = "/api/agent/text-lead") async -> PixerateRefusal? {
+func refusal(_ access: PixerateAccess, path: String = "/api/agent/text-lead", body: Data = Data(#"{"paragraph":"hi"}"#.utf8)) async -> PixerateRefusal? {
     do {
-        _ = try await access.post(path: path, body: Data(#"{"paragraph":"hi"}"#.utf8))
+        _ = try await access.post(path: path, body: body)
         return nil
     } catch let refusal as PixerateRefusal {
         return refusal
@@ -237,6 +237,99 @@ do {
     defaults.set("ftp://example.com", forKey: PixerateDefaults.baseURL)
     check(PixerateAccess.baseURL(environment: [:], defaults: defaults).absoluteString == "https://pixerate.com", "only http and https")
     defaults.removePersistentDomain(forName: "swash-account-tests")
+}
+
+// Server address validation and mutation (Settings › Account).
+do {
+    check(PixerateAccess.validateServerAddress("https://example.com")?.absoluteString == "https://example.com", "valid https url")
+    check(PixerateAccess.validateServerAddress("http://localhost:8787")?.absoluteString == "http://localhost:8787", "valid http url with port")
+    check(PixerateAccess.validateServerAddress("ftp://example.com") == nil, "ftp scheme is rejected")
+    check(PixerateAccess.validateServerAddress("   ") == nil, "whitespace is rejected")
+    check(PixerateAccess.validateServerAddress("not a url") == nil, "malformed string is rejected")
+
+    let defaults = UserDefaults(suiteName: "swash-account-tests-settings")!
+    defaults.removePersistentDomain(forName: "swash-account-tests-settings")
+    let client = PixerateAccountClient(baseURL: PixerateDefaults.defaultBaseURL, tokenStore: InMemoryTokenStore())
+    let access = PixerateAccess(account: client)
+    check(client.baseURL.absoluteString == "https://pixerate.com", "initial default")
+    access.setBaseURL(URL(string: "http://localhost:8787")!, defaults: defaults)
+    check(client.baseURL.absoluteString == "http://localhost:8787", "custom base url applied to account client")
+    check(defaults.string(forKey: PixerateDefaults.baseURL) == "http://localhost:8787", "saved in defaults")
+    access.resetServerAddress(defaults: defaults)
+    check(client.baseURL.absoluteString == "https://pixerate.com", "resetServerAddress restores default")
+    check(defaults.string(forKey: PixerateDefaults.baseURL) == nil, "resetServerAddress clears defaults")
+    defaults.removePersistentDomain(forName: "swash-account-tests-settings")
+}
+
+// Live integration tests against the writing-partner reference server.
+if let serverURLString = ProcessInfo.processInfo.environment["SWASH_TEST_SERVER_URL"],
+   let serverURL = URL(string: serverURLString) {
+    let realSession = URLSession(configuration: .ephemeral)
+    let tokenStore = InMemoryTokenStore(token: "test_local_token")
+    let client = PixerateAccountClient(baseURL: serverURL, tokenStore: tokenStore, session: realSession)
+    let access = PixerateAccess(account: client, session: realSession)
+    access.isFeatureEnabled = { true }
+
+    // Session restore via GET /api/teams
+    await access.refresh()
+    check(client.isAuthenticated, "reference server: session restored from /api/teams")
+    check(client.user?.displayName == "Self-Hosted Writer", "reference server: user loaded")
+    check(client.fuelBalance == 99999, "reference server: fuel loaded")
+
+    // Successful POST /api/agent/text-lead
+    do {
+        let requestBody = Data(#"{"paragraph":"apples\npears\nplums","flavor":"gfm"}"#.utf8)
+        let responseData = try await access.post(path: "/api/agent/text-lead", body: requestBody)
+        let json = (try? JSONSerialization.jsonObject(with: responseData)) as? [String: Any] ?? [:]
+        check(json["genre"] as? String == "notes", "reference server: detected notes genre")
+        let palette = json["palette"] as? [[String: Any]] ?? []
+        check(palette.first?["voice"] as? String == "punctuate", "reference server: returned palette")
+        let suggestions = json["suggestions"] as? [[String: Any]] ?? []
+        check(!suggestions.isEmpty, "reference server: generated list suggestion")
+        check(suggestions.first?["kind"] as? String == "list", "reference server: suggestion kind is list")
+    } catch {
+        check(false, "reference server: post failed with error: \(error)")
+    }
+
+    // Limits enforcement: paragraph > 4000 UTF-16 units is rejected with 400
+    do {
+        let hugeParagraph = String(repeating: "a", count: 4001)
+        let requestBody = try JSONSerialization.data(withJSONObject: ["paragraph": hugeParagraph])
+        let outcome = await refusal(access, path: "/api/agent/text-lead", body: requestBody)
+        if case .failed(let status, _) = outcome {
+            check(status == 400, "reference server: rejects paragraph over 4000 chars with 400")
+        } else {
+            check(false, "reference server: did not reject huge paragraph with 400 (\(String(describing: outcome)))")
+        }
+    } catch {
+        check(false, "unexpected error in limit test: \(error)")
+    }
+
+    // Error simulation: 402 returns outOfFuel
+    do {
+        let outcome = await refusal(access, path: "/api/agent/text-lead?status=402")
+        check(outcome == .outOfFuel, "reference server: 402 simulated error returns outOfFuel")
+        await access.refresh() // clear out of fuel
+    }
+
+    // Error simulation: 429 returns rateLimited
+    do {
+        let outcome = await refusal(access, path: "/api/agent/text-lead?status=429")
+        if case .rateLimited = outcome {
+            check(true, "reference server: 429 simulated error returns rateLimited")
+        } else {
+            check(false, "reference server: 429 did not return rateLimited (\(String(describing: outcome)))")
+        }
+    }
+
+    // Error simulation: 401 signs out
+    do {
+        // Clear rate limit pause from previous test
+        await access.refresh()
+        let outcome = await refusal(access, path: "/api/agent/text-lead?status=401")
+        check(outcome == .signedOut, "reference server: 401 simulated error returns signedOut")
+        check(!client.isAuthenticated, "reference server: 401 revokes authentication")
+    }
 }
 
 // --demo-auth signs in to the fake demo server.
