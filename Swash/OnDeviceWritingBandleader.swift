@@ -102,17 +102,64 @@ nonisolated struct OnDeviceVoice: Codable, Sendable, Equatable {
 
 @available(macOS 26.0, *)
 @Generable
+nonisolated enum OnDeviceGrammarRule: String, Codable, Sendable, CaseIterable {
+    case agreementAndTense = "agreement-and-tense"
+    case missingWords = "missing-words"
+
+    var toJazzTextGrammarRule: JazzTextGrammarRule {
+        JazzTextGrammarRule(rawValue: rawValue) ?? .agreementAndTense
+    }
+}
+
+@available(macOS 26.0, *)
+@Generable
+nonisolated struct OnDeviceGrammarCorrection: Codable, Sendable, Equatable {
+    var rule: OnDeviceGrammarRule
+    var range: OnDeviceRange
+    var replacement: String
+    var confidence: Double
+    var why: String?
+
+    var toJazzTextGrammarCorrection: JazzTextGrammarCorrection {
+        JazzTextGrammarCorrection(
+            rule: rule.toJazzTextGrammarRule,
+            range: range.toJazzTextRange,
+            replacement: replacement,
+            confidence: confidence,
+            why: why
+        )
+    }
+}
+
+@available(macOS 26.0, *)
+@Generable
 nonisolated struct OnDeviceLeadResponse: Codable, Sendable, Equatable {
     var genre: OnDeviceGenre
     var palette: [OnDeviceVoice]
     var suggestions: [OnDeviceSuggestion]
+    var grammar: [OnDeviceGrammarCorrection]
     var why: String
+
+    init(
+        genre: OnDeviceGenre,
+        palette: [OnDeviceVoice],
+        suggestions: [OnDeviceSuggestion] = [],
+        grammar: [OnDeviceGrammarCorrection] = [],
+        why: String
+    ) {
+        self.genre = genre
+        self.palette = palette
+        self.suggestions = suggestions
+        self.grammar = grammar
+        self.why = why
+    }
 
     var toJazzTextLeadResponse: JazzTextLeadResponse {
         JazzTextLeadResponse(
             genre: genre.toJazzTextGenre,
             palette: palette.map(\.toJazzTextVoice),
             suggestions: suggestions.map(\.toJazzTextSuggestion),
+            grammar: grammar.map(\.toJazzTextGrammarCorrection),
             why: why,
             fuelBalance: nil
         )
@@ -180,9 +227,12 @@ nonisolated final class OnDeviceWritingBandleader: WritingBandleader, @unchecked
     /// System instructions for bandleader guidance.
     static let instructions = """
     You are Swash's writing partner on this Mac. Read only the paragraph you are given, with its \
-    immediate context, and do two things. First, say what kind of text it is (prose, notes, chat, \
-    poem, list, technical or heading), and hold back punctuation rules where they'd be wrong, such \
-    as full stops in a poem or a list of fragments. Second, only if you are sure, suggest one simple \
+    immediate context, and do three things. First, say what kind of text it is (prose, notes, chat, \
+    poem, list, technical or heading), and hold back punctuation and grammar rules where they'd be \
+    wrong, such as in a poem, dialogue or a quotation. Second, return word-level grammar corrections \
+    with a confidence (0.0 to 1.0) for subject and verb agreement, tense that slips mid-sentence, \
+    missing small words, and wrong word forms ("should of", "more better") — correct only a few words \
+    and never rewrite for style, tone or length. Third, only if you are sure, suggest one simple \
     structure change: these lines are a list, or this line is a heading. Return no suggestions when \
     in doubt. Give a short reason. Do nothing else.
     """

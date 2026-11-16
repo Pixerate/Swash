@@ -953,5 +953,501 @@ do {
     defaults.removePersistentDomain(forName: "swash-quick-note-tidy-tests")
 }
 
+// MARK: - Grammar Voice Tests (#111)
+
+// 1. Typing-tier grammar rules: doubled words, a/an, and capital after a sentence the partner closed
+do {
+    // 1.1 Doubled words ("the the" → "the"), keeping deliberate ones ("had had", "that that", "do do", "is is", "her her")
+    expect("the the book ", "The book ")
+    expect("I went to the the shop ", "I went to the shop ")
+    expect("We saw a a bird and and left ", "We saw a bird and left ")
+    expect("She had had enough ", "She had had enough ")
+    expect("I know that that works ", "I know that that works ")
+    expect("What people do do is wait ", "What people do do is wait ")
+    expect("The thing it is is simple ", "The thing it is is simple ")
+    expect("She came in in the morning ", "She came in in the morning ")
+    expect("I told her her name ", "I told her her name ")
+    expect("We flew to Bora Bora today ", "We flew to Bora Bora today ")
+
+    let doubledRun = type("I went to the the shop ")
+    check(doubledRun.rules.contains(.doubledWords), "doubledWords rule fired: \(doubledRun.rules)")
+    check(type("I went to the the shop ", isActive: { $0 != .doubledWords }).text == "I went to the the shop ", "doubledWords can be turned off")
+
+    // PartnerEdit diffing for doubled words selects "the the" and types "the"
+    let oldDoubled = "I went to the the " as NSString
+    let newDoubled = "I went to the " as NSString
+    let doubledEdits = PunctuateVoice.partnerEdits(
+        from: oldDoubled,
+        to: newDoubled,
+        marks: [PartnerMark(range: NSRange(location: 10, length: 3), rules: [.doubledWords])]
+    )
+    check(doubledEdits.count == 1, "One partnerEdit for doubled words")
+    check(doubledEdits.first?.original == "the the", "partnerEdit selects 'the the': \(doubledEdits.first?.original ?? "")")
+    check(doubledEdits.first?.replacement == "the", "partnerEdit types 'the': \(doubledEdits.first?.replacement ?? "")")
+    check(doubledEdits.first?.rules == [.doubledWords], "partnerEdit carries .doubledWords rule")
+
+    // 1.2 "a" and "an" before a vowel or consonant sound
+    expect("a apple ", "An apple ")
+    expect("I ate a apple and a orange ", "I ate an apple and an orange ")
+    expect("It is a editor for Markdown ", "It is an editor for Markdown ")
+    expect("Wait for a hour or a honest answer ", "Wait for an hour or an honest answer ")
+    expect("She is a heir to the estate ", "She is an heir to the estate ")
+    expect("She is an user of the app ", "She is a user of the app ")
+    expect("It is an university and an unique unit ", "It is a university and a unique unit ")
+    expect("That was an one time thing and an once in a lifetime trip ", "That was a one time thing and a once in a lifetime trip ")
+    expect("He met an European delegate ", "He met a European delegate ")
+    expect("I read an book and drove an car ", "I read a book and drove a car ")
+    expect("An horse rode by ", "A horse rode by ")
+    // Valid articles and ambiguous words stay untouched
+    expect("I ate an apple and a pear ", "I ate an apple and a pear ")
+    expect("A user waited an hour for a one way ticket ", "A user waited an hour for a one way ticket ")
+    expect("It was a historic day and an historic moment ", "It was a historic day and an historic moment ")
+    expect("Add a herb or an herb to the soup ", "Add a herb or an herb to the soup ")
+    expect("Choose a or b and set a in the table ", "Choose a or b and set a in the table ")
+
+    let articleRun = type("I bought a apple ")
+    check(articleRun.rules.contains(.aAndAn), "aAndAn rule fired: \(articleRun.rules)")
+    check(type("I bought a apple ", isActive: { $0 != .aAndAn }).text == "I bought a apple ", "aAndAn can be turned off")
+
+    // 1.3 A capital after a sentence that the partner itself just closed
+    expect("It was i. then we left ", "It was I. Then we left ")
+    expect("He said 'done.' then left ", "He said 'done.' Then left ")
+    expect("He said ‘done.’ then left ", "He said ‘done.’ Then left ")
+    expect("This is *done.* then we go ", "This is *done.* Then we go ")
+    expect("> first line is a whole sentence.\n> second line starts here ", "> First line is a whole sentence.\n> Second line starts here ")
+    expect("this is a whole sentence\nand the next sentence starts here\n",
+           "This is a whole sentence.\nAnd the next sentence starts here.\n")
+}
+
+// 2. Typing-timeline tests covering every excluded context for grammar rules
+do {
+    // Inline code and unclosed inline code
+    expect("See `the the a apple an user` ", "See `the the a apple an user` ")
+    expect("See `the the a apple ", "See `the the a apple ")
+
+    // Fenced code blocks (backticks and tildes)
+    expect("```\nthe the a apple an user \n```\n", "```\nthe the a apple an user \n```\n")
+    expect("~~~\nthe the a apple an user \n~~~\n", "~~~\nthe the a apple an user \n~~~\n")
+
+    // Inline math, display math, unclosed math, and ```math blocks
+    expect("Compute $the the a apple$ ", "Compute $the the a apple$ ")
+    expect("Compute $the the a apple ", "Compute $the the a apple ")
+    expect("$$\nthe the a apple \n$$\n", "$$\nthe the a apple \n$$\n")
+    expect("```math\nthe the a apple \n```\n", "```math\nthe the a apple \n```\n")
+
+    // HTML inline, HTML block, and unclosed HTML tag
+    expect("<span>the the a apple</span> ", "<span>the the a apple</span> ")
+    expect("<div>\nthe the a apple \n</div>\n", "<div>\nthe the a apple \n</div>\n")
+    expect("<div class=\"the the a apple ", "<div class=\"the the a apple ")
+
+    // YAML front matter (closed and unclosed)
+    expect("---\ntitle: the the a apple an user\n---\n", "---\ntitle: the the a apple an user\n---\n")
+    expect("---\ntitle: the the a apple ", "---\ntitle: the the a apple ")
+
+    // Link destinations, unclosed link destinations, images, reference definitions, and autolinks
+    expect("[label](https://example.com/the/the \"the the a apple\") ", "[label](https://example.com/the/the \"the the a apple\") ")
+    expect("[label](https://example.com/the the a apple ", "[label](https://example.com/the the a apple ")
+    expect("![the the a apple](img.png \"the the a apple\") ", "![the the a apple](img.png \"the the a apple\") ")
+    expect("[ref]: https://example.com \"the the a apple\"\n", "[ref]: https://example.com \"the the a apple\"\n")
+    expect("Visit <https://example.com/the> ", "Visit <https://example.com/the> ")
+
+    // Tables (closed and unclosed table rows)
+    expect("| a | b |\n|---|---|\n| the the | a apple |\n", "| a | b |\n|---|---|\n| the the | a apple |\n")
+    expect("| the the | a apple ", "| the the | a apple ")
+
+    // URLs, emails, file paths, hashtags, mentions
+    expect("Open https://example.com/a/apple and the_the/a_apple ", "Open https://example.com/a/apple and the_the/a_apple ")
+    expect("Mail a@apple.com or #the ", "Mail a@apple.com or #the ")
+
+    // Slack Chat voice leaves grammar rules off
+    expect("the the a apple an user ", "the the a apple an user ", flavor: .slack)
+
+    // Never in the word the caret is in while typing (no edits fire before the boundary character)
+    let midWordText = "I went to the the"
+    let midWordDoc = MarkdownDocument.parse(midWordText, flavor: .github)
+    let midWordEdits = PunctuateVoice.edits(text: midWordText, boundary: midWordText.count - 1, document: midWordDoc, flavor: .github)
+    check(midWordEdits.isEmpty, "Never edits the word the caret is currently in while typing")
+}
+
+// 3. Settings › Writing: four grammar rules and learning from ⌘Z
+do {
+    let defaults = UserDefaults(suiteName: "swash-grammar-settings-tests")!
+    defaults.removePersistentDomain(forName: "swash-grammar-settings-tests")
+
+    check(PunctuationRule.doubledWords.title == "Doubled words", "Rule title: Doubled words")
+    check(PunctuationRule.aAndAn.title == "A and an", "Rule title: A and an")
+    check(PunctuationRule.agreementAndTense.title == "Agreement and tense", "Rule title: Agreement and tense")
+    check(PunctuationRule.missingWords.title == "Missing words", "Rule title: Missing words")
+
+    let grammarRules = PunctuationRule.allCases.filter(\.isGrammar)
+    check(grammarRules == [.doubledWords, .aAndAn, .agreementAndTense, .missingWords], "All four grammar rules present in PunctuationRule.allCases")
+
+    // All four rules default to on and each has its own switch
+    for rule in grammarRules {
+        check(WritingPartnerDefaults.isRuleEnabled(rule, defaults), "\(rule.title) is on by default")
+    }
+    defaults.set(false, forKey: WritingPartnerDefaults.doubledWords)
+    check(!WritingPartnerDefaults.isRuleEnabled(.doubledWords, defaults) && WritingPartnerDefaults.isRuleEnabled(.aAndAn, defaults), "Doubled words switch is independent")
+    defaults.set(false, forKey: WritingPartnerDefaults.aAndAn)
+    check(!WritingPartnerDefaults.isRuleEnabled(.aAndAn, defaults) && WritingPartnerDefaults.isRuleEnabled(.agreementAndTense, defaults), "A and an switch is independent")
+    defaults.set(false, forKey: WritingPartnerDefaults.agreementAndTense)
+    check(!WritingPartnerDefaults.isRuleEnabled(.agreementAndTense, defaults) && WritingPartnerDefaults.isRuleEnabled(.missingWords, defaults), "Agreement and tense switch is independent")
+    defaults.set(false, forKey: WritingPartnerDefaults.missingWords)
+    check(!WritingPartnerDefaults.isRuleEnabled(.missingWords, defaults), "Missing words switch is independent")
+
+    // Each grammar rule learns from ⌘Z (two undos in a row stop it; keeping raises weight)
+    for rule in grammarRules {
+        var stats = WritingPartnerStats()
+        check(stats.isActive(rule), "\(rule.title) starts active")
+        stats.undone(rule)
+        check(stats.isActive(rule), "\(rule.title) active after one undo")
+        stats.undone(rule)
+        check(!stats.isActive(rule), "\(rule.title) stops after two undos")
+    }
+
+    let voiceState = WritingPartnerStats().toVoiceState()
+    check(voiceState.rules["doubled-words"] != nil, "Voice state schema includes doubled-words")
+    check(voiceState.rules["a-and-an"] != nil, "Voice state schema includes a-and-an")
+    check(voiceState.rules["agreement-and-tense"] != nil, "Voice state schema includes agreement-and-tense")
+    check(voiceState.rules["missing-words"] != nil, "Voice state schema includes missing-words")
+
+    defaults.removePersistentDomain(forName: "swash-grammar-settings-tests")
+}
+
+// 4. Pause-tier grammar rules through the bandleader protocol (stubbed provider & schema validation)
+do {
+    // 4.1 Sample JSON response from provider checked against the schema
+    let sampleGrammarJSON = """
+    {
+      "genre": "prose",
+      "palette": [
+        {
+          "voice": "punctuate",
+          "strength": 1.0
+        }
+      ],
+      "suggestions": [],
+      "grammar": [
+        {
+          "rule": "agreement-and-tense",
+          "range": { "start": 12, "end": 17 },
+          "replacement": "show",
+          "confidence": 0.92,
+          "why": "Plural subject 'results' takes 'show'"
+        },
+        {
+          "rule": "agreement-and-tense",
+          "range": { "start": 47, "end": 51 },
+          "replacement": "said",
+          "confidence": 0.88,
+          "why": "Keep past tense consistent with 'walked'"
+        },
+        {
+          "rule": "missing-words",
+          "range": { "start": 56, "end": 69 },
+          "replacement": "went to the shop",
+          "confidence": 0.85,
+          "why": "Missing preposition 'to'"
+        },
+        {
+          "rule": "agreement-and-tense",
+          "range": { "start": 74, "end": 83 },
+          "replacement": "should have",
+          "confidence": 0.91,
+          "why": "Use 'should have' instead of 'should of'"
+        },
+        {
+          "rule": "agreement-and-tense",
+          "range": { "start": 92, "end": 103 },
+          "replacement": "better",
+          "confidence": 0.65,
+          "why": "Avoid double comparative 'more better'"
+        },
+        {
+          "rule": "missing-words",
+          "range": { "start": 0, "end": 3 },
+          "replacement": "Those",
+          "confidence": 0.30,
+          "why": "Low confidence guess"
+        }
+      ],
+      "why": "Prose paragraph with agreement, tense, missing word and word-form slips"
+    }
+    """
+
+    let paragraph = "The results shows that she walked in and says she went the shop and should of known a more better way."
+    // Verify exact UTF-16 ranges in `paragraph`
+    let paraNS = paragraph as NSString
+    let showsRange = paraNS.range(of: "shows")
+    let saysRange = paraNS.range(of: "says")
+    let wentRange = paraNS.range(of: "went the shop")
+    let shouldOfRange = paraNS.range(of: "should of")
+    let moreBetterRange = paraNS.range(of: "more better")
+    check(showsRange == NSRange(location: 12, length: 5), "shows range is 12..<17")
+    check(saysRange == NSRange(location: 41, length: 4), "says range check: \(saysRange)")
+
+    // Build schema-validated JSON with exact ranges from `paragraph`
+    let exactJSON = """
+    {
+      "genre": "prose",
+      "palette": [{ "voice": "punctuate", "strength": 1.0 }],
+      "suggestions": [],
+      "grammar": [
+        {
+          "rule": "agreement-and-tense",
+          "range": { "start": \(showsRange.location), "end": \(NSMaxRange(showsRange)) },
+          "replacement": "show",
+          "confidence": 0.92,
+          "why": "Subject and verb agreement"
+        },
+        {
+          "kind": "tense",
+          "range": { "start": \(saysRange.location), "end": \(NSMaxRange(saysRange)) },
+          "replacement": "said",
+          "confidence": 0.88,
+          "why": "Tense slip mid-sentence"
+        },
+        {
+          "rule": "missing-words",
+          "range": { "start": \(wentRange.location), "end": \(NSMaxRange(wentRange)) },
+          "replacement": "went to the shop",
+          "confidence": 0.85,
+          "why": "Missing small word 'to'"
+        },
+        {
+          "kind": "word-form",
+          "range": { "start": \(shouldOfRange.location), "end": \(NSMaxRange(shouldOfRange)) },
+          "replacement": "should have",
+          "confidence": 0.91,
+          "why": "Wrong word form 'should of'"
+        },
+        {
+          "rule": "agreement-and-tense",
+          "range": { "start": \(moreBetterRange.location), "end": \(NSMaxRange(moreBetterRange)) },
+          "replacement": "better",
+          "confidence": 0.65,
+          "why": "Below auto threshold: offered as suggestion"
+        },
+        {
+          "rule": "missing-words",
+          "range": { "start": 0, "end": 3 },
+          "replacement": "Those",
+          "confidence": 0.30,
+          "why": "Very low confidence: dropped"
+        }
+      ],
+      "why": "Prose paragraph with grammar corrections"
+    }
+    """
+
+    // Check schema decoding via PixerateWritingBandleader and round-trip JSON encoding
+    let decodedSample = try? JSONDecoder().decode(JazzTextLeadResponse.self, from: sampleGrammarJSON.data(using: .utf8)!)
+    check(decodedSample != nil && decodedSample?.grammar.count == 6, "Sample grammar JSON decodes against JazzTextLeadResponse schema")
+
+    let stubProvider = PixerateWritingBandleader(
+        postHandler: { _, _ in exactJSON.data(using: .utf8)! },
+        teamIdProvider: { "team_grammar_test" }
+    )
+    let leadRes = try await stubProvider.lead(request: JazzTextLeadRequest(paragraph: paragraph, flavor: .gfm))
+    check(leadRes != nil, "Bandleader protocol returns decoded grammar response")
+    check(leadRes?.grammar.count == 6, "Response contains 6 grammar items")
+
+    if let leadRes {
+        let roundTripData = try JSONEncoder().encode(leadRes)
+        let roundTrip = try JSONDecoder().decode(JazzTextLeadResponse.self, from: roundTripData)
+        check(roundTrip == leadRes, "JazzTextLeadResponse with grammar round-trips through JSON cleanly")
+
+        // Evaluate pauseEdits in Automatic mode
+        let result = GrammarVoice.pauseEdits(
+            from: leadRes,
+            paragraph: paragraph,
+            paragraphRange: NSRange(location: 0, length: paraNS.length),
+            documentText: paragraph,
+            caret: paraNS.length,
+            flavor: .github,
+            provider: .pixerate,
+            mode: .automatic
+        )
+        // 4 items have confidence >= 0.80 -> automatic; 1 item has confidence 0.65 -> suggestion; 1 item has 0.30 -> dropped
+        check(result.automatic.count == 4, "4 high-confidence corrections become automatic PartnerEdits (got \(result.automatic.count))")
+        check(result.suggestions.count == 1, "1 medium-confidence correction (0.65) becomes a suggestion (got \(result.suggestions.count))")
+        check(result.automatic.map(\.original) == ["shows", "says", "went the shop", "should of"], "Automatic originals match: \(result.automatic.map(\.original))")
+        check(result.automatic.map(\.replacement) == ["show", "said", "went to the shop", "should have"], "Automatic replacements match: \(result.automatic.map(\.replacement))")
+        check(result.automatic.map(\.rules) == [[.agreementAndTense], [.agreementAndTense], [.missingWords], [.agreementAndTense]], "Each automatic edit carries its PunctuationRule")
+        check(result.suggestions.first?.original == "more better" && result.suggestions.first?.replacement == "better", "Below-threshold correction offered as suggestion")
+
+        // In Suggest mode, all accepted corrections (both high and medium confidence) are offered as suggestions
+        let suggestResult = GrammarVoice.pauseEdits(
+            from: leadRes,
+            paragraph: paragraph,
+            paragraphRange: NSRange(location: 0, length: paraNS.length),
+            documentText: paragraph,
+            caret: paraNS.length,
+            flavor: .github,
+            provider: .pixerate,
+            mode: .suggest
+        )
+        check(suggestResult.automatic.isEmpty && suggestResult.suggestions.count == 5, "In Suggest mode all 5 accepted corrections are offered as suggestions")
+    }
+
+    // 4.2 OnDeviceLeadResponse guided generation mirror types with grammar
+    #if canImport(FoundationModels)
+    if #available(macOS 26.0, *) {
+        let onDeviceGrammar = OnDeviceLeadResponse(
+            genre: .prose,
+            palette: [OnDeviceVoice(voice: .punctuate, strength: 1.0, disabledRules: nil)],
+            suggestions: [],
+            grammar: [
+                OnDeviceGrammarCorrection(
+                    rule: .agreementAndTense,
+                    range: OnDeviceRange(start: 12, end: 17),
+                    replacement: "show",
+                    confidence: 0.90,
+                    why: "Plural agreement"
+                ),
+                OnDeviceGrammarCorrection(
+                    rule: .missingWords,
+                    range: OnDeviceRange(start: 56, end: 69),
+                    replacement: "went to the shop",
+                    confidence: 0.85,
+                    why: "Missing 'to'"
+                )
+            ],
+            why: "Grammar check"
+        )
+        let converted = onDeviceGrammar.toJazzTextLeadResponse
+        check(converted.grammar.count == 2, "OnDeviceLeadResponse converts grammar corrections to JazzTextLeadResponse")
+        check(converted.grammar.first?.rule == .agreementAndTense && converted.grammar.last?.rule == .missingWords, "OnDeviceGrammarRule maps accurately")
+    }
+    #endif
+
+    // 4.3 "It corrects, it doesn't rewrite": rejects multi-word stylistic rewrites
+    let rewritePara = "The results shows that this sentence is a bit wordy and could be shorter."
+    let rewriteResp = JazzTextLeadResponse(
+        genre: .prose,
+        palette: [],
+        grammar: [
+            JazzTextGrammarCorrection(
+                rule: .agreementAndTense,
+                range: JazzTextRange(start: 12, end: 17),
+                replacement: "show",
+                confidence: 0.92
+            ),
+            JazzTextGrammarCorrection(
+                rule: .agreementAndTense,
+                range: JazzTextRange(start: 23, end: 72),
+                replacement: "it should be concise",
+                confidence: 0.95,
+                why: "Style rewrite"
+            )
+        ],
+        why: "Test rewrite rejection"
+    )
+    let rewriteFiltered = GrammarVoice.pauseEdits(
+        from: rewriteResp,
+        paragraph: rewritePara,
+        paragraphRange: NSRange(location: 0, length: (rewritePara as NSString).length),
+        documentText: rewritePara
+    )
+    check(rewriteFiltered.automatic.count == 1 && rewriteFiltered.automatic.first?.replacement == "show",
+          "Accepts word-level correction ('shows' -> 'show') and rejects multi-word clause rewrite")
+
+    // 4.4 Never in the word the caret is in, and never inside code, math, HTML, links, or tables
+    let mixedPara = "The results shows `should of` and $more better$ and [went the shop](https://example.com/should_of) while typing wordshere"
+    let mixedNS = mixedPara as NSString
+    let codeRange = mixedNS.range(of: "should of")
+    let mathRange = mixedNS.range(of: "more better")
+    let caretWordRange = mixedNS.range(of: "wordshere")
+    let mixedResp = JazzTextLeadResponse(
+        genre: .prose,
+        palette: [],
+        grammar: [
+            JazzTextGrammarCorrection(rule: .agreementAndTense, range: JazzTextRange(start: 12, end: 17), replacement: "show", confidence: 0.92),
+            JazzTextGrammarCorrection(rule: .agreementAndTense, range: JazzTextRange(start: codeRange.location, end: NSMaxRange(codeRange)), replacement: "should have", confidence: 0.95),
+            JazzTextGrammarCorrection(rule: .agreementAndTense, range: JazzTextRange(start: mathRange.location, end: NSMaxRange(mathRange)), replacement: "better", confidence: 0.95),
+            JazzTextGrammarCorrection(rule: .missingWords, range: JazzTextRange(start: caretWordRange.location, end: NSMaxRange(caretWordRange)), replacement: "words here", confidence: 0.95)
+        ],
+        why: "Mixed exclusions"
+    )
+    let mixedFiltered = GrammarVoice.pauseEdits(
+        from: mixedResp,
+        paragraph: mixedPara,
+        paragraphRange: NSRange(location: 0, length: mixedNS.length),
+        documentText: mixedPara,
+        caret: caretWordRange.location + 3 // caret is inside "wordshere"
+    )
+    check(mixedFiltered.automatic.count == 1 && mixedFiltered.automatic.first?.original == "shows",
+          "Pause tier skips code, math, and the word the caret is in")
+
+    // 4.5 Off for a paragraph the bandleader reads as verse (poem), dialogue, or a quotation
+    let versePara = "The results shows in the night\nWent the shop in the light"
+    let verseCorrection = [
+        JazzTextGrammarCorrection(rule: .agreementAndTense, range: JazzTextRange(start: 12, end: 17), replacement: "show", confidence: 0.95)
+    ]
+    let poemResp = JazzTextLeadResponse(genre: .poem, palette: [], grammar: verseCorrection, why: "Verse")
+    let dialogueResp = JazzTextLeadResponse(genre: .dialogue, palette: [], grammar: verseCorrection, why: "Dialogue")
+    let quoteResp = JazzTextLeadResponse(genre: .quote, palette: [], grammar: verseCorrection, why: "Quotation")
+    check(GrammarVoice.pauseEdits(from: poemResp, paragraph: versePara, paragraphRange: NSRange(location: 0, length: (versePara as NSString).length), documentText: versePara).automatic.isEmpty,
+          "Pause-tier grammar is off for verse (.poem)")
+    check(GrammarVoice.pauseEdits(from: dialogueResp, paragraph: versePara, paragraphRange: NSRange(location: 0, length: (versePara as NSString).length), documentText: versePara).automatic.isEmpty,
+          "Pause-tier grammar is off for dialogue (.dialogue)")
+    check(GrammarVoice.pauseEdits(from: quoteResp, paragraph: versePara, paragraphRange: NSRange(location: 0, length: (versePara as NSString).length), documentText: versePara).automatic.isEmpty,
+          "Pause-tier grammar is off for quotation (.quote)")
+
+    let blockQuotePara = "> The results shows that she went the shop."
+    let proseOnBlockQuote = JazzTextLeadResponse(
+        genre: .prose,
+        palette: [],
+        grammar: [JazzTextGrammarCorrection(rule: .agreementAndTense, range: JazzTextRange(start: 14, end: 19), replacement: "show", confidence: 0.95)],
+        why: "Blockquote"
+    )
+    check(GrammarVoice.pauseEdits(from: proseOnBlockQuote, paragraph: blockQuotePara, paragraphRange: NSRange(location: 0, length: (blockQuotePara as NSString).length), documentText: blockQuotePara).automatic.isEmpty,
+          "Pause-tier grammar is off inside Markdown blockquotes")
+
+    let quotedDialoguePara = "“The results shows that she went the shop,” he whispered."
+    check(GrammarVoice.isVerseDialogueOrQuotation(paragraph: "\"The results shows that she went the shop.\"", genre: .prose),
+          "Quoted dialogue paragraph is recognized as quotation/dialogue")
+    check(ParagraphVoiceSettings.from(response: poemResp, paragraphRange: NSRange(location: 0, length: 10), paragraph: versePara).isGrammarDisabled,
+          "ParagraphVoiceSettings disables grammar rules for verse")
+    check(ParagraphVoiceSettings.from(response: dialogueResp, paragraphRange: NSRange(location: 0, length: 10), paragraph: quotedDialoguePara).disabledRules.contains(.doubledWords),
+          "ParagraphVoiceSettings disables typing-tier grammar rules for dialogue")
+
+    // 4.6 Document language detection and unsupported language handling
+    let englishLang = GrammarLanguageSupport.detectLanguage(in: "The results shows that she walked in and says hello.")
+    check(englishLang == .english, "Detects English for prose sentence (got \(englishLang.rawValue))")
+    check(GrammarLanguageSupport.isSupported(.english, by: .onDevice) && GrammarLanguageSupport.isSupported(.english, by: .pixerate),
+          "English is supported by both OnDevice and Pixerate")
+    check(GrammarLanguageSupport.unsupportedReason(for: .english, provider: .onDevice) == nil,
+          "No unsupported reason for English")
+
+    let greekText = "Καλημέρα κόσμε, αυτό είναι ένα κείμενο στα ελληνικά για τον έλεγχο της γλώσσας του εγγράφου."
+    let greekLang = GrammarLanguageSupport.detectLanguage(in: greekText)
+    check(greekLang == .greek, "Detects Greek language (got \(greekLang.rawValue))")
+    check(!GrammarLanguageSupport.isSupported(greekLang, by: .onDevice), "Greek is not supported by OnDevice provider")
+    check(!GrammarLanguageSupport.isSupported(greekLang, by: .pixerate), "Greek is not supported by Pixerate provider")
+    let greekReasonOnDevice = GrammarLanguageSupport.unsupportedReason(for: greekLang, provider: .onDevice)
+    let greekReasonPixerate = GrammarLanguageSupport.unsupportedReason(for: greekLang, provider: .pixerate)
+    check(greekReasonOnDevice?.contains("Greek") == true && greekReasonOnDevice?.contains("Apple Intelligence") == true,
+          "Settings reason for unsupported language on device: \(greekReasonOnDevice ?? "")")
+    check(greekReasonPixerate?.contains("Greek") == true && greekReasonPixerate?.contains("Pixerate") == true,
+          "Settings reason for unsupported language on Pixerate: \(greekReasonPixerate ?? "")")
+
+    let unsupportedPauseResult = GrammarVoice.pauseEdits(
+        from: JazzTextLeadResponse(
+            genre: .prose,
+            palette: [],
+            grammar: [JazzTextGrammarCorrection(rule: .agreementAndTense, range: JazzTextRange(start: 0, end: 5), replacement: "fixed", confidence: 0.95)],
+            why: "Test"
+        ),
+        paragraph: paragraph,
+        paragraphRange: NSRange(location: 0, length: paraNS.length),
+        documentText: paragraph,
+        provider: .onDevice,
+        languageOverride: .greek
+    )
+    check(unsupportedPauseResult.automatic.isEmpty && unsupportedPauseResult.suggestions.isEmpty,
+          "Unsupported document language leaves pause-tier grammar rules off")
+}
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

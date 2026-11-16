@@ -10,6 +10,7 @@
 //
 
 import Foundation
+import NaturalLanguage
 import Observation
 import PixerateMarkdown
 #if os(macOS)
@@ -39,9 +40,26 @@ nonisolated enum JazzTextGenre: String, Codable, Sendable, CaseIterable {
     case notes = "notes"
     case chat = "chat"
     case poem = "poem"
+    case dialogue = "dialogue"
+    case quote = "quote"
     case list = "list"
     case technical = "technical"
     case heading = "heading"
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self).lowercased()
+        switch raw {
+        case "verse", "poetry", "poem": self = .poem
+        case "quotation", "quote", "blockquote": self = .quote
+        case "dialogue", "dialog": self = .dialogue
+        default:
+            guard let value = JazzTextGenre(rawValue: raw) else {
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unknown genre: \(raw)")
+            }
+            self = value
+        }
+    }
 }
 
 nonisolated enum JazzTextSuggestionKind: String, Codable, Sendable, CaseIterable {
@@ -68,6 +86,96 @@ nonisolated enum JazzTextVoiceId: String, Codable, Sendable, CaseIterable {
     case punctuate = "punctuate"
     case smartTypography = "smart-typography"
     case chat = "chat"
+    case grammar = "grammar"
+}
+
+nonisolated enum JazzTextGrammarRule: String, Codable, Sendable, CaseIterable {
+    case agreementAndTense = "agreement-and-tense"
+    case missingWords = "missing-words"
+    case doubledWords = "doubled-words"
+    case aAndAn = "a-and-an"
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self).lowercased()
+        switch raw {
+        case "agreement-and-tense", "agreementandtense", "agreement", "tense", "word-form", "wordform":
+            self = .agreementAndTense
+        case "missing-words", "missingwords", "missing-word", "missingword", "missing":
+            self = .missingWords
+        case "doubled-words", "doubledwords", "doubled-word", "doubledword", "doubled":
+            self = .doubledWords
+        case "a-and-an", "aandan", "article", "articles":
+            self = .aAndAn
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unknown grammar rule: \(raw)"
+            )
+        }
+    }
+
+    var punctuationRule: PunctuationRule {
+        switch self {
+        case .agreementAndTense: return .agreementAndTense
+        case .missingWords: return .missingWords
+        case .doubledWords: return .doubledWords
+        case .aAndAn: return .aAndAn
+        }
+    }
+}
+
+nonisolated struct JazzTextGrammarCorrection: Codable, Sendable, Equatable {
+    var rule: JazzTextGrammarRule
+    var range: JazzTextRange
+    var replacement: String
+    var confidence: Double
+    var why: String?
+
+    init(
+        rule: JazzTextGrammarRule,
+        range: JazzTextRange,
+        replacement: String,
+        confidence: Double = 1.0,
+        why: String? = nil
+    ) {
+        self.rule = rule
+        self.range = range
+        self.replacement = replacement
+        self.confidence = confidence
+        self.why = why
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case rule
+        case kind
+        case range
+        case replacement
+        case confidence
+        case why
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let rule = try container.decodeIfPresent(JazzTextGrammarRule.self, forKey: .rule) {
+            self.rule = rule
+        } else {
+            self.rule = try container.decode(JazzTextGrammarRule.self, forKey: .kind)
+        }
+        self.range = try container.decode(JazzTextRange.self, forKey: .range)
+        self.replacement = try container.decode(String.self, forKey: .replacement)
+        self.confidence = try container.decodeIfPresent(Double.self, forKey: .confidence) ?? 1.0
+        self.why = try container.decodeIfPresent(String.self, forKey: .why)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(rule, forKey: .rule)
+        try container.encode(range, forKey: .range)
+        try container.encode(replacement, forKey: .replacement)
+        try container.encode(confidence, forKey: .confidence)
+        try container.encodeIfPresent(why, forKey: .why)
+    }
 }
 
 nonisolated struct JazzTextRange: Codable, Sendable, Equatable {
@@ -208,6 +316,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
     var flavor: JazzTextFlavor
     var voices: [JazzTextVoiceState]
     var teamId: String?
+    var language: String?
 
     init(
         paragraph: String,
@@ -215,7 +324,8 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         after: String? = nil,
         flavor: JazzTextFlavor = .gfm,
         voices: [JazzTextVoiceState] = [],
-        teamId: String? = nil
+        teamId: String? = nil,
+        language: String? = nil
     ) {
         self.paragraph = paragraph
         self.before = before
@@ -223,6 +333,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         self.flavor = flavor
         self.voices = voices
         self.teamId = teamId
+        self.language = language
     }
 
     enum CodingKeys: String, CodingKey {
@@ -232,6 +343,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         case flavor
         case voices
         case teamId
+        case language
     }
 
     init(from decoder: Decoder) throws {
@@ -242,6 +354,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         self.flavor = try container.decodeIfPresent(JazzTextFlavor.self, forKey: .flavor) ?? .gfm
         self.voices = try container.decodeIfPresent([JazzTextVoiceState].self, forKey: .voices) ?? []
         self.teamId = try container.decodeIfPresent(String.self, forKey: .teamId)
+        self.language = try container.decodeIfPresent(String.self, forKey: .language)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -252,6 +365,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         try container.encode(flavor, forKey: .flavor)
         try container.encode(voices, forKey: .voices)
         try container.encodeIfPresent(teamId, forKey: .teamId)
+        try container.encodeIfPresent(language, forKey: .language)
     }
 }
 
@@ -259,6 +373,7 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
     var genre: JazzTextGenre
     var palette: [JazzTextVoice]
     var suggestions: [JazzTextSuggestion]
+    var grammar: [JazzTextGrammarCorrection]
     var why: String
     var fuelBalance: Int?
 
@@ -266,12 +381,14 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
         genre: JazzTextGenre,
         palette: [JazzTextVoice],
         suggestions: [JazzTextSuggestion] = [],
+        grammar: [JazzTextGrammarCorrection] = [],
         why: String,
         fuelBalance: Int? = nil
     ) {
         self.genre = genre
         self.palette = palette
         self.suggestions = suggestions
+        self.grammar = grammar
         self.why = why
         self.fuelBalance = fuelBalance
     }
@@ -280,6 +397,7 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
         case genre
         case palette
         case suggestions
+        case grammar
         case why
         case fuelBalance
     }
@@ -289,6 +407,7 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
         self.genre = try container.decode(JazzTextGenre.self, forKey: .genre)
         self.palette = try container.decode([JazzTextVoice].self, forKey: .palette)
         self.suggestions = try container.decodeIfPresent([JazzTextSuggestion].self, forKey: .suggestions) ?? []
+        self.grammar = try container.decodeIfPresent([JazzTextGrammarCorrection].self, forKey: .grammar) ?? []
         self.why = try container.decode(String.self, forKey: .why)
         self.fuelBalance = try container.decodeIfPresent(Int.self, forKey: .fuelBalance)
     }
@@ -298,6 +417,9 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
         try container.encode(genre, forKey: .genre)
         try container.encode(palette, forKey: .palette)
         try container.encode(suggestions, forKey: .suggestions)
+        if !grammar.isEmpty {
+            try container.encode(grammar, forKey: .grammar)
+        }
         try container.encode(why, forKey: .why)
         try container.encodeIfPresent(fuelBalance, forKey: .fuelBalance)
     }
@@ -392,41 +514,73 @@ enum WritingBandleaderFactory {
 nonisolated struct ParagraphVoiceSettings: Sendable, Equatable {
     var genre: JazzTextGenre
     var isPunctuateDisabled: Bool
+    var isGrammarDisabled: Bool
     var disabledRules: Set<PunctuationRule>
     var paragraphRange: NSRange
 
     init(
         genre: JazzTextGenre,
         isPunctuateDisabled: Bool = false,
+        isGrammarDisabled: Bool = false,
         disabledRules: Set<PunctuationRule> = [],
         paragraphRange: NSRange = NSRange(location: 0, length: 0)
     ) {
         self.genre = genre
         self.isPunctuateDisabled = isPunctuateDisabled
+        self.isGrammarDisabled = isGrammarDisabled
         self.disabledRules = disabledRules
         self.paragraphRange = paragraphRange
     }
 
-    static func from(response: JazzTextLeadResponse, paragraphRange: NSRange) -> ParagraphVoiceSettings {
+    static func from(
+        response: JazzTextLeadResponse,
+        paragraphRange: NSRange,
+        paragraph: String? = nil
+    ) -> ParagraphVoiceSettings {
         var disabled = response.genre == .poem
+        var grammarDisabled = GrammarVoice.isVerseDialogueOrQuotation(
+            paragraph: paragraph ?? "",
+            genre: response.genre,
+            why: response.why
+        )
         var rules = Set<PunctuationRule>()
 
-        for voice in response.palette where voice.voice == .punctuate {
-            if voice.strength <= 0 {
-                disabled = true
-            }
-            if let ruleStrings = voice.disabledRules {
-                for r in ruleStrings {
-                    if let mapped = mapRuleName(r) {
-                        rules.insert(mapped)
+        for voice in response.palette {
+            if voice.voice == .punctuate {
+                if voice.strength <= 0 {
+                    disabled = true
+                }
+                if let ruleStrings = voice.disabledRules {
+                    for r in ruleStrings {
+                        if let mapped = mapRuleName(r) {
+                            rules.insert(mapped)
+                        }
                     }
                 }
+            } else if voice.voice == .grammar {
+                if voice.strength <= 0 {
+                    grammarDisabled = true
+                }
+                if let ruleStrings = voice.disabledRules {
+                    for r in ruleStrings {
+                        if let mapped = mapRuleName(r) {
+                            rules.insert(mapped)
+                        }
+                    }
+                }
+            }
+        }
+
+        if grammarDisabled {
+            for rule in PunctuationRule.allCases where rule.isGrammar {
+                rules.insert(rule)
             }
         }
 
         return ParagraphVoiceSettings(
             genre: response.genre,
             isPunctuateDisabled: disabled,
+            isGrammarDisabled: grammarDisabled,
             disabledRules: rules,
             paragraphRange: paragraphRange
         )
@@ -448,6 +602,14 @@ nonisolated struct ParagraphVoiceSettings: Sendable, Equatable {
             return .capitals
         case "clause-comma", "clausecomma":
             return .clauseComma
+        case "doubled-words", "doubledwords", "doubled-word", "doubledword":
+            return .doubledWords
+        case "a-and-an", "aandan", "article", "articles":
+            return .aAndAn
+        case "agreement-and-tense", "agreementandtense", "agreement", "tense", "word-form", "wordform":
+            return .agreementAndTense
+        case "missing-words", "missingwords", "missing-word", "missingword":
+            return .missingWords
         default:
             return nil
         }
@@ -1303,6 +1465,535 @@ final class QuickNoteTidySession {
             textView.setSelectedRange(NSRange(location: length, length: 0))
         }
         #endif
+    }
+}
+
+// MARK: - Document Language Support (#111)
+
+nonisolated enum GrammarLanguageSupport {
+    /// Languages supported by the on-device Foundation Models provider.
+    static let onDeviceSupportedLanguages: Set<NLLanguage> = [
+        .english, .french, .german, .italian, .portuguese, .spanish,
+        .japanese, .simplifiedChinese, .traditionalChinese, .korean,
+    ]
+
+    /// Languages supported by the Pixerate server provider.
+    static let pixerateSupportedLanguages: Set<NLLanguage> = [
+        .english, .french, .german, .italian, .portuguese, .spanish, .dutch,
+        .japanese, .simplifiedChinese, .traditionalChinese, .korean,
+    ]
+
+    private static let englishMarkers: Set<String> = [
+        "the", "and", "is", "are", "was", "were", "to", "of", "in", "that", "it",
+        "for", "with", "as", "on", "but", "be", "at", "or", "from", "an", "by",
+        "not", "have", "has", "had", "this", "they", "you", "we", "she", "he",
+        "went", "shop", "results", "shows", "should", "would", "could", "better",
+        "walked", "says", "said", "dont", "doesnt", "didnt", "cant", "wont",
+    ]
+
+    /// Detects the dominant language of `text`, stripping excluded Markdown blocks first.
+    /// Defaults to `.english` when the prose sample is short or undetermined.
+    static func detectLanguage(in text: String) -> NLLanguage {
+        let stripped = BandleaderContextExtractor.stripExcludedBlocks(text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard stripped.count >= 12 else { return .english }
+
+        let words = stripped.lowercased()
+            .components(separatedBy: CharacterSet.letters.inverted)
+            .filter { !$0.isEmpty }
+        let isAllASCII = stripped.unicodeScalars.allSatisfy { $0.value < 128 }
+        if isAllASCII, words.contains(where: { englishMarkers.contains($0) }) {
+            // Check that there aren't strong non-ASCII diacritics; short ASCII texts with English function words are English
+            let englishHits = words.filter { englishMarkers.contains($0) }.count
+            if englishHits >= 1 && words.count <= 12 {
+                return .english
+            }
+            if Double(englishHits) / Double(max(1, words.count)) >= 0.15 {
+                return .english
+            }
+        }
+
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(stripped)
+        guard let dominant = recognizer.dominantLanguage, dominant != .undetermined else {
+            return .english
+        }
+        return dominant
+    }
+
+    static func supportedLanguages(for provider: WritingPartnerProvider) -> Set<NLLanguage> {
+        switch provider {
+        case .none:
+            return []
+        case .onDevice:
+            return onDeviceSupportedLanguages
+        case .pixerate:
+            return pixerateSupportedLanguages
+        }
+    }
+
+    static func isSupported(_ language: NLLanguage, by provider: WritingPartnerProvider) -> Bool {
+        supportedLanguages(for: provider).contains(language)
+    }
+
+    static func displayName(for language: NLLanguage) -> String {
+        Locale(identifier: "en").localizedString(forLanguageCode: language.rawValue) ?? language.rawValue
+    }
+
+    static func providerDisplayName(_ provider: WritingPartnerProvider) -> String {
+        switch provider {
+        case .none: return "local rules"
+        case .onDevice: return "Apple Intelligence"
+        case .pixerate: return "Pixerate"
+        }
+    }
+
+    /// Reason shown in Settings › Writing when the document's language is not supported by `provider`.
+    /// Returns `nil` when `provider == .none` or when `language` is supported.
+    static func unsupportedReason(for language: NLLanguage, provider: WritingPartnerProvider) -> String? {
+        guard provider != .none, !isSupported(language, by: provider) else { return nil }
+        let langName = displayName(for: language)
+        let provName = providerDisplayName(provider)
+        return "Off for \(langName) (not supported by \(provName))"
+    }
+}
+
+// MARK: - Pause-Tier Grammar Evaluation & Local Sentence Analyzer (#111)
+
+nonisolated extension GrammarVoice {
+    /// True when the bandleader reads the paragraph as verse, dialogue or a quotation.
+    static func isVerseDialogueOrQuotation(
+        paragraph: String,
+        in documentText: String? = nil,
+        paragraphRange: NSRange? = nil,
+        genre: JazzTextGenre,
+        why: String = ""
+    ) -> Bool {
+        if genre == .poem || genre == .dialogue || genre == .quote {
+            return true
+        }
+        let lowerWhy = why.lowercased()
+        if lowerWhy.contains("verse") || lowerWhy.contains("poem") || lowerWhy.contains("poetry")
+            || lowerWhy.contains("dialogue") || lowerWhy.contains("quotation") || lowerWhy.contains("blockquote") {
+            return true
+        }
+        let trimmed = paragraph.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        // Block quote ("> ...")
+        let lines = trimmed.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if let first = lines.first, first.hasPrefix(">") {
+            return true
+        }
+
+        // Check Markdown AST if full document and range are provided
+        if let documentText, let paragraphRange, paragraphRange.location < (documentText as NSString).length {
+            let doc = MarkdownDocument.parse(documentText)
+            var current: MarkdownNode? = node(at: paragraphRange.location, in: doc)
+            while let n = current {
+                if n.kind == .blockQuote { return true }
+                current = n.parent
+            }
+        }
+
+        // Quoted paragraph or dialogue paragraph (starts and ends with quotation marks, or dialogue lines starting with quotes/em-dash)
+        if (trimmed.hasPrefix("\"") && trimmed.hasSuffix("\""))
+            || (trimmed.hasPrefix("“") && trimmed.hasSuffix("”"))
+            || (trimmed.hasPrefix("‘") && trimmed.hasSuffix("’")) {
+            return true
+        }
+        if lines.allSatisfy({ $0.hasPrefix("\"") || $0.hasPrefix("“") || $0.hasPrefix("—") }) {
+            return true
+        }
+        return false
+    }
+
+    /// Word range containing `caret` in `text`, if `caret` is inside or immediately touching a word.
+    static func caretWordRange(at caret: Int, in text: NSString) -> NSRange? {
+        guard caret >= 0, caret <= text.length else { return nil }
+        var start = caret
+        while start > 0, PunctuateVoice.isWordCharacter(text.character(at: start - 1)) {
+            start -= 1
+        }
+        var end = caret
+        while end < text.length, PunctuateVoice.isWordCharacter(text.character(at: end)) {
+            end += 1
+        }
+        return end > start ? NSRange(location: start, length: end - start) : nil
+    }
+
+    /// Evaluates pause-tier grammar corrections returned by the bandleader in `response.grammar`,
+    /// splitting them into `automatic` edits (played through the partner's cursor as undo steps)
+    /// and `suggestions` (offered in Suggest mode or when confidence is below `autoConfidenceThreshold`).
+    static func pauseEdits(
+        from response: JazzTextLeadResponse,
+        paragraph: String,
+        paragraphRange: NSRange,
+        documentText: String,
+        caret: Int? = nil,
+        flavor: MarkdownFlavor = .github,
+        provider: WritingPartnerProvider = .pixerate,
+        mode: WritingPartnerMode = .automatic,
+        languageOverride: NLLanguage? = nil,
+        isActive: (PunctuationRule) -> Bool = { _ in true }
+    ) -> (automatic: [PartnerEdit], suggestions: [PartnerEdit]) {
+        guard mode != .off, flavor != .slack, !response.grammar.isEmpty else {
+            return ([], [])
+        }
+
+        // Check document language support
+        let language = languageOverride ?? GrammarLanguageSupport.detectLanguage(in: documentText)
+        guard GrammarLanguageSupport.isSupported(language, by: provider) else {
+            return ([], [])
+        }
+
+        // Off for verse, dialogue, or quotation
+        guard !isVerseDialogueOrQuotation(
+            paragraph: paragraph,
+            in: documentText,
+            paragraphRange: paragraphRange,
+            genre: response.genre,
+            why: response.why
+        ) else {
+            return ([], [])
+        }
+
+        let settings = ParagraphVoiceSettings.from(response: response, paragraphRange: paragraphRange, paragraph: paragraph)
+        guard !settings.isPunctuateDisabled, !settings.isGrammarDisabled else {
+            return ([], [])
+        }
+
+        let docNS = documentText as NSString
+        let paraNS = paragraph as NSString
+        guard paragraphRange.location >= 0,
+              NSMaxRange(paragraphRange) <= docNS.length,
+              paragraphRange.length == paraNS.length else {
+            return ([], [])
+        }
+
+        let document = MarkdownDocument.parse(documentText)
+        let activeCaretWord = caret.flatMap { caretWordRange(at: $0, in: docNS) }
+
+        let sorted = response.grammar.sorted {
+            if $0.range.start != $1.range.start { return $0.range.start < $1.range.start }
+            return $0.range.end < $1.range.end
+        }
+
+        var automatic: [PartnerEdit] = []
+        var suggested: [PartnerEdit] = []
+        var lastEnd = 0
+
+        for item in sorted {
+            guard item.confidence >= suggestConfidenceThreshold else { continue }
+            let start = item.range.start
+            let end = item.range.end
+            guard start >= 0, end > start, end <= paraNS.length, start >= lastEnd else { continue }
+
+            let rule = item.rule.punctuationRule
+            guard isActive(rule), !settings.disabledRules.contains(rule) else { continue }
+
+            let rawRange = NSRange(location: paragraphRange.location + start, length: end - start)
+            let original = docNS.substring(with: rawRange)
+            let replacement = item.replacement
+            guard original != replacement,
+                  !replacement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !replacement.contains("\n") else {
+                continue
+            }
+
+            // "It corrects, it doesn't rewrite. A correction changes at most a few words and never the meaning."
+            let origWords = original.split(whereSeparator: { $0.isWhitespace })
+            let repWords = replacement.split(whereSeparator: { $0.isWhitespace })
+            guard origWords.count <= maxCorrectionWords,
+                  repWords.count <= maxCorrectionWords,
+                  abs(repWords.count - origWords.count) <= 2 else {
+                continue
+            }
+
+            // Never in the word the caret is in
+            if let caretWord = activeCaretWord, NSIntersectionRange(rawRange, caretWord).length > 0 {
+                continue
+            }
+            if let c = caret, c >= rawRange.location && c <= NSMaxRange(rawRange) {
+                continue
+            }
+
+            // Never inside code, math, HTML, front matter, link destinations or tables
+            guard isProseRange(rawRange, in: docNS, document: document) else {
+                continue
+            }
+
+            // Widen to whole words in the document so the cursor selects and types whole words
+            let widened = PunctuateVoice.word(around: rawRange, in: docNS)
+            guard isProseRange(widened, in: docNS, document: document) else {
+                continue
+            }
+            if let caretWord = activeCaretWord, NSIntersectionRange(widened, caretWord).length > 0 {
+                continue
+            }
+            let prefixLen = rawRange.location - widened.location
+            let suffixLen = NSMaxRange(widened) - NSMaxRange(rawRange)
+            let prefixStr = prefixLen > 0 ? docNS.substring(with: NSRange(location: widened.location, length: prefixLen)) : ""
+            let suffixStr = suffixLen > 0 ? docNS.substring(with: NSRange(location: NSMaxRange(rawRange), length: suffixLen)) : ""
+            let widenedOriginal = docNS.substring(with: widened)
+            let widenedReplacement = prefixStr + replacement + suffixStr
+
+            let partnerEdit = PartnerEdit(
+                range: widened,
+                original: widenedOriginal,
+                replacement: widenedReplacement,
+                rules: [rule],
+                spellingWords: []
+            )
+
+            lastEnd = end
+            if mode == .suggest || item.confidence < autoConfidenceThreshold {
+                suggested.append(partnerEdit)
+            } else {
+                automatic.append(partnerEdit)
+            }
+        }
+
+        return (automatic, suggested)
+    }
+
+    // MARK: Local Deterministic Sentence Grammar Analyzer
+
+    /// Analyzes `paragraph` for high-precision pause-tier grammar fixes (subject-verb agreement,
+    /// mid-sentence tense slips, missing small words, and wrong word forms) outside excluded spans.
+    static func analyzeParagraph(_ paragraph: String, flavor: MarkdownFlavor = .github) -> [JazzTextGrammarCorrection] {
+        guard flavor != .slack else { return [] }
+        let ns = paragraph as NSString
+        guard ns.length > 0 else { return [] }
+        let document = MarkdownDocument.parse(paragraph)
+        guard !isVerseDialogueOrQuotation(paragraph: paragraph, in: paragraph, paragraphRange: NSRange(location: 0, length: ns.length), genre: .prose) else {
+            return []
+        }
+
+        struct PatternRule {
+            var regex: NSRegularExpression
+            var rule: JazzTextGrammarRule
+            var confidence: Double
+            var why: String
+            var transform: (String, NSTextCheckingResult, NSString) -> (range: NSRange, replacement: String)?
+        }
+
+        var patterns: [PatternRule] = []
+
+        func addSimple(
+            _ pattern: String,
+            rule: JazzTextGrammarRule,
+            confidence: Double,
+            why: String,
+            replacement: @escaping (String) -> String?
+        ) {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return }
+            patterns.append(PatternRule(regex: regex, rule: rule, confidence: confidence, why: why) { _, match, text in
+                let r = match.range(at: 1)
+                guard r.location != NSNotFound else { return nil }
+                let matched = text.substring(with: r)
+                guard let rep = replacement(matched), rep != matched else { return nil }
+                return (r, preserveLeadingCase(from: matched, to: rep))
+            })
+        }
+
+        // 1. Wrong word form: "should of", "could of", "would of", "must of", "might of" (not "of course" / "of all")
+        addSimple(
+            "\\b((?:should|could|would|must|might|may)\\s+of)\\b(?!\\s+(?:course|all|necessity|itself|theirs|ours|yours))",
+            rule: .agreementAndTense,
+            confidence: 0.92,
+            why: "Use 'have' instead of 'of' after a modal verb"
+        ) { matched in
+            let parts = matched.split(whereSeparator: { $0.isWhitespace })
+            guard parts.count == 2 else { return nil }
+            return "\(parts[0]) have"
+        }
+
+        // 2. Wrong word form: double comparatives / superlatives ("more better" → "better", "more worse" → "worse")
+        let comparatives = "better|worse|faster|slower|easier|harder|clearer|simpler|stronger|smaller|bigger|larger|higher|lower|older|younger|sooner|cleaner|safer|cheaper|shorter|longer"
+        addSimple(
+            "\\b(more\\s+(?:\(comparatives)))\\b",
+            rule: .agreementAndTense,
+            confidence: 0.92,
+            why: "Avoid double comparative"
+        ) { matched in
+            let parts = matched.split(whereSeparator: { $0.isWhitespace })
+            guard parts.count == 2 else { return nil }
+            return String(parts[1])
+        }
+
+        let superlatives = "best|worst|fastest|slowest|easiest|hardest|clearest|simplest|strongest|smallest|biggest|largest|highest|lowest|oldest|youngest|soonest|cleanest|safest|cheapest"
+        addSimple(
+            "\\b(most\\s+(?:\(superlatives)))\\b",
+            rule: .agreementAndTense,
+            confidence: 0.92,
+            why: "Avoid double superlative"
+        ) { matched in
+            let parts = matched.split(whereSeparator: { $0.isWhitespace })
+            guard parts.count == 2 else { return nil }
+            return String(parts[1])
+        }
+
+        // 3. Subject and verb agreement ("the results shows" → "the results show", etc.)
+        let pluralNouns = "results|tests|changes|numbers|files|rules|errors|items|notes|lines|words|checks|steps|updates|options|settings|documents|pages|tables|links|users|servers|clients|events|messages|logs|metrics|values|keys|fields|columns|rows|tasks|issues|fixes"
+        let singularVerbsToPlural: [String: String] = [
+            "shows": "show", "fails": "fail", "breaks": "break", "tells": "tell",
+            "needs": "need", "works": "work", "happens": "happen", "makes": "make",
+            "takes": "take", "gives": "give", "keeps": "keep", "comes": "come",
+            "goes": "go", "runs": "run", "passes": "pass", "matches": "match",
+            "contains": "contain", "includes": "include", "requires": "require",
+            "remains": "remain", "appears": "appear", "looks": "look", "seems": "seem",
+            "is": "are", "was": "were", "has": "have", "does": "do", "doesn't": "don't",
+        ]
+        let verbKeys = singularVerbsToPlural.keys.sorted().joined(separator: "|")
+        addSimple(
+            "\\b(?:the|these|those|our|their|many|several|both|all)\\s+(?:\(pluralNouns))\\s+(\(verbKeys))\\b",
+            rule: .agreementAndTense,
+            confidence: 0.89,
+            why: "Plural subject takes a plural verb"
+        ) { matched in
+            singularVerbsToPlural[matched.lowercased()]
+        }
+
+        // Pronoun-verb agreement ("they was" → "they were", "we was" → "we were", "he don't" → "he doesn't")
+        addSimple(
+            "\\b(?:they|we|you)\\s+(was|is|has|does)\\b",
+            rule: .agreementAndTense,
+            confidence: 0.90,
+            why: "Subject-verb agreement"
+        ) { matched in
+            switch matched.lowercased() {
+            case "was": return "were"
+            case "is": return "are"
+            case "has": return "have"
+            case "does": return "do"
+            default: return nil
+            }
+        }
+
+        addSimple(
+            "\\b(?:he|she|it)\\s+(don't|dont|have)\\b",
+            rule: .agreementAndTense,
+            confidence: 0.90,
+            why: "Singular subject takes a singular verb"
+        ) { matched in
+            switch matched.lowercased() {
+            case "don't", "dont": return "doesn't"
+            case "have": return "has"
+            default: return nil
+            }
+        }
+
+        // 4. Tense that slips mid-sentence ("walked in and says" → "walked in and said", etc.)
+        let pastVerbs = "walked|opened|sat|looked|ran|finished|clicked|closed|read|took|called|turned|checked|started|stopped|entered|left|wrote|sent|built|pushed|pulled|merged|deployed|typed|pressed|moved|came|went|saw|heard|asked|answered|picked|grabbed|dropped"
+        let presentToPast: [String: String] = [
+            "says": "said", "writes": "wrote", "starts": "started", "asks": "asked",
+            "sees": "saw", "sends": "sent", "waits": "waited", "leaves": "left",
+            "replies": "replied", "arrives": "arrived", "tells": "told", "goes": "went",
+            "finds": "found", "takes": "took", "makes": "made", "gives": "gave",
+            "comes": "came", "runs": "ran", "opens": "opened", "closes": "closed",
+            "clicks": "clicked", "turns": "turned", "calls": "called", "checks": "checked",
+            "looks": "looked", "walks": "walked", "sits": "sat", "stops": "stopped",
+            "drops": "dropped", "picks": "picked", "grabs": "grabbed", "throws": "threw",
+        ]
+        let presentKeys = presentToPast.keys.sorted().joined(separator: "|")
+        addSimple(
+            "\\b(?:\(pastVerbs))(?:\\s+[A-Za-z']+){0,4},?\\s+and\\s+(\(presentKeys))\\b",
+            rule: .agreementAndTense,
+            confidence: 0.86,
+            why: "Keep past tense consistent within the sentence"
+        ) { matched in
+            presentToPast[matched.lowercased()]
+        }
+
+        // 5. Missing small word ("went the shop" → "went to the shop", etc.)
+        let destinationNouns = "shop|store|office|station|meeting|market|park|airport|room|desk|table|window|door|page|file|line|top|bottom|server| hospital|school|bank|library|gym|hotel|beach|doctor|kitchen|garden|conference|team|group|guide|manual|message|email|music|podcast"
+        addSimple(
+            "\\b((?:went|walked|drove|returned|headed|ran|flew|moved|replied|listened|talked|spoke|belongs|belonged|happened|refer|referred)\\s+(?:the|a|an|my|our|their|his|her)\\s+(?:\(destinationNouns)))\\b",
+            rule: .missingWords,
+            confidence: 0.88,
+            why: "Insert missing 'to'"
+        ) { matched in
+            let parts = matched.split(whereSeparator: { $0.isWhitespace })
+            guard parts.count == 3 else { return nil }
+            return "\(parts[0]) to \(parts[1]) \(parts[2])"
+        }
+
+        addSimple(
+            "\\b((?:a\\s+lot|a\\s+couple|one|some|none|most|both)\\s+the\\s+[A-Za-z]+)\\b",
+            rule: .missingWords,
+            confidence: 0.87,
+            why: "Insert missing 'of'"
+        ) { matched in
+            guard let theRange = matched.range(of: "\\s+the\\s+", options: [.regularExpression, .caseInsensitive]) else { return nil }
+            var out = matched
+            out.replaceSubrange(theRange, with: " of the ")
+            return out
+        }
+
+        addSimple(
+            "\\b(a\\s+lot\\s+(?:people|work|time|money|things|files|changes|errors|items|questions|users))\\b",
+            rule: .missingWords,
+            confidence: 0.87,
+            why: "Insert missing 'of'"
+        ) { matched in
+            let parts = matched.split(whereSeparator: { $0.isWhitespace })
+            guard parts.count == 3 else { return nil }
+            return "\(parts[0]) \(parts[1]) of \(parts[2])"
+        }
+
+        addSimple(
+            "\\b((?:needs|needed|need|has|have|had|ought)\\s+to\\s+(?:fixed|updated|done|checked|removed|added|changed|tested|built|closed|opened|saved))\\b",
+            rule: .missingWords,
+            confidence: 0.88,
+            why: "Insert missing 'be'"
+        ) { matched in
+            let parts = matched.split(whereSeparator: { $0.isWhitespace })
+            guard parts.count == 3 else { return nil }
+            return "\(parts[0]) \(parts[1]) be \(parts[2])"
+        }
+
+        var rawCorrections: [JazzTextGrammarCorrection] = []
+        let fullRange = NSRange(location: 0, length: ns.length)
+
+        for p in patterns {
+            let matches = p.regex.matches(in: paragraph, options: [], range: fullRange)
+            for match in matches {
+                guard let (range, replacement) = p.transform(paragraph, match, ns),
+                      isProseRange(range, in: ns, document: document) else {
+                    continue
+                }
+                rawCorrections.append(JazzTextGrammarCorrection(
+                    rule: p.rule,
+                    range: JazzTextRange(start: range.location, end: NSMaxRange(range)),
+                    replacement: replacement,
+                    confidence: p.confidence,
+                    why: p.why
+                ))
+            }
+        }
+
+        // Sort and deduplicate overlapping corrections
+        let sorted = rawCorrections.sorted {
+            if $0.range.start != $1.range.start { return $0.range.start < $1.range.start }
+            return $0.range.end < $1.range.end
+        }
+        var accepted: [JazzTextGrammarCorrection] = []
+        var lastEnd = 0
+        for corr in sorted where corr.range.start >= lastEnd {
+            accepted.append(corr)
+            lastEnd = corr.range.end
+        }
+        return accepted
+    }
+
+    private static func preserveLeadingCase(from original: String, to replacement: String) -> String {
+        guard let firstOrig = original.first, firstOrig.isUppercase,
+              !original.dropFirst().contains(where: { $0.isUppercase }),
+              let firstRep = replacement.first, firstRep.isLowercase else {
+            return replacement
+        }
+        return replacement.prefix(1).uppercased() + replacement.dropFirst()
     }
 }
 
