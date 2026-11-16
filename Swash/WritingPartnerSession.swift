@@ -188,15 +188,24 @@ final class WritingPartnerSession {
     /// Most recent VoiceOver announcement for a suggestion.
     private(set) var lastAnnouncement: String?
 
-    // MARK: - Bandleader & Pause Tier (#101)
-    private var bandleader: (any WritingBandleader)?
+    // MARK: - Bandleader & Pause Tier (#101, #120)
+    private var testingBandleader: (any WritingBandleader)?
+    private var activeBandleader: (any WritingBandleader)?
     private var pauseDetector: WritingPauseDetector = WritingPauseDetector()
     private let sessionMemory: BandleaderSessionMemory = BandleaderSessionMemory()
     private var paragraphVoiceSettings: ParagraphVoiceSettings?
     private var pauseTask: Task<Void, Never>?
+    private var leadTask: Task<Void, Never>?
+    private var pendingFeedbackCount = 0
     private(set) var activeSuggestion: (suggestion: JazzTextSuggestion, paragraph: String, paragraphRange: NSRange)?
     private var lastKnownParagraphRange: NSRange?
     private var lastKnownParagraphText: String?
+
+    private var hasPauseProvider: Bool {
+        testingBandleader != nil
+            || MainActor.assumeIsolated { WritingBandleaderFactory.overrideBandleader != nil }
+            || WritingPartnerDefaults.provider(defaults) != .none
+    }
 
     private struct Step {
         var voice: WritingPartnerVoice
@@ -204,6 +213,12 @@ final class WritingPartnerSession {
         var spellingWords: [String]
         /// Where the person's caret was (raw) before it, to put it back if it's undone.
         var caretBefore: Int
+        var rangeAfter: NSRange? = nil
+        var original: String = ""
+        var replacement: String = ""
+        var bandleaderSuggestionId: String? = nil
+        var bandleaderSuggestionKind: JazzTextSuggestionKind? = nil
+        var bandleaderCheckId: String? = nil
     }
 
     /// A fix the partner's cursor is playing, one word at a time.
@@ -226,7 +241,14 @@ final class WritingPartnerSession {
     }
 
     /// True while the partner has nothing to do (for tests).
-    var isIdle: Bool { fixInFlight == nil && pendingBoundaries.isEmpty && !isScheduled && pauseTask == nil }
+    var isIdle: Bool {
+        fixInFlight == nil
+            && pendingBoundaries.isEmpty
+            && !isScheduled
+            && pauseTask == nil
+            && leadTask == nil
+            && pendingFeedbackCount == 0
+    }
 
     /// Whether an inline structural suggestion prompt is currently active.
     var hasActiveSuggestion: Bool { activeSuggestion != nil }
@@ -256,7 +278,10 @@ final class WritingPartnerSession {
             replacement: suggestion.replacement,
             rules: [],
             spellingWords: [],
-            actionName: WritingPartnerDefaults.suggestionActionName
+            actionName: WritingPartnerDefaults.suggestionActionName,
+            bandleaderSuggestionId: suggestion.effectiveId,
+            bandleaderSuggestionKind: suggestion.kind,
+            bandleaderCheckId: suggestion.checkId
         )
         play(Fix(remaining: [edit], boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
     }
@@ -267,6 +292,17 @@ final class WritingPartnerSession {
         let (suggestion, paragraph, _) = active
         activeSuggestion = nil
         sessionMemory.dismiss(suggestion: suggestion, in: paragraph)
+        let ns = paragraph as NSString
+        let range = suggestion.range.nsRange
+        let original = (range.location >= 0 && NSMaxRange(range) <= ns.length) ? ns.substring(with: range) : nil
+        reportBandleaderFeedback(JazzTextFeedbackItem(
+            suggestionId: suggestion.effectiveId,
+            kind: suggestion.kind,
+            outcome: .dismissed,
+            original: original,
+            replacement: suggestion.replacement,
+            checkId: suggestion.checkId
+        ))
         if let textView {
             let overlay = WritingPartnerOverlay.overlay(for: textView)
             overlay.hideSuggestionPrompt()
@@ -309,13 +345,42 @@ final class WritingPartnerSession {
                     return suggestion
                 }
                 // Editing the suggested word itself removes the suggestion without penalty
+                // and reports an "edited" outcome when it came from the bandleader (#120).
+                if let suggestionId = suggestion.edit.bandleaderSuggestionId,
+                   let kind = suggestion.edit.bandleaderSuggestionKind {
+                    reportBandleaderFeedback(JazzTextFeedbackItem(
+                        suggestionId: suggestionId,
+                        kind: kind,
+                        outcome: .edited,
+                        original: suggestion.edit.original,
+                        replacement: suggestion.edit.replacement,
+                        finalText: replacement,
+                        checkId: suggestion.edit.bandleaderCheckId
+                    ))
+                }
                 return nil
             }
             refreshSuggestions(in: textView, coordinator: coordinator)
         }
         if !applied.isEmpty {
-            // Typing on after a fix keeps it in the voice that made it
+            // Typing on after a fix keeps it in the voice that made it; editing over an applied
+            // bandleader replacement reports an "edited" outcome (#120).
             for step in applied {
+                if let stepRange = step.rangeAfter,
+                   let suggestionId = step.bandleaderSuggestionId,
+                   let kind = step.bandleaderSuggestionKind,
+                   (NSIntersectionRange(raw, stepRange).length > 0 || (raw.length == 0 && raw.location > stepRange.location && raw.location < NSMaxRange(stepRange))) {
+                    reportBandleaderFeedback(JazzTextFeedbackItem(
+                        suggestionId: suggestionId,
+                        kind: kind,
+                        outcome: .edited,
+                        original: step.original,
+                        replacement: step.replacement,
+                        finalText: replacement,
+                        checkId: step.bandleaderCheckId
+                    ))
+                    continue
+                }
                 var stats = WritingPartnerStats.load(defaults, voice: step.voice)
                 for rule in step.rules where rule != .spelling { stats.kept(rule) }
                 stats.save(defaults, voice: step.voice)
@@ -328,7 +393,10 @@ final class WritingPartnerSession {
             cancelFix()
             clearSuggestions(in: textView)
         } else if mode != .suggest, !suggestions.isEmpty {
-            clearSuggestions(in: textView)
+            // In Automatic mode, keep lower-confidence bandleader suggestions that were offered
+            // as underlined suggestions (#120) until accepted, edited, or dismissed.
+            suggestions.removeAll { $0.edit.bandleaderSuggestionId == nil }
+            refreshSuggestions(in: textView, coordinator: coordinator)
         }
         // macOS's inline predictions and autocorrect also write at the caret, and the two together
         // lose or corrupt fixes: while the partner is on it does the autocorrecting itself
@@ -342,14 +410,26 @@ final class WritingPartnerSession {
             savedAutocorrect = nil
         }
 
+        let charCode: unichar = (replacement as NSString).length > 0 ? (replacement as NSString).character(at: 0) : 0
+        var enterEndedLine: Bool?
+        if charCode == 0x0A {
+            let text = coordinator.rawText(of: textView) as NSString
+            enterEndedLine = raw.location >= text.length || text.character(at: raw.location) == 0x0A
+        }
+
         // Pause detection: record typing and back off while editing continues
-        if isOn, WritingPartnerDefaults.provider(defaults) != .none {
+        if isOn, hasPauseProvider {
             let rawText = coordinator.rawText(of: textView)
             if let extracted = BandleaderContextExtractor.extract(from: rawText, caret: raw.location, flavor: coordinator.parent.flavor) {
                 lastKnownParagraphRange = extracted.range
                 lastKnownParagraphText = extracted.paragraph
-                let charCode: unichar = (replacement as NSString).length > 0 ? (replacement as NSString).character(at: 0) : 0
-                pauseDetector.noteTyping(character: charCode, paragraph: extracted.paragraph, range: extracted.range, caret: raw.location, enterEndedSentence: false)
+                pauseDetector.noteTyping(
+                    character: charCode,
+                    paragraph: extracted.paragraph,
+                    range: extracted.range,
+                    caret: raw.location,
+                    enterEndedSentence: enterEndedLine ?? false
+                )
                 schedulePauseCheck(in: textView, coordinator: coordinator)
             }
         }
@@ -363,11 +443,6 @@ final class WritingPartnerSession {
         }
         let c = (string as NSString).character(at: 0)
         guard PunctuateVoice.isWordBoundary(c) || c == 0x0A else { return }
-        var enterEndedLine: Bool?
-        if c == 0x0A {
-            let text = coordinator.rawText(of: textView) as NSString
-            enterEndedLine = raw.location >= text.length || text.character(at: raw.location) == 0x0A
-        }
         pendingBoundaries.append((raw.location, enterEndedLine))
     }
 
@@ -375,13 +450,18 @@ final class WritingPartnerSession {
     /// published and styled the change, and one at a time: while the partner's cursor is playing a
     /// fix, new boundaries wait for it.
     func didChange(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
-        if WritingPartnerDefaults.mode(defaults) != .off && WritingPartnerDefaults.provider(defaults) != .none {
+        if WritingPartnerDefaults.mode(defaults) != .off && hasPauseProvider {
             let rawText = coordinator.rawText(of: textView)
             let rawSelection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
             if let current = BandleaderContextExtractor.extract(from: rawText, caret: rawSelection.location, flavor: coordinator.parent.flavor) {
-                if let lastRange = lastKnownParagraphRange, let lastText = lastKnownParagraphText, lastRange != current.range {
+                if let lastRange = lastKnownParagraphRange,
+                   let lastText = lastKnownParagraphText,
+                   lastRange.location != current.range.location,
+                   NSIntersectionRange(lastRange, current.range).length == 0 {
                     pauseDetector.noteLeftParagraph(oldParagraph: lastText, oldRange: lastRange)
                     triggerImmediatePause(in: textView, coordinator: coordinator)
+                } else {
+                    pauseDetector.updatePendingParagraph(current.paragraph, range: current.range, caret: rawSelection.location)
                 }
                 lastKnownParagraphRange = current.range
                 lastKnownParagraphText = current.paragraph
@@ -417,8 +497,9 @@ final class WritingPartnerSession {
         }
         let checker = NSSpellChecker.shared
         let tag = textView.spellCheckerDocumentTag
-        let spellingCorrection: (String, NSRange, String) -> String? = { _, range, text in
-            checker.correction(forWordRange: range, in: text, language: checker.language(), inSpellDocumentWithTag: tag)
+        let spellingCorrection: (String, NSRange, String) -> String? = { [weak self] word, range, text in
+            if self?.sessionMemory.isKnownWord(word) == true { return nil }
+            return checker.correction(forWordRange: range, in: text, language: checker.language(), inSpellDocumentWithTag: tag)
         }
         let overlay = WritingPartnerOverlay.overlay(for: textView)
 
@@ -669,9 +750,33 @@ final class WritingPartnerSession {
     /// The director committed an edit: it's an undo step of the partner's, and what comes after it moved.
     private func committed(_ range: NSRange, text: String, caretBefore: Int) {
         let delta = (text as NSString).length - range.length
+        let rangeAfter = NSRange(location: range.location, length: (text as NSString).length)
         if let edit = pendingStep {
             let voice = coordinator.map { WritingPartnerVoice(flavor: $0.parent.flavor) } ?? .punctuate
-            applied.append(Step(voice: voice, rules: edit.rules, spellingWords: edit.spellingWords, caretBefore: caretBefore))
+            applied.append(Step(
+                voice: voice,
+                rules: edit.rules,
+                spellingWords: edit.spellingWords,
+                caretBefore: caretBefore,
+                rangeAfter: rangeAfter,
+                original: edit.original,
+                replacement: edit.replacement,
+                bandleaderSuggestionId: edit.bandleaderSuggestionId,
+                bandleaderSuggestionKind: edit.bandleaderSuggestionKind,
+                bandleaderCheckId: edit.bandleaderCheckId
+            ))
+            if let suggestionId = edit.bandleaderSuggestionId,
+               let kind = edit.bandleaderSuggestionKind {
+                reportBandleaderFeedback(JazzTextFeedbackItem(
+                    suggestionId: suggestionId,
+                    kind: kind,
+                    outcome: .accepted,
+                    original: edit.original,
+                    replacement: edit.replacement,
+                    finalText: text,
+                    checkId: edit.bandleaderCheckId
+                ))
+            }
         }
         let move = { (location: Int) -> Int in location >= NSMaxRange(range) ? location + delta : location }
         pendingBoundaries = pendingBoundaries.map { (move($0.location), $0.enterEndedLine) }
@@ -691,6 +796,15 @@ final class WritingPartnerSession {
                 return NSMaxRange(suggestion.edit.range) <= range.location ? suggestion : nil
             }
             if let textView, let coordinator { refreshSuggestions(in: textView, coordinator: coordinator) }
+        }
+        if let textView, let coordinator, hasPauseProvider {
+            let rawText = coordinator.rawText(of: textView)
+            let rawSelection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+            if let current = BandleaderContextExtractor.extract(from: rawText, caret: rawSelection.location, flavor: coordinator.parent.flavor) {
+                lastKnownParagraphRange = current.range
+                lastKnownParagraphText = current.paragraph
+                pauseDetector.updatePendingParagraph(current.paragraph, range: current.range, caret: rawSelection.location)
+            }
         }
         observeUndo(textView?.undoManager)
     }
@@ -742,6 +856,8 @@ final class WritingPartnerSession {
     private func cancelFix() {
         pauseTask?.cancel()
         pauseTask = nil
+        leadTask?.cancel()
+        leadTask = nil
         guard fixInFlight != nil else { return }
         fixInFlight?.isCancelled = true
         MainActor.assumeIsolated { target?.clearGhost() }
@@ -759,19 +875,48 @@ final class WritingPartnerSession {
 
     // MARK: Undo & Learning
 
-    /// Counts an undone or dismissed fix against its rules, and tells the spell checker to leave
-    /// any spelling words in it alone in this document.
+    /// Counts an undone or dismissed fix against its rules, tells the spell checker and session
+    /// memory to leave any spelling words in it alone, and reports bandleader feedback (#120).
     private func penalize(_ edit: PartnerEdit, in textView: NSTextView?) {
         penalize(rules: edit.rules, spellingWords: edit.spellingWords, in: textView)
+        if let suggestionId = edit.bandleaderSuggestionId,
+           let kind = edit.bandleaderSuggestionKind {
+            sessionMemory.dismissWord(edit.original, replacement: edit.replacement, suggestionId: suggestionId)
+            reportBandleaderFeedback(JazzTextFeedbackItem(
+                suggestionId: suggestionId,
+                kind: kind,
+                outcome: .dismissed,
+                original: edit.original,
+                replacement: edit.replacement,
+                checkId: edit.bandleaderCheckId
+            ))
+        }
     }
 
     private func penalize(rules: [PunctuationRule], spellingWords: [String], in textView: NSTextView?) {
         var stats = WritingPartnerStats.load(defaults)
         for rule in rules where rule != .spelling { stats.undone(rule) }
         stats.save(defaults)
+        sessionMemory.learnWords(spellingWords)
         if let textView {
             let tag = textView.spellCheckerDocumentTag
             for word in spellingWords { NSSpellChecker.shared.ignoreWord(word, inSpellDocumentWithTag: tag) }
+        }
+    }
+
+    private func reportBandleaderFeedback(_ item: JazzTextFeedbackItem) {
+        sessionMemory.recordFeedback(item)
+        let leader = activeBandleader
+            ?? testingBandleader
+            ?? MainActor.assumeIsolated {
+                WritingBandleaderFactory.overrideBandleader
+                    ?? WritingBandleaderFactory.makeBandleader(WritingPartnerDefaults.provider(defaults))
+            }
+        let request = JazzTextFeedbackRequest(items: [item])
+        pendingFeedbackCount += 1
+        Task { @MainActor [weak self] in
+            defer { self?.pendingFeedbackCount -= 1 }
+            await leader.reportFeedback(request)
         }
     }
 
@@ -804,34 +949,45 @@ final class WritingPartnerSession {
         pauseTask = nil
         guard WritingPartnerDefaults.mode(defaults) != .off else { return }
         let provider = WritingPartnerDefaults.provider(defaults)
-        guard provider != .none else { return }
+        let override = testingBandleader ?? WritingBandleaderFactory.overrideBandleader
+        guard override != nil || provider != .none else { return }
 
         guard let pause = pauseDetector.checkPause() else { return }
         let rawText = coordinator.rawText(of: textView)
         guard let extracted = BandleaderContextExtractor.extract(from: rawText, caret: pause.caret, flavor: coordinator.parent.flavor) else { return }
 
-        let leader = self.bandleader ?? WritingBandleaderFactory.makeBandleader(provider)
-        self.bandleader = leader
-
         let stats = WritingPartnerStats.load(defaults)
         let spellingOn = WritingPartnerDefaults.spelling(defaults)
         let voices = [stats.toVoiceState(spellingOn: spellingOn)]
+        let recentFeedback = sessionMemory.recordedFeedback.isEmpty ? nil : sessionMemory.recordedFeedback
         let request = JazzTextLeadRequest(
             paragraph: extracted.paragraph,
             before: extracted.before,
             after: extracted.after,
             flavor: coordinator.parent.flavor.jazzTextFlavor,
-            voices: voices
+            voices: voices,
+            feedback: recentFeedback
         )
 
-        Task { @MainActor [weak self, weak textView, weak coordinator] in
+        leadTask?.cancel()
+        leadTask = Task { @MainActor [weak self, weak textView, weak coordinator] in
+            defer { self?.leadTask = nil }
             guard let self, let textView, let coordinator else { return }
-            do {
-                guard let response = try await leader.lead(request: request) else { return }
-                self.applyBandleaderResponse(response, for: extracted.paragraph, paragraphRange: extracted.range, in: textView, coordinator: coordinator)
-            } catch {
-                // Quiet fallback to local voices
+            guard let result = await WritingBandleaderFactory.leadWithFallback(
+                request: request,
+                provider: provider,
+                override: override
+            ) else {
+                return
             }
+            self.activeBandleader = result.bandleader
+            self.applyBandleaderResponse(
+                result.response,
+                for: extracted.paragraph,
+                paragraphRange: extracted.range,
+                in: textView,
+                coordinator: coordinator
+            )
         }
     }
 
@@ -842,10 +998,51 @@ final class WritingPartnerSession {
         in textView: NSTextView,
         coordinator: SwashTextView.Coordinator
     ) {
-        self.paragraphVoiceSettings = ParagraphVoiceSettings.from(response: response, paragraphRange: paragraphRange)
+        let mode = WritingPartnerDefaults.mode(defaults)
+        guard mode != .off else { return }
+        let spellingOn = WritingPartnerDefaults.spelling(defaults)
+        let rawText = coordinator.rawText(of: textView)
 
-        let filtered = response.suggestions.filter { !self.sessionMemory.isDismissed(suggestion: $0, in: paragraph) }
-        guard let suggestion = filtered.first else { return }
+        let plan = BandleaderSuggestionPlanner.plan(
+            response: response,
+            paragraph: paragraph,
+            paragraphRange: paragraphRange,
+            documentText: rawText,
+            flavor: coordinator.parent.flavor,
+            mode: mode,
+            spellingEnabled: spellingOn,
+            memory: sessionMemory
+        )
+
+        self.paragraphVoiceSettings = plan.voiceSettings
+
+        // Register personal and team vocabulary words with NSSpellChecker so they are neither
+        // flagged with red underlines nor "corrected" away in this document (#120).
+        if !plan.vocabulary.isEmpty {
+            let tag = textView.spellCheckerDocumentTag
+            for word in plan.vocabulary {
+                NSSpellChecker.shared.ignoreWord(word, inSpellDocumentWithTag: tag)
+            }
+        }
+
+        // Offer uncertain / Suggest-mode inline suggestions as underlines (#103, #120).
+        if !plan.offeredEdits.isEmpty {
+            let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+            offer(plan.offeredEdits, triggerEnd: selection.location, in: textView, coordinator: coordinator)
+        }
+
+        // Apply high-confidence inline suggestions at once through the partner's cursor (#120).
+        if !plan.automaticEdits.isEmpty {
+            if var inFlight = fixInFlight, !inFlight.isCancelled {
+                inFlight.remaining.append(contentsOf: plan.automaticEdits)
+                fixInFlight = inFlight
+            } else {
+                play(Fix(remaining: plan.automaticEdits, boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
+            }
+        }
+
+        // Show a structural block suggestion prompt if present and no inline cursor edit is running.
+        guard let suggestion = plan.structuralSuggestion else { return }
 
         self.activeSuggestion = (suggestion: suggestion, paragraph: paragraph, paragraphRange: paragraphRange)
 
@@ -867,7 +1064,8 @@ final class WritingPartnerSession {
     // MARK: - Testing Helpers
 
     func setBandleaderForTesting(_ bandleader: (any WritingBandleader)?) {
-        self.bandleader = bandleader
+        self.testingBandleader = bandleader
+        self.activeBandleader = bandleader
     }
 
     func setPauseDetectorForTesting(_ detector: WritingPauseDetector) {
@@ -910,9 +1108,23 @@ final class WritingPartnerSession {
         var stats = WritingPartnerStats.load(defaults, voice: step.voice)
         for rule in step.rules where rule != .spelling { stats.undone(rule) }
         stats.save(defaults, voice: step.voice)
+        sessionMemory.learnWords(step.spellingWords)
         if let textView {
             let tag = textView.spellCheckerDocumentTag
             for word in step.spellingWords { NSSpellChecker.shared.ignoreWord(word, inSpellDocumentWithTag: tag) }
+        }
+        if let suggestionId = step.bandleaderSuggestionId,
+           let kind = step.bandleaderSuggestionKind {
+            sessionMemory.dismissWord(step.original, replacement: step.replacement, suggestionId: suggestionId)
+            reportBandleaderFeedback(JazzTextFeedbackItem(
+                suggestionId: suggestionId,
+                kind: kind,
+                outcome: .undone,
+                original: step.original,
+                replacement: step.replacement,
+                finalText: step.original,
+                checkId: step.bandleaderCheckId
+            ))
         }
         // Undo selects the restored word; put the caret back where the person was typing, after
         // the editor has restyled the change
