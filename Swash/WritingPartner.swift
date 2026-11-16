@@ -72,11 +72,10 @@ nonisolated enum WritingPartnerDefaults {
     /// steps and learn from undo, so it doesn't follow macOS's "Correct spelling automatically",
     /// which people often turn off for being hard to undo (#98).
     static let spelling = "writingPartnerSpelling"
-    /// Typography switches (#104). Off unless turned on: Swash has never curled quotes in a
-    /// Markdown source, so turning it on by default would change how people's files are written.
+    /// Curly quotes (#104): a switch, off unless turned on, because whether people like curly
+    /// quotes at all is a matter of taste. Dashes and ellipses have no switch: like the other
+    /// rules they're on, and learn from undo.
     static let curlyQuotes = "writingPartnerCurlyQuotes"
-    static let dashes = "writingPartnerDashes"
-    static let ellipses = "writingPartnerEllipses"
     /// The undo action name of the partner's edits.
     static let actionName = "Punctuation"
     /// How the partner's fixes look: the id of a Flair text treatment (#100).
@@ -110,20 +109,10 @@ nonisolated enum WritingPartnerDefaults {
         defaults.bool(forKey: curlyQuotes)
     }
 
-    static func dashes(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: dashes)
-    }
-
-    static func ellipses(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: ellipses)
-    }
-
     static func isRuleEnabled(_ rule: PunctuationRule, _ defaults: UserDefaults = .standard) -> Bool {
         switch rule {
         case .spelling: return spelling(defaults)
         case .curlyQuotes: return curlyQuotes(defaults)
-        case .dashes: return dashes(defaults)
-        case .ellipses: return ellipses(defaults)
         default: return true
         }
     }
@@ -173,7 +162,8 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
     /// `...` becomes an ellipsis (`…`).
     case ellipses
 
-    /// Curly quotes, dashes and ellipses: each has its own switch, off unless turned on.
+    /// Curly quotes, dashes and ellipses: style, not correction. The strip-and-restore eval and the
+    /// voice tests leave them out; in the app, curly quotes has a switch and the others are learned.
     var isTypography: Bool { self == .curlyQuotes || self == .dashes || self == .ellipses }
 
     var title: String {

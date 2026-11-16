@@ -280,8 +280,6 @@ private struct WritingPartnerSettingsView: View {
     @State private var spellingOn = WritingPartnerDefaults.spelling()
     private var access: PixerateAccess = .shared
     @AppStorage(WritingPartnerDefaults.curlyQuotes) private var curlyQuotes = false
-    @AppStorage(WritingPartnerDefaults.dashes) private var dashes = false
-    @AppStorage(WritingPartnerDefaults.ellipses) private var ellipses = false
     @AppStorage(WritingPartnerDefaults.quickNoteTidy) private var quickNoteTidy = true
 
     private var flavor: MarkdownFlavor {
@@ -361,18 +359,16 @@ private struct WritingPartnerSettingsView: View {
 
             Section {
                 Toggle("Curly quotes", isOn: $curlyQuotes)
-                Toggle("Dashes", isOn: $dashes)
-                Toggle("Ellipses", isOn: $ellipses)
             } header: {
                 Text("Typography")
             } footer: {
-                Text("In prose only, never in code, math or links: straight quotes and apostrophes become curly (“no”, don’t), -- and --- between words become – and —, and ... becomes …. They change the characters in your Markdown file, so they're off unless you turn them on.")
+                Text("In prose only, never in code, math or links: straight quotes and apostrophes become curly (“no”, don’t). Dashes (-- and --- between words become – and —) and ellipses (... becomes …) work like the other fixes: undo one straight away and the partner does it less.")
                     .settingsFooterStyle()
             }
             .disabled(mode == .off)
 
             Section {
-                ForEach(PunctuationRule.allCases.filter { $0 != .spelling && (!$0.isTypography || WritingPartnerDefaults.isRuleEnabled($0)) }, id: \.self) { rule in
+                ForEach(PunctuationRule.allCases.filter { $0 != .spelling && ($0 != .curlyQuotes || curlyQuotes) }, id: \.self) { rule in
                     LabeledContent(rule.title) {
                         if !voice.rules.contains(rule) {
                             Text("Off in Chat")
