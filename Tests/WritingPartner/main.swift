@@ -546,6 +546,8 @@ do {
     check(type("dont say \"no\" -- it works... ", isActive: all).text == "Don’t say “no” – it works… ", "typography on: \(type("dont say \"no\" -- it works... ", isActive: all).text)")
     check(type("dont say \"no\" -- it works... ").text == "Don't say \"no\" -- it works... ", "typography off by default")
     check(type("see `don't` and --flag ", isActive: all).text == "See `don't` and --flag ", "no typography in code or on a --flag")
+    check(type("it works--mostly ", isActive: all).text == "It works—mostly ", "-- between words is an em dash")
+    check(type("it works -- mostly ", isActive: all).text == "It works – mostly ", "a spaced -- is an en dash")
     let rules = type("dont say \"no\" ", isActive: all).rules
     check(rules.contains(.curlyQuotes) && rules.contains(.contraction), "curly quotes is its own rule: \(rules)")
     let defaults = UserDefaults(suiteName: "swash-typography-tests")!
