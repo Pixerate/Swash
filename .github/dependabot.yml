@@ -25,6 +25,10 @@ updates:
       site:
         patterns:
           - "*"
+    ignore:
+      # @astrojs/svelte accepts TypeScript 5 or 6 only; take 7 by hand once it does (Swash#130)
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
