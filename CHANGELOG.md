@@ -1,5 +1,56 @@
 # swash
 
+## 1.28.0
+
+### Minor Changes
+
+- 8bfc78c: Add the Chat voice (`ChatVoice`) for the Slack mrkdwn flavour in the writing partner: fix apostrophes, capital `I` and spelling while leaving lowercase starts, message ends, `ok`, `lol` and other chat conventions, `:emoji:` shortcodes and Slack syntax (`<@user>`, `<#channel>`, `<!here>`, `<url|label>`, `*bold*` / `_italic_` / `~strike~` markers) untouched. Track learning stats separately for Chat and Punctuate, and show the active voice in Settings › Writing.
+- 34d817c: iOS: the formatting bar above the keyboard is Liquid Glass and scrolls sideways, so no button is cut off on smaller iPhones. A new Aa button swaps the keyboard for a format panel with text styles, inline formats and block types, as in Notes. Inline formats appear directly in the edit menu instead of under Format. The "/" block menu uses glass chips. On macOS 26 the bubble menu uses Liquid Glass.
+- 46f6859: iPad: the document outline is now a system sidebar (a split view column) with the standard sidebar button, full height beside the document, in place of the custom column under the toolbar. iPhone keeps the Outline button and sheet.
+- 735e8ec: Writing partner: its fixes are now drawn with Flair's text treatments, and there's a new look. When a fix lands, a thin ribbon sweeps under the changed word and curls up past its end, then dissolves (a soft lilac in Dark Mode). Settings › Writing has a Partner style picker with a live preview, so you can go back to the soft sweep or choose another style. The partner's cursor has no name tag, and a word it's about to fix is no longer swept first and then selected, which looked like the same highlight twice. Under Reduce Motion every style holds still and fades. Swash now uses Pixerate's editor package 0.73 and Flair 0.135.
+- acdaf64: Optional Pixerate account sign-in (Settings › Account on the Mac, Settings on iPhone and iPad), for the coming writing partner's server features. Swash still works fully without an account. Nothing is sent unless you're signed in and a feature that uses the server is on, and the README's privacy notes say what is sent.
+- b9ab72a: The writing partner's server features are now part of Pixerate Pro instead of using Fuel. Settings shows your plan (Basic, Pro, or Pro granted by Pixerate) instead of a Fuel balance, and on Basic offers Pixerate Pro through the App Store, with Restore Purchases and Manage Subscription. Swash refuses writing-partner requests on Basic before sending anything. App Store purchases use StoreKit 2 and are verified by the Pixerate server. Updates PixerateAccount to 0.2.
+- ee4c98d: Quick Note tidy-up, with Pixerate Pro: when you pause or save a Quick Note, Pixerate proposes a tidier version (a list, a heading, tasks, consistent dates), previewed as a diff. Accept it as one undo step, or dismiss it and the note stays as it was. Turn it off in Settings › Writing.
+- e826632: Writing partner: "Correct spelling" is now on by default whenever the partner is on, rather than following macOS's "Correct spelling automatically". The partner also fixes more as you type: `ok` → `OK`, `id like` → `I'd like` and `ill be` → `I'll be` (but not "the id field" or "I feel ill"), and a comma before "but" when it starts a new clause ("It works, but it's slow"). Each of these is a rule you can turn off in Settings › Writing.
+- 9e7a700: Writing partner: its cursor now types each fix the way a person would. It selects the word, types the new one over it, then highlights what changed for a moment. Each word it changes is its own undo step, so ⌘Z takes back one correction at a time and teaches the partner only about that one. You can keep typing while it works. The playback comes from Pixerate's editor package (0.70), so Swash and the other Pixerate editors show agents' edits the same way.
+- ba8dd8f: Writing partner: a limited on-device tier with Apple Intelligence (macOS 26 and later). When you pause and Pixerate isn't answering (signed out, or on the Basic plan), Apple's on-device model reads the paragraph you just finished, holds back punctuation where it would be wrong (a poem, a list of fragments), and may suggest that some lines are a list or a heading. Nothing leaves your Mac, and it reads only that paragraph.
+- 8bbe7bb: Writing partner, first part (Mac): turn on "Fix punctuation as I type" in Settings › Writing and Swash fixes small things as you finish each word: `i` → `I`, missing apostrophes (`dont` → `don't`), a capital to start a sentence, and a full stop or question mark when you leave a blank line after a one-line paragraph. Each fix is its own undo step; undoing a kind of fix twice in a row stops it, and Settings shows what it has learned. Code, math, HTML, links' addresses and tables are never changed, and it all runs on your Mac. Off by default.
+- 3afceb7: Writing partner: "Correct spelling" (Settings › Writing). While the partner is on, it does the autocorrecting in place of macOS's own: misspellings are fixed the way the system's spell checker would, through the partner's cursor and as part of the same undo step. Undoing a spelling fix leaves that word alone in the document. The switch starts out matching your Mac's "Correct spelling automatically". macOS text replacements keep working, and the partner still adds its capital or apostrophe when a replacement got there first (`teh` → `The`).
+- dad4331: Add Suggest mode to the writing partner, offering punctuation and spelling fixes in place without changing the document until accepted by keyboard (Tab or ⌥⏎), pointer click, VoiceOver rotor, or the Edit menu.
+- 7715098: Writing partner: curly quotes, dashes and ellipses (Settings › Writing › Typography). In prose only, never in code, math or links: straight quotes and apostrophes become curly, `--` and `---` between words become en and em dashes, and `...` becomes an ellipsis. Each is off unless you turn it on, because it changes the characters in your Markdown file.
+- 569685a: Writing partner:
+  - `its` becomes `it's` when the next word shows it should (`its really`, `its a`, `its going`), and stays before a noun or adjective (`its colour`, `its own`).
+  - A soft sweep shows each word or line being checked.
+  - The partner's own purple cursor selects what it fixes just before the change appears, then fades.
+  - With Reduce Motion on, fixes appear at once, with no sweep.
+
+### Patch Changes
+
+- 264f35e: Update the Pixerate editor package (the Markdown engine, PixerateMarkdown and PixerateCore) from 0.9.0 to 0.67.0. Among other fixes, it builds with Xcode 26.3, which rejected 0.9.0.
+- 8c6e25f: Fix the Build & Release workflow hanging for 6 hours in package resolution: the private sticker pack is now injected only for the iOS App Store archive, after the open-source macOS release is built and published. Also harden the CI signing keychain and add job and build-step timeouts.
+- 9ce1d59: - **Links (iOS):** tapping a link while editing places the caret and offers Open Link in the edit menu, instead of the system link menu.
+  - **Sheets (iOS):** Settings, Document Info and Outline no longer show a stray back chevron.
+  - **Tables (all platforms):** table text follows Settings › Text Size (and Dynamic Type on iOS) and matches the body text on iOS.
+- 7746c95: iOS: the document toolbar uses standard controls. The view-mode switch is a glyph button (tap toggles Source and Formatted, hold for every mode) instead of a squashed segmented control, Markdown Flavor is a submenu, and Share sends the document file, so the share sheet shows its thumbnail and name instead of a generic text icon.
+- 95ca79d: Swash has a website: swash.pixerate.com, built from the new `site/` folder and published automatically from `main`. It follows your system's light or dark appearance, and its screenshots come straight from the app. In the app itself, the `-appearance light|dark` launch argument now fixes the appearance for one launch, which the screenshot scripts use (the older arguments stopped forcing Dark Mode in macOS 27).
+- e6f7b6c: Remove unused legacy `icon.png` from repository root
+- 9a6f1a3: Website: the hero demo no longer switches looks part-way through on a first visit (it now waits for the effects library before it starts), the ribbon only appears once a fix has landed and not while the word is still being typed, and the headline shows as plain text while the window is being resized. The app's writing partner gets the same change: its ribbon no longer starts while a word is still being typed (Flair 0.135.2).
+- 231450a: Site: Tailwind CSS 4 (through its Vite plugin), with TypeScript kept at 6 until Astro's Svelte integration supports 7.
+- 0285c69: Add 1024×1024 social media avatar icon (`brand/swash-avatar-1024.png`) inset for circular crops and document its generation in `docs/APP_ICON.md`.
+- 23864a6: Add the writing partner strip-and-restore evaluation (`Tests/WritingPartnerEval`, `scripts/run_writing_partner_eval.sh`) with a Markdown and Slack corpus, deterministic stripper and seeded typo injector, manual-clock typing replay harness, per-rule and overall precision/recall/F1 scorer, Markdown diff report, checked-in baseline (`Tests/WritingPartnerEval/baseline.json`), CI regression check, and unclosed protected-context guards while typing front matter, link/image destinations, reference definitions, and table rows.
+- c140abb: Writing partner fixes:
+  - Each line is now a sentence: a line starts with a capital, and Return at the end of a line of four or more words adds its full stop or question mark (no blank line needed).
+  - Return finishes a word, so the last word on a line is fixed too.
+  - Fast typing no longer skips fixes.
+  - macOS inline predictions are off while the writing partner is on, because together they could corrupt a word (`dont't`).
+  - "Fix punctuation as I type" is a switch.
+  
+  Also:
+  - Sign-in no longer crashes, because PixerateAccount is updated to 0.1.1.
+  - The MCP bridge says how to start it when nothing is listening.
+- b0cded5: Docs: a "What the writing partner sends" page, for each of its tiers: what leaves your Mac, when, and what Pixerate keeps.
+- d1ec6bf: Writing partner: its punctuation, casing, apostrophe and spelling rules now come from Pixerate's editor package, where every Pixerate editor shares them. Nothing changes in what it fixes.
+
 ## 1.27.2
 
 ### Patch Changes
