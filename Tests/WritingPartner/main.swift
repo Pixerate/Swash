@@ -540,19 +540,22 @@ do {
     check(!memory.isDismissed(suggestion: suggestion, in: "Different text"), "Dismissal is scoped to paragraph content")
 }
 
-// Typography (#104): curly quotes, dashes and ellipses, from the editor's checks, only when turned on
+// Typography (#104): curly quotes (a switch, off by default), dashes and ellipses (learned), from the editor's checks
 do {
     let all: (PunctuationRule) -> Bool = { _ in true }
     check(type("dont say \"no\" -- it works... ", isActive: all).text == "Don’t say “no” – it works… ", "typography on: \(type("dont say \"no\" -- it works... ", isActive: all).text)")
     check(type("dont say \"no\" -- it works... ").text == "Don't say \"no\" -- it works... ", "typography off by default")
     check(type("see `don't` and --flag ", isActive: all).text == "See `don't` and --flag ", "no typography in code or on a --flag")
+    check(type("it works--mostly ", isActive: all).text == "It works—mostly ", "-- between words is an em dash")
+    check(type("it works -- mostly ", isActive: all).text == "It works – mostly ", "a spaced -- is an en dash")
     let rules = type("dont say \"no\" ", isActive: all).rules
     check(rules.contains(.curlyQuotes) && rules.contains(.contraction), "curly quotes is its own rule: \(rules)")
     let defaults = UserDefaults(suiteName: "swash-typography-tests")!
     defaults.removePersistentDomain(forName: "swash-typography-tests")
-    check(!WritingPartnerDefaults.curlyQuotes(defaults) && !WritingPartnerDefaults.dashes(defaults) && !WritingPartnerDefaults.ellipses(defaults), "typography off unless turned on")
-    defaults.set(true, forKey: WritingPartnerDefaults.dashes)
-    check(WritingPartnerDefaults.isRuleEnabled(.dashes, defaults) && !WritingPartnerDefaults.isRuleEnabled(.ellipses, defaults), "each switch on its own")
+    check(!WritingPartnerDefaults.curlyQuotes(defaults) && !WritingPartnerDefaults.isRuleEnabled(.curlyQuotes, defaults), "curly quotes off unless turned on")
+    check(WritingPartnerDefaults.isRuleEnabled(.dashes, defaults) && WritingPartnerDefaults.isRuleEnabled(.ellipses, defaults), "dashes and ellipses are on, and learned like other rules")
+    defaults.set(true, forKey: WritingPartnerDefaults.curlyQuotes)
+    check(WritingPartnerDefaults.isRuleEnabled(.curlyQuotes, defaults), "the curly quotes switch turns it on")
     defaults.removePersistentDomain(forName: "swash-typography-tests")
 }
 
