@@ -72,6 +72,9 @@ nonisolated enum WritingPartnerDefaults {
     /// steps and learn from undo, so it doesn't follow macOS's "Correct spelling automatically",
     /// which people often turn off for being hard to undo (#98).
     static let spelling = "writingPartnerSpelling"
+    /// Whether the partner corrects context-dependent spelling and real-word errors on pauses (#98).
+    /// Unset, it's on whenever spelling is on and a pause-tier provider is available.
+    static let contextSpelling = "writingPartnerContextSpelling"
     /// Curly quotes (#104): a switch, off unless turned on, because whether people like curly
     /// quotes at all is a matter of taste. Dashes and ellipses have no switch: like the other
     /// rules they're on, and learn from undo.
@@ -103,6 +106,13 @@ nonisolated enum WritingPartnerDefaults {
     /// Whether the partner corrects spelling: the stored choice, else on.
     static func spelling(_ defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: spelling) == nil ? true : defaults.bool(forKey: spelling)
+    }
+
+    /// Whether the partner corrects context-dependent spelling on pause (#98): the stored choice,
+    /// else on whenever `spelling` is on.
+    static func contextSpelling(_ defaults: UserDefaults = .standard) -> Bool {
+        guard spelling(defaults) else { return false }
+        return defaults.object(forKey: contextSpelling) == nil ? true : defaults.bool(forKey: contextSpelling)
     }
 
     static func curlyQuotes(_ defaults: UserDefaults = .standard) -> Bool {

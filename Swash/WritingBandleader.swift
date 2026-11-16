@@ -94,6 +94,55 @@ nonisolated struct JazzTextSuggestion: Codable, Sendable, Equatable {
     }
 }
 
+/// A word-level spelling or real-word correction from the pause-tier bandleader (#98).
+nonisolated struct JazzTextSpellingCorrection: Codable, Sendable, Equatable {
+    var range: JazzTextRange
+    var original: String?
+    var replacement: String
+    var confidence: Double
+    var why: String?
+
+    init(
+        range: JazzTextRange,
+        original: String? = nil,
+        replacement: String,
+        confidence: Double = 1.0,
+        why: String? = nil
+    ) {
+        self.range = range
+        self.original = original
+        self.replacement = replacement
+        self.confidence = confidence
+        self.why = why
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case range
+        case original
+        case replacement
+        case confidence
+        case why
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.range = try container.decode(JazzTextRange.self, forKey: .range)
+        self.original = try container.decodeIfPresent(String.self, forKey: .original)
+        self.replacement = try container.decode(String.self, forKey: .replacement)
+        self.confidence = try container.decodeIfPresent(Double.self, forKey: .confidence) ?? 1.0
+        self.why = try container.decodeIfPresent(String.self, forKey: .why)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(range, forKey: .range)
+        try container.encodeIfPresent(original, forKey: .original)
+        try container.encode(replacement, forKey: .replacement)
+        try container.encode(confidence, forKey: .confidence)
+        try container.encodeIfPresent(why, forKey: .why)
+    }
+}
+
 nonisolated struct JazzTextVoice: Codable, Sendable, Equatable {
     var voice: JazzTextVoiceId
     var strength: Double
@@ -207,6 +256,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
     var after: String?
     var flavor: JazzTextFlavor
     var voices: [JazzTextVoiceState]
+    var vocabulary: [String]?
     var teamId: String?
 
     init(
@@ -215,6 +265,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         after: String? = nil,
         flavor: JazzTextFlavor = .gfm,
         voices: [JazzTextVoiceState] = [],
+        vocabulary: [String]? = nil,
         teamId: String? = nil
     ) {
         self.paragraph = paragraph
@@ -222,6 +273,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         self.after = after
         self.flavor = flavor
         self.voices = voices
+        self.vocabulary = vocabulary
         self.teamId = teamId
     }
 
@@ -231,6 +283,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         case after
         case flavor
         case voices
+        case vocabulary
         case teamId
     }
 
@@ -241,6 +294,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         self.after = try container.decodeIfPresent(String.self, forKey: .after)
         self.flavor = try container.decodeIfPresent(JazzTextFlavor.self, forKey: .flavor) ?? .gfm
         self.voices = try container.decodeIfPresent([JazzTextVoiceState].self, forKey: .voices) ?? []
+        self.vocabulary = try container.decodeIfPresent([String].self, forKey: .vocabulary)
         self.teamId = try container.decodeIfPresent(String.self, forKey: .teamId)
     }
 
@@ -251,6 +305,9 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         try container.encodeIfPresent(after, forKey: .after)
         try container.encode(flavor, forKey: .flavor)
         try container.encode(voices, forKey: .voices)
+        if let vocabulary, !vocabulary.isEmpty {
+            try container.encode(vocabulary, forKey: .vocabulary)
+        }
         try container.encodeIfPresent(teamId, forKey: .teamId)
     }
 }
@@ -259,6 +316,7 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
     var genre: JazzTextGenre
     var palette: [JazzTextVoice]
     var suggestions: [JazzTextSuggestion]
+    var spelling: [JazzTextSpellingCorrection]
     var why: String
     var fuelBalance: Int?
 
@@ -266,12 +324,14 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
         genre: JazzTextGenre,
         palette: [JazzTextVoice],
         suggestions: [JazzTextSuggestion] = [],
+        spelling: [JazzTextSpellingCorrection] = [],
         why: String,
         fuelBalance: Int? = nil
     ) {
         self.genre = genre
         self.palette = palette
         self.suggestions = suggestions
+        self.spelling = spelling
         self.why = why
         self.fuelBalance = fuelBalance
     }
@@ -280,6 +340,7 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
         case genre
         case palette
         case suggestions
+        case spelling
         case why
         case fuelBalance
     }
@@ -289,6 +350,7 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
         self.genre = try container.decode(JazzTextGenre.self, forKey: .genre)
         self.palette = try container.decode([JazzTextVoice].self, forKey: .palette)
         self.suggestions = try container.decodeIfPresent([JazzTextSuggestion].self, forKey: .suggestions) ?? []
+        self.spelling = try container.decodeIfPresent([JazzTextSpellingCorrection].self, forKey: .spelling) ?? []
         self.why = try container.decode(String.self, forKey: .why)
         self.fuelBalance = try container.decodeIfPresent(Int.self, forKey: .fuelBalance)
     }
@@ -298,6 +360,9 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
         try container.encode(genre, forKey: .genre)
         try container.encode(palette, forKey: .palette)
         try container.encode(suggestions, forKey: .suggestions)
+        if !spelling.isEmpty {
+            try container.encode(spelling, forKey: .spelling)
+        }
         try container.encode(why, forKey: .why)
         try container.encodeIfPresent(fuelBalance, forKey: .fuelBalance)
     }
@@ -700,6 +765,7 @@ nonisolated final class WritingPauseDetector: @unchecked Sendable {
     ) {
         pendingParagraph = oldParagraph
         pendingRange = oldRange
+        pendingCaret = oldRange.location
         // Immediate trigger on leaving a paragraph (if revision hasn't been requested)
         scheduledTime = clock()
     }
@@ -744,7 +810,7 @@ nonisolated final class WritingPauseDetector: @unchecked Sendable {
 // local tidy rules: without Pixerate (signed in with Pro), Quick Notes aren't tidied.
 
 extension JazzTextRange {
-    var nsRange: NSRange { NSRange(location: start, length: end - start) }
+    nonisolated var nsRange: NSRange { NSRange(location: start, length: end - start) }
 }
 
 extension WritingBandleaderFactory {
@@ -1305,4 +1371,1499 @@ final class QuickNoteTidySession {
         #endif
     }
 }
+
+// MARK: - Document Vocabulary & Context-Aware Spelling (#98)
+
+/// Extracts the person's own vocabulary (names, product terms and jargon that recur in the document)
+/// so neither the typing-tier spell checker nor the pause-tier bandleader corrects them away (#98).
+nonisolated enum DocumentVocabulary {
+    /// Lowercased words that appear at least `minimumOccurrences` times in `text`, excluding
+    /// common confusables and unambiguous misspellings so real-word errors and typos are still fixed
+    /// even if repeated.
+    static func recurringWords(in text: String, minimumOccurrences: Int = 2) -> Set<String> {
+        guard minimumOccurrences > 1 else { return [] }
+        let ns = text as NSString
+        let length = ns.length
+        guard length > 0 else { return [] }
+
+        var counts: [String: Int] = [:]
+        var i = 0
+        while i < length {
+            if isLetter(ns.character(at: i)) {
+                let start = i
+                i += 1
+                while i < length {
+                    let c = ns.character(at: i)
+                    if isLetterOrDigit(c) {
+                        i += 1
+                    } else if (c == 0x27 || c == 0x2019 || c == 0x2D),
+                              i + 1 < length,
+                              isLetter(ns.character(at: i + 1)) {
+                        i += 1
+                    } else {
+                        break
+                    }
+                }
+                let wordLen = i - start
+                if wordLen >= 3 {
+                    let word = ns.substring(with: NSRange(location: start, length: wordLen)).lowercased()
+                    let normalized = word.replacingOccurrences(of: "\u{2019}", with: "'")
+                    if !ContextSpelling.confusableWords.contains(normalized),
+                       ContextSpelling.commonMisspellings[normalized] == nil,
+                       !ContextSpelling.ambiguousTypos.contains(normalized) {
+                        counts[normalized, default: 0] += 1
+                    }
+                }
+            } else {
+                i += 1
+            }
+        }
+
+        var result = Set<String>()
+        for (word, count) in counts where count >= minimumOccurrences {
+            result.insert(word)
+        }
+        return result
+    }
+
+    /// True when `word` is part of the document's recurring vocabulary or `extraVocabulary`.
+    static func isKnown(
+        _ word: String,
+        in text: String,
+        extraVocabulary: Set<String> = [],
+        minimumOccurrences: Int = 2
+    ) -> Bool {
+        let lower = word.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        if extraVocabulary.contains(lower) { return true }
+        return recurringWords(in: text, minimumOccurrences: minimumOccurrences).contains(lower)
+    }
+
+    private static func isLetter(_ c: unichar) -> Bool {
+        guard let scalar = Unicode.Scalar(c) else { return false }
+        return CharacterSet.letters.contains(scalar)
+    }
+
+    private static func isLetterOrDigit(_ c: unichar) -> Bool {
+        guard let scalar = Unicode.Scalar(c) else { return false }
+        return CharacterSet.alphanumerics.contains(scalar)
+    }
+}
+
+/// Pause-tier context-aware spelling (#98): resolves ambiguous misspellings (`teh form` → `the form`
+/// or `the from`) and real words used wrongly (`form`/`from`, `there`/`their`/`they're`,
+/// `loose`/`lose`, `then`/`than`, `its`/`it's`, `your`/`you're`, `whose`/`who's`, `to`/`too`,
+/// `weather`/`whether`, `affect`/`effect`, `passed`/`past`, `accept`/`except`,
+/// `principal`/`principle`, `lead`/`led`, `piece`/`peace`, `were`/`where`), while respecting
+/// confidence thresholds, document vocabulary, ignored words, prose exclusions and the person's caret.
+nonisolated enum ContextSpelling {
+    /// Minimum confidence required to apply a correction automatically in `.automatic` mode.
+    static let confidenceThreshold: Double = 0.80
+
+    /// Minimum confidence required to offer a correction in `.suggest` mode; below this is ignored.
+    static let minimumSuggestConfidence: Double = 0.35
+
+    /// Real words that participate in contextual wrong-word checks; never suppressed by recurrence.
+    static let confusableWords: Set<String> = [
+        "form", "from",
+        "there", "their", "they're",
+        "loose", "lose",
+        "then", "than",
+        "its", "it's",
+        "your", "you're",
+        "whose", "who's",
+        "to", "too",
+        "weather", "whether",
+        "affect", "effect",
+        "passed", "past",
+        "accept", "except",
+        "principal", "principle",
+        "lead", "led",
+        "piece", "peace",
+        "were", "where", "we're"
+    ]
+
+    /// Ambiguous short typos resolved by sentence context; never suppressed by recurrence.
+    static let ambiguousTypos: Set<String> = [
+        "teh", "hte", "tje", "fomr", "rfom", "thier", "ot", "adn", "nad", "cna", "nto",
+        "taht", "waht", "wiht", "jsut", "ahve", "knwo", "abotu", "shoudl", "woudl", "coudl",
+        "whcih", "thign", "thigns"
+    ]
+
+    /// Unambiguous common misspellings; never suppressed by recurrence.
+    static let commonMisspellings: [String: String] = [
+        "untill": "until",
+        "becuase": "because",
+        "recieve": "receive",
+        "seperate": "separate",
+        "definately": "definitely",
+        "occured": "occurred",
+        "accomodate": "accommodate",
+        "wierd": "weird",
+        "freind": "friend",
+        "beleive": "believe",
+        "acheive": "achieve",
+        "neccessary": "necessary",
+        "occassion": "occasion",
+        "enviroment": "environment",
+        "goverment": "government",
+        "begining": "beginning",
+        "tommorow": "tomorrow",
+        "calender": "calendar",
+        "adress": "address",
+        "collegue": "colleague",
+        "concious": "conscious",
+        "disapoint": "disappoint",
+        "embarass": "embarrass",
+        "existance": "existence",
+        "foriegn": "foreign",
+        "fourty": "forty",
+        "grammer": "grammar",
+        "immediatly": "immediately",
+        "independant": "independent",
+        "knowlege": "knowledge",
+        "maintainance": "maintenance",
+        "millenium": "millennium",
+        "noticable": "noticeable",
+        "occurence": "occurrence",
+        "persistant": "persistent",
+        "priviledge": "privilege",
+        "publically": "publicly",
+        "recomend": "recommend",
+        "refered": "referred",
+        "relevent": "relevant",
+        "succesful": "successful",
+        "suprise": "surprise",
+        "tendancy": "tendency",
+        "threshhold": "threshold",
+        "truely": "truly",
+        "unfortunatly": "unfortunately",
+        "prettuy": "pretty",
+        "liek": "like"
+    ]
+
+    private struct Token {
+        var text: String
+        var lower: String
+        var range: NSRange
+        var hasClauseBreakBefore: Bool
+        var hasClauseBreakAfter: Bool
+        var isCapitalized: Bool
+    }
+
+    /// Detects context-dependent spelling and wrong-word corrections in `paragraph`.
+    static func detect(
+        in paragraph: String,
+        flavor: MarkdownFlavor = .github,
+        vocabulary: Set<String> = [],
+        ignoredWords: Set<String> = []
+    ) -> [JazzTextSpellingCorrection] {
+        let ns = paragraph as NSString
+        guard ns.length > 0 else { return [] }
+        let document = MarkdownDocument.parse(paragraph, flavor: flavor)
+        let tokens = tokenize(paragraph, ns: ns, document: document)
+        guard !tokens.isEmpty else { return [] }
+
+        let knownVocab = Set(vocabulary.map { $0.lowercased().replacingOccurrences(of: "\u{2019}", with: "'") })
+        let ignored = Set(ignoredWords.map { $0.lowercased().replacingOccurrences(of: "\u{2019}", with: "'") })
+        let localRecurring = DocumentVocabulary.recurringWords(in: paragraph)
+        let blockedWords = knownVocab.union(ignored).union(localRecurring)
+
+        var corrections: [JazzTextSpellingCorrection] = []
+        var skipIndex: Int?
+
+        for i in tokens.indices {
+            if skipIndex == i { continue }
+            let token = tokens[i]
+            if blockedWords.contains(token.lower) { continue }
+
+            let prev1: Token? = (!token.hasClauseBreakBefore && i >= 1) ? tokens[i - 1] : nil
+            let prev2: Token? = (prev1 != nil && !prev1!.hasClauseBreakBefore && i >= 2) ? tokens[i - 2] : nil
+            let next1: Token? = (!token.hasClauseBreakAfter && i + 1 < tokens.count) ? tokens[i + 1] : nil
+            let next2: Token? = (next1 != nil && !next1!.hasClauseBreakAfter && i + 2 < tokens.count) ? tokens[i + 2] : nil
+
+            // 1. Ambiguous two-word transposition: `teh form` -> `the form` or `the from` depending on context
+            if (token.lower == "teh" || token.lower == "hte" || token.lower == "tje"),
+               let n1 = next1, n1.lower == "form", !blockedWords.contains(n1.lower) {
+                let tehReplacement = matchCase(of: token.text, replacement: "the")
+                corrections.append(JazzTextSpellingCorrection(
+                    range: JazzTextRange(start: token.range.location, end: NSMaxRange(token.range)),
+                    original: token.text,
+                    replacement: tehReplacement,
+                    confidence: 0.96,
+                    why: "Fixed misspelling in context"
+                ))
+                // If `teh form` follows a verb/adjective/preposition that takes `from` (e.g. "came teh form", "away teh form"),
+                // and `form` isn't followed by a noun/preposition that makes `the form` a noun phrase, fix `form` -> `from` too.
+                if let p1 = prev1, takesFromPreposition.contains(p1.lower), n1.hasClauseBreakAfter {
+                    corrections.append(JazzTextSpellingCorrection(
+                        range: JazzTextRange(start: n1.range.location, end: NSMaxRange(n1.range)),
+                        original: n1.text,
+                        replacement: matchCase(of: n1.text, replacement: "from"),
+                        confidence: 0.91,
+                        why: "Context indicates 'from'"
+                    ))
+                }
+                skipIndex = i + 1
+                continue
+            }
+
+            if let match = evaluateToken(
+                token,
+                prev1: prev1,
+                prev2: prev2,
+                next1: next1,
+                next2: next2
+            ) {
+                let cased = matchCase(of: token.text, replacement: match.replacement)
+                if cased != token.text {
+                    corrections.append(JazzTextSpellingCorrection(
+                        range: JazzTextRange(start: token.range.location, end: NSMaxRange(token.range)),
+                        original: token.text,
+                        replacement: cased,
+                        confidence: match.confidence,
+                        why: match.why
+                    ))
+                }
+            }
+        }
+
+        return corrections
+    }
+
+    /// Converts pause-tier `JazzTextSpellingCorrection` items into `[PartnerEdit]` ready to play
+    /// through the partner's cursor (in `.automatic` mode) or offer as underlined suggestions
+    /// (in `.suggest` mode), respecting confidence thresholds, caret position, prose checks,
+    /// document vocabulary and ignored words.
+    static func partnerEdits(
+        from corrections: [JazzTextSpellingCorrection],
+        in paragraph: String,
+        paragraphRange: NSRange,
+        documentText: String,
+        flavor: MarkdownFlavor = .github,
+        mode: WritingPartnerMode,
+        caretRange: NSRange,
+        vocabulary: Set<String> = [],
+        ignoredWords: Set<String> = []
+    ) -> [PartnerEdit] {
+        guard mode != .off, !corrections.isEmpty else { return [] }
+        let docNS = documentText as NSString
+        let paraNS = paragraph as NSString
+        guard NSMaxRange(paragraphRange) <= docNS.length,
+              docNS.substring(with: paragraphRange) == paragraph else {
+            return []
+        }
+
+        let minConfidence = mode == .automatic ? confidenceThreshold : minimumSuggestConfidence
+        let knownVocab = Set(vocabulary.map { $0.lowercased().replacingOccurrences(of: "\u{2019}", with: "'") })
+            .union(DocumentVocabulary.recurringWords(in: documentText))
+        let ignored = Set(ignoredWords.map { $0.lowercased().replacingOccurrences(of: "\u{2019}", with: "'") })
+        let document = MarkdownDocument.parse(documentText, flavor: flavor)
+
+        let sorted = corrections.sorted {
+            if $0.range.start != $1.range.start { return $0.range.start < $1.range.start }
+            return $0.range.end < $1.range.end
+        }
+
+        var edits: [PartnerEdit] = []
+        var lastEnd = 0
+
+        for item in sorted {
+            guard item.confidence >= minConfidence else { continue }
+            let start = item.range.start
+            let end = item.range.end
+            guard start >= 0, end > start, end <= paraNS.length, start >= lastEnd else { continue }
+
+            let localRange = NSRange(location: start, length: end - start)
+            let actualWord = paraNS.substring(with: localRange)
+            if let expectedOriginal = item.original, !expectedOriginal.isEmpty, expectedOriginal != actualWord {
+                continue
+            }
+            guard item.replacement != actualWord, !item.replacement.isEmpty else { continue }
+
+            let lowerWord = actualWord.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+            if knownVocab.contains(lowerWord) || ignored.contains(lowerWord) {
+                continue
+            }
+
+            let docRange = NSRange(location: paragraphRange.location + start, length: localRange.length)
+            // Never edit the word containing the person's active selection/caret if the caret is inside the word
+            if caretRange.length > 0 {
+                if NSIntersectionRange(docRange, caretRange).length > 0 { continue }
+            } else if caretRange.location > docRange.location && caretRange.location < NSMaxRange(docRange) {
+                continue
+            }
+
+            // Must be prose (never code, math, HTML, link addresses, front matter, or tables)
+            guard TextMechanics.isProse(at: docRange.location, in: documentText, document: document) else {
+                continue
+            }
+
+            edits.append(PartnerEdit(
+                range: docRange,
+                replacement: item.replacement,
+                rule: .spelling
+            ))
+            lastEnd = end
+        }
+
+        return edits
+    }
+
+    // MARK: - Tokenization & Context Rules
+
+    private static func tokenize(
+        _ paragraph: String,
+        ns: NSString,
+        document: MarkdownDocument
+    ) -> [Token] {
+        var rawRanges: [NSRange] = []
+        let length = ns.length
+        var i = 0
+        while i < length {
+            if isLetter(ns.character(at: i)) {
+                let start = i
+                i += 1
+                while i < length {
+                    let c = ns.character(at: i)
+                    if isLetterOrDigit(c) {
+                        i += 1
+                    } else if (c == 0x27 || c == 0x2019),
+                              i + 1 < length,
+                              isLetter(ns.character(at: i + 1)) {
+                        i += 1
+                    } else {
+                        break
+                    }
+                }
+                let r = NSRange(location: start, length: i - start)
+                // Skip tokens preceded or followed by URL/path/email/identifier punctuation (`/`, `@`, `.`, `_`, `:`, `#`)
+                let precededByTech = start > 0 && isTechPunctuation(ns.character(at: start - 1))
+                let followedByTech = i < length && isTechInfixPunctuation(ns.character(at: i))
+                if !precededByTech && !followedByTech && TextMechanics.isProse(at: start, in: paragraph, document: document) {
+                    rawRanges.append(r)
+                }
+            } else {
+                i += 1
+            }
+        }
+
+        var tokens: [Token] = []
+        tokens.reserveCapacity(rawRanges.count)
+
+        for idx in rawRanges.indices {
+            let r = rawRanges[idx]
+            let rawText = ns.substring(with: r)
+            let normalizedLower = rawText.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+
+            let hasBreakBefore: Bool
+            if idx == 0 {
+                hasBreakBefore = true
+            } else {
+                let prevEnd = NSMaxRange(rawRanges[idx - 1])
+                let gap = ns.substring(with: NSRange(location: prevEnd, length: r.location - prevEnd))
+                hasBreakBefore = containsClauseBreak(gap)
+            }
+
+            let hasBreakAfter: Bool
+            if idx + 1 >= rawRanges.count {
+                hasBreakAfter = true
+            } else {
+                let nextStart = rawRanges[idx + 1].location
+                let gap = ns.substring(with: NSRange(location: NSMaxRange(r), length: nextStart - NSMaxRange(r)))
+                hasBreakAfter = containsClauseBreak(gap)
+            }
+
+            let isCap: Bool
+            if let firstScalar = rawText.unicodeScalars.first {
+                isCap = CharacterSet.uppercaseLetters.contains(firstScalar)
+            } else {
+                isCap = false
+            }
+
+            tokens.append(Token(
+                text: rawText,
+                lower: normalizedLower,
+                range: r,
+                hasClauseBreakBefore: hasBreakBefore,
+                hasClauseBreakAfter: hasBreakAfter,
+                isCapitalized: isCap
+            ))
+        }
+
+        return tokens
+    }
+
+    private static func containsClauseBreak(_ gap: String) -> Bool {
+        for scalar in gap.unicodeScalars {
+            switch scalar {
+            case ".", "!", "?", ";", ":", "\n", "\r", "(", ")", "[", "]", "—", "–":
+                return true
+            default:
+                break
+            }
+        }
+        return false
+    }
+
+    private static func isLetter(_ c: unichar) -> Bool {
+        guard let scalar = Unicode.Scalar(c) else { return false }
+        return CharacterSet.letters.contains(scalar)
+    }
+
+    private static func isLetterOrDigit(_ c: unichar) -> Bool {
+        guard let scalar = Unicode.Scalar(c) else { return false }
+        return CharacterSet.alphanumerics.contains(scalar)
+    }
+
+    private static func isTechPunctuation(_ c: unichar) -> Bool {
+        c == 0x2F || c == 0x40 || c == 0x5F || c == 0x23 || c == 0x7E || c == 0x5C // / @ _ # ~ \
+    }
+
+    private static func isTechInfixPunctuation(_ c: unichar) -> Bool {
+        c == 0x2F || c == 0x40 || c == 0x5F || c == 0x5C // / @ _ \
+    }
+
+    private static func matchCase(of original: String, replacement: String) -> String {
+        let usesCurlyApostrophe = original.contains("\u{2019}")
+        let adjustedReplacement = usesCurlyApostrophe
+            ? replacement.replacingOccurrences(of: "'", with: "\u{2019}")
+            : replacement
+
+        let letters = original.unicodeScalars.filter { CharacterSet.letters.contains($0) }
+        guard !letters.isEmpty else { return adjustedReplacement }
+
+        let allUpper = letters.count > 1 && letters.allSatisfy { CharacterSet.uppercaseLetters.contains($0) }
+        if allUpper {
+            return adjustedReplacement.uppercased()
+        }
+        if let first = letters.first, CharacterSet.uppercaseLetters.contains(first) {
+            return adjustedReplacement.prefix(1).uppercased() + adjustedReplacement.dropFirst()
+        }
+        return adjustedReplacement
+    }
+
+    private static func evaluateToken(
+        _ token: Token,
+        prev1: Token?,
+        prev2: Token?,
+        next1: Token?,
+        next2: Token?
+    ) -> (replacement: String, confidence: Double, why: String)? {
+        let w = token.lower
+        let p1 = prev1?.lower
+        let p2 = prev2?.lower
+        let n1 = next1?.lower
+        let n2 = next2?.lower
+
+        // Unambiguous typos & transpositions
+        if w == "teh" || w == "hte" || w == "tje" {
+            return ("the", 0.96, "Fixed misspelling of 'the'")
+        }
+        if w == "taht" { return ("that", 0.95, "Fixed misspelling of 'that'") }
+        if w == "waht" { return ("what", 0.95, "Fixed misspelling of 'what'") }
+        if w == "wiht" { return ("with", 0.95, "Fixed misspelling of 'with'") }
+        if w == "jsut" { return ("just", 0.95, "Fixed misspelling of 'just'") }
+        if w == "ahve" { return ("have", 0.95, "Fixed misspelling of 'have'") }
+        if w == "knwo" { return ("know", 0.95, "Fixed misspelling of 'know'") }
+        if w == "abotu" { return ("about", 0.95, "Fixed misspelling of 'about'") }
+        if w == "adn" || w == "nad" { return ("and", 0.94, "Fixed misspelling of 'and'") }
+        if w == "cna" { return ("can", 0.94, "Fixed misspelling of 'can'") }
+        if w == "nto" { return ("not", 0.94, "Fixed misspelling of 'not'") }
+        if w == "shoudl" { return ("should", 0.95, "Fixed misspelling of 'should'") }
+        if w == "woudl" { return ("would", 0.95, "Fixed misspelling of 'would'") }
+        if w == "coudl" { return ("could", 0.95, "Fixed misspelling of 'could'") }
+        if w == "whcih" { return ("which", 0.95, "Fixed misspelling of 'which'") }
+        if w == "thign" { return ("thing", 0.95, "Fixed misspelling of 'thing'") }
+        if w == "thigns" { return ("things", 0.95, "Fixed misspelling of 'things'") }
+
+        if let fixed = commonMisspellings[w] {
+            return (fixed, 0.95, "Fixed misspelling")
+        }
+
+        // Ambiguous misspelling `thier` -> `there`, `they're`, or `their` from context
+        if w == "thier" {
+            if let n1, existentialBeVerbs.contains(n1) {
+                return ("there", 0.93, "Context indicates existential 'there'")
+            }
+            if let n1, (theyAreFollowers.contains(n1) || isPresentParticipleVerb(n1, next: n2)) {
+                return ("they're", 0.92, "Context indicates contraction 'they're'")
+            }
+            return ("their", 0.94, "Fixed misspelling of 'their'")
+        }
+
+        // Ambiguous misspelling `fomr` / `rfom` -> `form` or `from` from context
+        if w == "fomr" || w == "rfom" {
+            if let p1, formNounModifiers.contains(p1), (n1 == nil || n1 == "of" || n1 == "is" || n1 == "was" || n1 == "to" || n1 == "for") {
+                return ("form", 0.91, "Context indicates noun 'form'")
+            }
+            if p1 == "to", let n1, (n1 == "a" || n1 == "an" || n1 == "the") {
+                return ("form", 0.90, "Context indicates verb 'form'")
+            }
+            return ("from", 0.92, "Context indicates preposition 'from'")
+        }
+
+        // Short ambiguous typo `ot` -> `to`
+        if w == "ot" {
+            if let n1, (toInfinitiveVerbs.contains(n1) || determinersAndPronounsForFrom.contains(n1)) {
+                return ("to", 0.90, "Context indicates 'to'")
+            }
+        }
+
+        // 1. `form` <-> `from`
+        if w == "form" {
+            if let n1 {
+                // Idiomatic `from X to Y` / `from now on` / `from scratch` / `from afar` / `from within`
+                if (n1 == "now" && n2 == "on") ||
+                   (n1 == "time" && n2 == "to") ||
+                   (n1 == "day" && n2 == "one") ||
+                   (n1 == "start" && n2 == "to") ||
+                   (n1 == "top" && n2 == "to") ||
+                   (n1 == "beginning" && n2 == "to") ||
+                   (n1 == "side" && n2 == "to") ||
+                   (n1 == "place" && n2 == "to") ||
+                   fromOnlyObjects.contains(n1) {
+                    return ("from", 0.93, "Use 'from' in this phrase")
+                }
+                // Preceded by a word that takes `from` (e.g. `far form`, `came form`, `work form home`, `different form`, `heard form`)
+                if let p1, takesFromPreposition.contains(p1),
+                   (determinersAndPronounsForFrom.contains(n1) || (next1?.isCapitalized == true) || isParticipleOrGerund(n1)) {
+                    return ("from", 0.92, "Use 'from' after '\(p1)'")
+                }
+                // `prevent/keep/stop/save/protect <object> form <gerund>`
+                if let p2, preventVerbs.contains(p2), isParticipleOrGerund(n1) {
+                    return ("from", 0.92, "Use 'from' after '\(p2)'")
+                }
+                // Sentence-initial `Form the beginning`, `Form my perspective`, `Form that point`, `Form here`, `Form there`
+                if token.hasClauseBreakBefore, token.isCapitalized {
+                    if n1 == "here" || n1 == "there" || n1 == "my" || n1 == "our" || n1 == "their" ||
+                       n1 == "your" || n1 == "his" || n1 == "her" || n1 == "what" || n1 == "where" ||
+                       n1 == "this" || n1 == "that" || n1 == "these" || n1 == "those" ||
+                       (n1 == "the" && (n2 == "beginning" || n2 == "start" || n2 == "outset" || n2 == "moment" || n2 == "look" || n2 == "sound" || n2 == "outside" || n2 == "inside" || n2 == "top" || n2 == "bottom" || n2 == "very")) {
+                        return ("from", 0.90, "Use 'From' to introduce the prepositional phrase")
+                    }
+                }
+            }
+        } else if w == "from" {
+            // `the from` / `application from` / `in the from of` / `fill out the from`
+            if let p1, formNounModifiers.contains(p1) {
+                if n1 == "of" {
+                    return ("form", 0.93, "Use 'form' in 'form of'")
+                }
+                if token.hasClauseBreakAfter || n1 == "is" || n1 == "was" || n1 == "has" || n1 == "had" ||
+                   n1 == "will" || n1 == "can" || n1 == "should" || n1 == "must" || n1 == "to" ||
+                   n1 == "for" || n1 == "in" || n1 == "on" || n1 == "with" || n1 == "and" || n1 == "or" ||
+                   n1 == "but" || n1 == "that" || n1 == "which" || n1 == "fields" || n1 == "field" ||
+                   n1 == "below" || n1 == "above" {
+                    // Only when preceded by a noun-phrase modifier (`the`, `this`, `that`, `a`, `an`, `application`, `registration`, `contact`, `order`, `feedback`, `tax`, `entry`, `consent`, `web`, `short`, `long`, `good`, `bad`, `new`)
+                    if definiteFormPreceders.contains(p1) || (p2 == "fill" && (p1 == "out" || p1 == "in")) {
+                        return ("form", 0.91, "Use the noun 'form' here")
+                    }
+                }
+            }
+            // Infinitive or modal + `from` + determiner: `to from a`, `can from a`, `will from a`
+            if let p1, (p1 == "to" || modalAuxiliaries.contains(p1)),
+               let n1, (n1 == "a" || n1 == "an" || n1 == "the" || n1 == "their" || n1 == "our" || n1 == "new" || n1 == "two") {
+                return ("form", 0.90, "Use the verb 'form' after '\(p1)'")
+            }
+        }
+
+        // 2. `there` <-> `their` <-> `they're`
+        if w == "their" {
+            if let n1 {
+                if existentialBeVerbs.contains(n1) {
+                    return ("there", 0.94, "Use 'there' before '\(n1)'")
+                }
+                if theyAreFollowers.contains(n1) && !(n1 == "all" && n2 != nil && possessedNouns.contains(n2!)) &&
+                   !(n1 == "both" && n2 != nil && possessedNouns.contains(n2!)) &&
+                   !(n1 == "very" && n2 == "own") &&
+                   !(n1 == "own") {
+                    return ("they're", 0.91, "Use 'they're' (they are) before '\(n1)'")
+                }
+                if isPresentParticipleVerb(n1, next: n2) {
+                    return ("they're", 0.92, "Use 'they're' (they are) before '\(n1)'")
+                }
+            }
+            if let p1, locativeTherePreceders.contains(p1),
+               (token.hasClauseBreakAfter || (n1 != nil && clauseContinuationFollowers.contains(n1!))) {
+                return ("there", 0.92, "Use locative 'there' after '\(p1)'")
+            }
+        } else if w == "there" {
+            if let n1 {
+                if n1 == "own" {
+                    return ("their", 0.95, "Use possessive 'their' before 'own'")
+                }
+                if isPresentParticipleVerb(n1, next: n2),
+                   !(p1 != nil && existentialBeVerbs.contains(p1!)),
+                   !(p1 != nil && locativeTherePreceders.contains(p1!)) {
+                    return ("they're", 0.91, "Use 'they're' (they are) before '\(n1)'")
+                }
+                if theyAreAdjectiveFollowers.contains(n1),
+                   !(p1 != nil && existentialBeVerbs.contains(p1!)),
+                   !(p1 != nil && locativeTherePreceders.contains(p1!)) {
+                    return ("they're", 0.90, "Use 'they're' (they are) before '\(n1)'")
+                }
+                if possessedNouns.contains(n1) {
+                    if let p1, possessiveContextPreceders.contains(p1) {
+                        return ("their", 0.93, "Use possessive 'their' before '\(n1)'")
+                    }
+                    if token.hasClauseBreakBefore, let n2, nounPhraseFollowingVerbs.contains(n2) {
+                        return ("their", 0.92, "Use possessive 'Their' before '\(n1)'")
+                    }
+                }
+            }
+        } else if w == "they're" {
+            if let n1 {
+                if existentialBeVerbs.contains(n1) {
+                    return ("there", 0.94, "Use 'there' before '\(n1)'")
+                }
+                if n1 == "own" || singularPossessedNouns.contains(n1) {
+                    return ("their", 0.94, "Use possessive 'their' before '\(n1)'")
+                }
+                if possessedNouns.contains(n1), let n2, nounPhraseFollowingVerbs.contains(n2) {
+                    return ("their", 0.92, "Use possessive 'their' before '\(n1)'")
+                }
+            }
+        }
+
+        // 3. `loose` <-> `lose`
+        if w == "loose" {
+            if let p1, losePreceders.contains(p1),
+               !(p2 != nil && looseIdiomaticVerbs.contains(p2!)) {
+                return ("lose", 0.94, "Use the verb 'lose' after '\(p1)'")
+            }
+            if let n1, loseDirectObjects.contains(n1),
+               !(p1 != nil && looseAdjectivePreceders.contains(p1!)),
+               !(p1 != nil && looseIdiomaticVerbs.contains(p1!)) {
+                return ("lose", 0.93, "Use the verb 'lose' before '\(n1)'")
+            }
+        } else if w == "lose" {
+            if let p1, looseIdiomaticVerbs.contains(p1),
+               (token.hasClauseBreakAfter || (n1 != nil && (looseModifiableNouns.contains(n1!) || clauseContinuationFollowers.contains(n1!)))) {
+                return ("loose", 0.92, "Use the adjective 'loose' after '\(p1)'")
+            }
+            if let p1, looseAdjectivePreceders.contains(p1),
+               (token.hasClauseBreakAfter || (n1 != nil && (looseModifiableNouns.contains(n1!) || clauseContinuationFollowers.contains(n1!)))) {
+                return ("loose", 0.93, "Use the adjective 'loose' here")
+            }
+            if let n1, looseModifiableNouns.contains(n1),
+               let p1, (determinersForAdjective.contains(p1) || p1 == "of" || p1 == "with" || p1 == "in") {
+                return ("loose", 0.93, "Use the adjective 'loose' before '\(n1)'")
+            }
+        }
+
+        // 4. `then` <-> `than`
+        if w == "then" {
+            if let p1, comparativeWords.contains(p1) {
+                return ("than", 0.94, "Use 'than' for comparisons after '\(p1)'")
+            }
+            if let p2, (p2 == "more" || p2 == "less"), let p1, !nonComparativeInterveners.contains(p1) {
+                return ("than", 0.91, "Use 'than' after 'more/less ...'")
+            }
+        } else if w == "than" {
+            if token.hasClauseBreakBefore, token.isCapitalized,
+               let n1, subjectStartersAfterThen.contains(n1) {
+                return ("then", 0.92, "Use 'Then' for time/sequence at the start of a clause")
+            }
+            if let p1, temporalThenPreceders.contains(p1),
+               (token.hasClauseBreakAfter || (n1 != nil && subjectStartersAfterThen.contains(n1!))) {
+                return ("then", 0.92, "Use 'then' for time/sequence after '\(p1)'")
+            }
+        }
+
+        // 5. `its` <-> `it's` (beyond NLTagger)
+        if w == "its" {
+            if let n1 {
+                if unconditionalItIsFollowers.contains(n1) {
+                    return ("it's", 0.94, "Use 'it's' (it is / it has) before '\(n1)'")
+                }
+                if predicativeItIsFollowers.contains(n1),
+                   (token.hasClauseBreakBefore || (p1 != nil && clauseIntroducersBeforeItIs.contains(p1!))),
+                   (next1?.hasClauseBreakAfter == true || (n2 != nil && nonNounAfterPredicativeAdjective.contains(n2!))) {
+                    return ("it's", 0.91, "Use 'it's' (it is) in this clause")
+                }
+            }
+        } else if w == "it's" {
+            if let n1 {
+                if n1 == "own" {
+                    return ("its", 0.96, "Use possessive 'its' before 'own'")
+                }
+                if itsPossessedNouns.contains(n1),
+                   let p1, possessiveContextPreceders.contains(p1) {
+                    return ("its", 0.93, "Use possessive 'its' before '\(n1)'")
+                }
+            }
+        }
+
+        // 6. `your` <-> `you're`
+        if w == "your" {
+            if let n1 {
+                if youAreUnconditionalFollowers.contains(n1),
+                   !(n1 == "welcome" && (n2 == "kit" || n2 == "packet" || n2 == "email" || n2 == "message" || n2 == "gift")),
+                   !(n1 == "right" && (n2 == "hand" || n2 == "arm" || n2 == "leg" || n2 == "foot" || n2 == "eye" || n2 == "ear" || n2 == "side" || n2 == "to")) {
+                    return ("you're", 0.93, "Use 'you're' (you are) before '\(n1)'")
+                }
+                if isPresentParticipleVerb(n1, next: n2) {
+                    return ("you're", 0.92, "Use 'you're' (you are) before '\(n1)'")
+                }
+            }
+        } else if w == "you're" {
+            if let n1 {
+                if n1 == "own" || singularPossessedNouns.contains(n1) || yourOnlyPossessedNouns.contains(n1) {
+                    return ("your", 0.94, "Use possessive 'your' before '\(n1)'")
+                }
+                if possessedNouns.contains(n1), let n2, nounPhraseFollowingVerbs.contains(n2) {
+                    return ("your", 0.92, "Use possessive 'your' before '\(n1)'")
+                }
+            }
+        }
+
+        // 7. `whose` <-> `who's`
+        if w == "whose" {
+            if let n1, (whoIsFollowers.contains(n1) || isPresentParticipleVerb(n1, next: n2)) {
+                return ("who's", 0.92, "Use 'who's' (who is / who has) before '\(n1)'")
+            }
+        } else if w == "who's" {
+            if let n1, (n1 == "own" || singularPossessedNouns.contains(n1) || yourOnlyPossessedNouns.contains(n1)) {
+                return ("whose", 0.93, "Use possessive 'whose' before '\(n1)'")
+            }
+        }
+
+        // 8. `to` <-> `too`
+        if w == "to" {
+            if let n1, (n1 == "many" || n1 == "much"),
+               !(p1 == "up" || p1 == "due" || p1 == "lead" || p1 == "led" || p1 == "amount") {
+                return ("too", 0.92, "Use 'too' meaning excessively before '\(n1)'")
+            }
+            if let n1, tooDegreeAdjectives.contains(n1),
+               let p1, copularAndDegreePrecedersForToo.contains(p1),
+               (next1?.hasClauseBreakAfter == true || n2 == "to" || n2 == "for" || n2 == "and" || n2 == "but" || n2 == "so" || n2 == "because" || n2 == "that") {
+                return ("too", 0.91, "Use 'too' meaning excessively before '\(n1)'")
+            }
+        } else if w == "too" {
+            if let p1, infinitiveOrPrepositionToPreceders.contains(p1),
+               let n1, (toInfinitiveVerbs.contains(n1) || n1 == "the" || n1 == "a" || n1 == "an" || n1 == "my" || n1 == "your" || n1 == "our" || n1 == "their" || n1 == "his" || n1 == "her" || n1 == "its" || n1 == "me" || n1 == "you" || n1 == "him" || n1 == "us" || n1 == "them" || n1 == "this" || n1 == "that" || n1 == "work" || n1 == "home" || n1 == "school" || n1 == "bed") {
+                return ("to", 0.92, "Use 'to' here instead of 'too'")
+            }
+        }
+
+        // 9. `weather` <-> `whether`
+        if w == "weather" {
+            if let n1 {
+                if n1 == "or" || n1 == "it" || n1 == "it's" || n1 == "we" || n1 == "we're" ||
+                   n1 == "you" || n1 == "you're" || n1 == "they" || n1 == "they're" ||
+                   n1 == "he" || n1 == "she" || n1 == "there" || n1 == "that" || n1 == "not" ||
+                   (n1 == "to" && n2 != nil && toInfinitiveVerbs.contains(n2!)) {
+                    if !(p1 != nil && weatherNounModifiers.contains(p1!)) {
+                        return ("whether", 0.93, "Use the conjunction 'whether' here")
+                    }
+                }
+            }
+        } else if w == "whether" {
+            if let p1, weatherNounModifiers.contains(p1),
+               !(n1 == "or" || n1 == "to" || n1 == "it" || n1 == "we" || n1 == "they" || n1 == "you" || n1 == "he" || n1 == "she") {
+                return ("weather", 0.93, "Use the noun 'weather' after '\(p1)'")
+            }
+            if let n1, weatherCompoundNouns.contains(n1) {
+                return ("weather", 0.93, "Use the noun 'weather' before '\(n1)'")
+            }
+        }
+
+        // 10. `affect` <-> `effect`
+        if w == "affect" {
+            if let p1, effectNounPreceders.contains(p1),
+               (token.hasClauseBreakAfter || n1 == "of" || n1 == "on" || n1 == "upon" || n1 == "is" || n1 == "was" || n1 == "will" || n1 == "in" || n1 == "and" || n1 == "or" || n1 == "but" || n1 == "that") {
+                return ("effect", 0.92, "Use the noun 'effect' after '\(p1)'")
+            }
+        } else if w == "effect" {
+            if let p1, affectVerbPreceders.contains(p1),
+               let n1, affectVerbObjects.contains(n1),
+               !(n1 == "a" && (n2 == "change" || n2 == "settlement" || n2 == "cure" || n2 == "repair" || n2 == "transfer")) {
+                return ("affect", 0.91, "Use the verb 'affect' after '\(p1)'")
+            }
+        }
+
+        // 11. `passed` <-> `past`
+        if w == "passed" {
+            if let p1, motionVerbsBeforePast.contains(p1),
+               let n1, (determinersAndPronounsForFrom.contains(n1) || n1 == "each") {
+                return ("past", 0.93, "Use the preposition 'past' after '\(p1)'")
+            }
+            if let p1, (p1 == "the" || p1 == "this"),
+               let n1, pastTimeNouns.contains(n1) {
+                return ("past", 0.93, "Use the adjective 'past' before '\(n1)'")
+            }
+            if let p1, (p1 == "half" || p1 == "quarter"),
+               let n1, clockNumbers.contains(n1) {
+                return ("past", 0.94, "Use 'past' for telling time")
+            }
+        } else if w == "past" {
+            if let p1, passedAuxiliariesAndSubjects.contains(p1),
+               let n1, (n1 == "away" || n1 == "out" || (n1 == "the" && (n2 == "test" || n2 == "exam" || n2 == "check" || n2 == "bill" || n2 == "law" || n2 == "ball" || n2 == "salt" || n2 == "bar" || n2 == "course" || n2 == "class" || n2 == "inspection" || n2 == "audit"))) {
+                return ("passed", 0.92, "Use the past-tense verb 'passed' here")
+            }
+            if let p1, (p1 == "has" || p1 == "have" || p1 == "had"),
+               (token.hasClauseBreakAfter || n1 == "since" || n1 == "by" || n1 == "on" || n1 == "down" || n1 == "through") {
+                return ("passed", 0.93, "Use the past participle 'passed' after '\(p1)'")
+            }
+        }
+
+        // 12. `accept` <-> `except`
+        if w == "accept" {
+            if n1 == "for" || n1 == "when" || n1 == "if" || n1 == "maybe" || n1 == "perhaps" {
+                return ("except", 0.92, "Use 'except' meaning 'other than'")
+            }
+            if let p1, exceptPreceders.contains(p1) {
+                return ("except", 0.92, "Use 'except' after '\(p1)'")
+            }
+        } else if w == "except" {
+            if let p1, acceptVerbPreceders.contains(p1),
+               let n1, acceptVerbObjects.contains(n1) {
+                return ("accept", 0.92, "Use the verb 'accept' after '\(p1)'")
+            }
+        }
+
+        // 13. `principal` <-> `principle`
+        if w == "principal" {
+            if p1 == "in" && (token.hasClauseBreakAfter || n1 == "and" || n1 == "but" || n1 == "we" || n1 == "I" || n1 == "it" || n1 == "they") {
+                return ("principle", 0.94, "Use 'principle' in 'in principle'")
+            }
+            if let p1, principleModifiers.contains(p1) {
+                return ("principle", 0.92, "Use 'principle' meaning a rule or belief")
+            }
+        } else if w == "principle" {
+            if let n1, principalFollowedNouns.contains(n1) {
+                return ("principal", 0.92, "Use 'principal' meaning main or primary before '\(n1)'")
+            }
+            if let p1, (p1 == "school" || p1 == "assistant" || p1 == "vice" || p1 == "deputy"),
+               (token.hasClauseBreakAfter || (n1 != nil && nounPhraseFollowingVerbs.contains(n1!))) {
+                return ("principal", 0.92, "Use 'principal' for the head of a school")
+            }
+        }
+
+        // 14. `lead` <-> `led`
+        if w == "lead" {
+            if let p1, (p1 == "has" || p1 == "have" || p1 == "had" || p1 == "having" || p1 == "was" || p1 == "were" || p1 == "been"),
+               let n1, (n1 == "to" || n1 == "by" || n1 == "the" || n1 == "a" || n1 == "an" || n1 == "us" || n1 == "them" || n1 == "me" || n1 == "him" || n1 == "her" || n1 == "in") {
+                return ("led", 0.93, "Use past participle 'led' after '\(p1)'")
+            }
+        }
+
+        // 15. `piece` <-> `peace`
+        if w == "peace" {
+            if n1 == "of", let n2, pieceOfNouns.contains(n2) {
+                return ("piece", 0.94, "Use 'piece' in 'piece of \(n2)'")
+            }
+        } else if w == "piece" {
+            if (n1 == "of" && n2 == "mind") || (n1 == "and" && n2 == "quiet") ||
+               (p1 == "in" && token.hasClauseBreakAfter) || (p1 == "at" && token.hasClauseBreakAfter) ||
+               (p1 == "world" || p1 == "inner" || p1 == "make") && (token.hasClauseBreakAfter || n1 == "with" || n1 == "and" || n1 == "in") {
+                return ("peace", 0.94, "Use 'peace' meaning calm or harmony")
+            }
+        }
+
+        // 16. `were` <-> `where`
+        if w == "were" {
+            if token.hasClauseBreakBefore, token.isCapitalized,
+               let n1, (n1 == "is" || n1 == "are" || n1 == "was" || n1 == "can" || n1 == "could" || n1 == "do" || n1 == "does" || n1 == "did" || n1 == "will" || n1 == "should") {
+                return ("where", 0.93, "Use 'Where' to start a location question")
+            }
+            if let p1, wherePrecedingNounsAndVerbs.contains(p1),
+               let n1, (n1 == "I" || n1 == "i" || n1 == "you" || n1 == "he" || n1 == "she" || n1 == "it" || n1 == "we" || n1 == "they" || n1 == "the" || n1 == "to") {
+                return ("where", 0.91, "Use 'where' after '\(p1)'")
+            }
+        } else if w == "where" {
+            if let p1, (p1 == "we" || p1 == "you" || p1 == "they" || p1 == "there"),
+               let n1, (n1 == "not" || n1 == "never" || n1 == "able" || n1 == "unable" || n1 == "ready" || n1 == "late" || n1 == "right" || n1 == "wrong" || n1 == "happy" || n1 == "glad" || n1 == "sorry" || n1 == "supposed" || n1 == "going" || n1 == "working" || n1 == "waiting" || n1 == "looking" || n1 == "trying" || n1 == "made" || n1 == "built" || n1 == "born" || n1 == "sent" || n1 == "taken" || n1 == "given" || n1 == "found" || n1 == "no" || n1 == "many" || n1 == "several" || n1 == "two" || n1 == "three") {
+                return ("were", 0.92, "Use the verb 'were' after '\(p1)'")
+            }
+        }
+
+        return nil
+    }
+
+    // MARK: - Word Sets for Context Disambiguation
+
+    private static func isParticipleOrGerund(_ word: String) -> Bool {
+        word.count >= 5 && word.hasSuffix("ing") && word != "thing" && word != "things" && word != "bring" && word != "spring" && word != "string" && word != "ring" && word != "king" && word != "wing" && word != "sing" && word != "swing"
+    }
+
+    private static func isPresentParticipleVerb(_ word: String, next: String?) -> Bool {
+        guard participleVerbsAfterPronounBe.contains(word) else { return false }
+        // Avoid turning `their writing is` / `their building was` / `their working hours` into `they're`
+        if let next {
+            if next == "is" || next == "was" || next == "has" || next == "had" ||
+               next == "hours" || next == "room" || next == "day" || next == "session" ||
+               next == "style" || next == "skills" || next == "habits" || next == "process" ||
+               next == "system" || next == "environment" || next == "conditions" || next == "group" ||
+               next == "team" || next == "material" || next == "materials" || next == "list" ||
+               next == "space" || next == "area" || next == "table" || next == "desk" ||
+               next == "clothes" || next == "shoes" || next == "gear" || next == "plan" ||
+               next == "plans" || next == "costs" || next == "expenses" || next == "point" {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static let takesFromPreposition: Set<String> = [
+        "far", "away", "apart", "aside", "different", "differ", "differs", "differed",
+        "separate", "separated", "free", "safe", "hidden", "absent", "exempt", "distinct",
+        "remote", "isolated", "detached", "disconnected", "derived", "adapted", "translated",
+        "borrowed", "copied", "stole", "stolen", "taken", "removed", "withdrawn", "excluded",
+        "banned", "barred", "expelled", "fired", "resigned", "retired", "graduated",
+        "recovered", "recovering", "escaped", "escaping", "fled", "fleeing", "returned",
+        "returning", "departed", "departing", "arrived", "arriving", "came", "come", "comes",
+        "coming", "went", "go", "going", "sent", "heard", "hear", "hearing", "learned",
+        "learn", "learning", "got", "get", "getting", "received", "receive", "receiving",
+        "bought", "buy", "buying", "downloaded", "download", "downloading", "imported",
+        "import", "importing", "exported", "export", "exporting", "fetched", "fetch",
+        "fetching", "pulled", "pull", "pulling", "extracted", "extract", "extracting",
+        "selected", "chosen", "picked", "made", "built", "constructed", "created", "grown",
+        "born", "emerged", "arose", "stem", "stems", "stemmed", "stemming", "result",
+        "results", "resulted", "resulting", "suffer", "suffers", "suffered", "suffering",
+        "die", "died", "dying", "benefit", "benefits", "benefited", "benefiting",
+        "prevent", "prevents", "prevented", "preventing", "stop", "stops", "stopped",
+        "stopping", "keep", "keeps", "kept", "keeping", "protect", "protects", "protected",
+        "protecting", "save", "saves", "saved", "saving", "rescue", "rescued", "hide", "hid",
+        "hiding", "shield", "shielded", "refrain", "abstain", "discourage", "discouraged",
+        "deter", "deterred", "prohibit", "prohibited", "forbid", "forbidden", "range",
+        "ranges", "ranged", "ranging", "vary", "varies", "varied", "varying", "switch",
+        "switched", "switching", "move", "moved", "moving", "shift", "shifted", "shifting",
+        "walk", "walked", "walking", "run", "ran", "running", "drive", "drove", "driving",
+        "fly", "flew", "flying", "travel", "traveled", "travelled", "work", "worked",
+        "working", "fall", "fell", "falling", "drop", "dropped", "dropping", "jump",
+        "jumped", "jumping", "rise", "rose", "rising", "start", "starts", "started",
+        "starting", "begin", "begins", "began", "beginning", "straight", "directly",
+        "fresh", "back", "out", "down", "up", "across", "letter", "letters", "message",
+        "messages", "email", "emails", "call", "calls", "note", "notes", "news", "gift",
+        "gifts", "package", "packages", "quote", "quotes", "excerpt", "excerpts", "sample",
+        "samples", "distance", "miles", "kilometers", "kilometres", "meters", "metres",
+        "feet", "steps", "minutes", "hours", "days", "blocks"
+    ]
+
+    private static let preventVerbs: Set<String> = [
+        "prevent", "prevents", "prevented", "preventing",
+        "stop", "stops", "stopped", "stopping",
+        "keep", "keeps", "kept", "keeping",
+        "save", "saves", "saved", "saving",
+        "protect", "protects", "protected", "protecting",
+        "hide", "hid", "hiding",
+        "discourage", "discourages", "discouraged",
+        "deter", "deters", "deterred",
+        "bar", "bars", "barred",
+        "ban", "bans", "banned",
+        "block", "blocks", "blocked"
+    ]
+
+    private static let fromOnlyObjects: Set<String> = [
+        "scratch", "afar", "abroad", "overseas", "within", "behind", "beneath", "underneath",
+        "outside", "inside", "nowhere", "somewhere", "anywhere", "everywhere"
+    ]
+
+    private static let determinersAndPronounsForFrom: Set<String> = [
+        "the", "a", "an", "this", "that", "these", "those",
+        "my", "your", "his", "her", "its", "our", "their",
+        "me", "you", "him", "us", "them", "whom", "which", "what", "where",
+        "here", "there", "home", "work", "school", "memory", "experience", "context",
+        "above", "below", "under", "time", "day", "start", "beginning", "end",
+        "top", "bottom", "left", "right", "side", "one", "two", "three", "first", "last",
+        "all", "any", "some", "many", "most", "several", "both", "each", "every", "another", "other"
+    ]
+
+    private static let formNounModifiers: Set<String> = [
+        "the", "a", "an", "this", "that", "each", "every", "another", "any", "which", "what",
+        "registration", "application", "contact", "order", "feedback", "consent", "release",
+        "tax", "entry", "intake", "signup", "login", "web", "html", "input", "search",
+        "payment", "booking", "request", "claim", "enrollment", "enrolment", "survey",
+        "short", "long", "good", "bad", "poor", "great", "fine", "pure", "human", "art",
+        "physical", "written", "spoken", "musical", "literary", "poetic", "narrative",
+        "standard", "normal", "canonical", "simplest", "basic", "original", "final",
+        "current", "new", "old", "different", "same", "similar"
+    ]
+
+    private static let definiteFormPreceders: Set<String> = [
+        "the", "this", "that", "a", "an",
+        "registration", "application", "contact", "order", "feedback", "consent", "release",
+        "tax", "entry", "intake", "signup", "login", "web", "html", "input", "search",
+        "payment", "booking", "request", "claim", "enrollment", "enrolment", "survey"
+    ]
+
+    private static let modalAuxiliaries: Set<String> = [
+        "will", "won't", "would", "wouldn't", "can", "can't", "cannot", "could", "couldn't",
+        "should", "shouldn't", "must", "may", "might", "shall", "do", "don't", "does",
+        "doesn't", "did", "didn't", "help", "helped", "helps"
+    ]
+
+    private static let existentialBeVerbs: Set<String> = [
+        "is", "isn't", "are", "aren't", "was", "wasn't", "were", "weren't",
+        "has", "hasn't", "have", "haven't", "had", "hadn't",
+        "will", "won't", "would", "wouldn't", "can", "can't", "could", "couldn't",
+        "should", "shouldn't", "must", "may", "might",
+        "seems", "seem", "seemed", "appears", "appear", "appeared",
+        "exists", "exist", "existed", "remains", "remain", "remained"
+    ]
+
+    private static let participleVerbsAfterPronounBe: Set<String> = [
+        "going", "coming", "working", "trying", "looking", "waiting", "making", "doing",
+        "getting", "taking", "giving", "using", "running", "walking", "talking", "saying",
+        "thinking", "feeling", "having", "being", "leaving", "staying", "playing", "watching",
+        "reading", "writing", "building", "shipping", "testing", "fixing", "moving",
+        "starting", "stopping", "calling", "asking", "helping", "sending", "bringing",
+        "buying", "selling", "paying", "living", "sleeping", "eating", "drinking",
+        "driving", "flying", "traveling", "travelling", "planning", "hoping", "expecting",
+        "wondering", "worrying", "smiling", "laughing", "crying", "fighting", "winning",
+        "losing", "sitting", "standing", "holding", "carrying", "wearing", "studying",
+        "learning", "teaching", "cooking", "cleaning", "washing", "packing", "opening",
+        "closing", "finishing", "changing", "growing", "falling", "rising", "breaking"
+    ]
+
+    private static let theyAreFollowers: Set<String> = [
+        "not", "never", "always", "already", "still", "just", "only", "also", "even",
+        "almost", "nearly", "quite", "very", "too", "so", "really", "pretty", "fairly",
+        "rather", "probably", "definitely", "certainly", "surely", "likely", "unlikely",
+        "here", "there", "back", "away", "out", "up", "down", "in", "off", "on", "over",
+        "done", "finished", "ready", "sure", "right", "wrong", "late", "early",
+        "happy", "glad", "sad", "sorry", "afraid", "scared", "tired", "sick", "busy",
+        "free", "available", "welcome", "able", "unable", "supposed", "meant", "allowed",
+        "expected", "required", "invited", "married", "engaged", "related", "a", "an", "the"
+    ]
+
+    private static let theyAreAdjectiveFollowers: Set<String> = [
+        "not", "never", "always", "already", "still", "probably", "definitely", "certainly",
+        "ready", "sure", "right", "wrong", "late", "early", "happy", "glad", "sorry",
+        "afraid", "scared", "tired", "sick", "busy", "welcome", "able", "unable",
+        "supposed", "meant", "allowed", "expected", "required", "invited"
+    ]
+
+    private static let locativeTherePreceders: Set<String> = [
+        "over", "out", "right", "up", "down", "back", "go", "goes", "went", "gone",
+        "going", "stay", "stayed", "staying", "live", "lived", "living", "sit", "sat",
+        "sitting", "stand", "stood", "standing", "been", "arrive", "arrived"
+    ]
+
+    private static let clauseContinuationFollowers: Set<String> = [
+        "in", "on", "at", "for", "with", "by", "to", "from", "since", "until", "before",
+        "after", "when", "while", "if", "because", "and", "or", "but", "so", "yet",
+        "too", "either", "instead", "now", "then", "today", "tomorrow", "yesterday",
+        "soon", "already", "still", "again", "once", "twice"
+    ]
+
+    private static let possessedNouns: Set<String> = [
+        "own", "house", "home", "homes", "car", "cars", "dog", "dogs", "cat", "cats",
+        "pet", "pets", "team", "teams", "work", "job", "jobs", "office", "room", "rooms",
+        "desk", "desks", "table", "chair", "bed", "door", "window", "phone", "phones",
+        "computer", "computers", "laptop", "bag", "bags", "keys", "key", "wallet", "money",
+        "clothes", "coat", "shoes", "hat", "book", "books", "notes", "note", "paper",
+        "papers", "files", "file", "data", "code", "app", "project", "projects", "plan",
+        "plans", "idea", "ideas", "goal", "goals", "name", "names", "way", "ways", "life",
+        "lives", "time", "turn", "place", "seat", "seats", "hands", "hand", "eyes", "head",
+        "heads", "mind", "minds", "heart", "hearts", "voice", "voices", "words", "word",
+        "story", "stories", "family", "families", "parents", "mother", "father", "mom",
+        "dad", "brother", "sister", "child", "children", "kids", "kid", "son", "daughter",
+        "friend", "friends", "neighbor", "neighbors", "neighbour", "neighbours", "boss",
+        "manager", "client", "clients", "customer", "customers", "user", "users", "member",
+        "members", "partner", "partners", "wife", "husband", "best", "first", "last",
+        "new", "old", "next", "previous", "current", "final", "original", "favorite", "favourite"
+    ]
+
+    private static let singularPossessedNouns: Set<String> = [
+        "house", "home", "car", "dog", "cat", "pet", "team", "work", "job", "office",
+        "room", "desk", "table", "chair", "bed", "door", "window", "phone", "computer",
+        "laptop", "bag", "key", "wallet", "money", "coat", "hat", "book", "note", "paper",
+        "file", "data", "code", "app", "project", "plan", "idea", "goal", "name", "way",
+        "life", "turn", "place", "seat", "hand", "head", "mind", "heart", "voice", "word",
+        "story", "family", "mother", "father", "mom", "dad", "brother", "sister", "child",
+        "kid", "son", "daughter", "friend", "neighbor", "neighbour", "boss", "manager",
+        "wife", "husband", "favorite", "favourite"
+    ]
+
+    private static let yourOnlyPossessedNouns: Set<String> = [
+        "account", "password", "email", "address", "number", "order", "request", "message",
+        "letter", "question", "answer", "help", "support", "attention", "patience",
+        "feedback", "opinion", "thoughts", "fault", "problem", "choice", "decision",
+        "responsibility", "side"
+    ]
+
+    private static let itsPossessedNouns: Set<String> = [
+        "own", "tail", "head", "wings", "paws", "legs", "eyes", "ears", "mouth", "nose",
+        "fur", "feathers", "shell", "skin", "bark", "leaves", "roots", "branches",
+        "flowers", "fruit", "seeds", "color", "colour", "shape", "size", "weight",
+        "height", "length", "width", "depth", "speed", "power", "strength", "value",
+        "price", "cost", "worth", "name", "title", "purpose", "function", "role", "place",
+        "position", "location", "origin", "source", "history", "future", "past", "fate",
+        "nature", "character", "style", "design", "structure", "form", "content",
+        "contents", "meaning", "sense", "effect", "impact", "influence", "result",
+        "results", "owner", "creator", "author", "maker", "users", "members", "citizens",
+        "residents", "inhabitants", "population", "neighbors", "neighbours", "borders",
+        "limits", "boundaries", "edges", "surface", "center", "centre", "core", "heart",
+        "top", "bottom", "side", "sides", "front", "back", "inside", "outside", "door",
+        "doors", "windows", "roof", "walls", "floor", "wheels", "engine", "battery",
+        "screen", "keyboard", "case", "cover", "lid", "cap", "handle", "peak", "summit",
+        "base", "foot", "course", "path", "way", "track", "orbit", "flight", "journey",
+        "destination", "goal", "target", "end", "beginning", "start", "launch", "release",
+        "version", "state", "status", "condition", "quality", "performance", "capacity",
+        "potential", "ability", "flaws", "faults", "merits", "benefits", "advantages",
+        "disadvantages", "drawbacks", "risks", "costs", "rules", "laws", "policies",
+        "terms", "first", "last", "current", "original", "final", "previous", "next",
+        "main", "primary", "entire", "whole", "full", "best", "worst", "highest", "lowest"
+    ]
+
+    private static let possessiveContextPreceders: Set<String> = [
+        "in", "on", "at", "to", "for", "with", "by", "from", "into", "onto", "upon",
+        "about", "around", "through", "across", "behind", "under", "over", "between",
+        "among", "without", "within", "despite", "during", "before", "after", "since",
+        "until", "like", "as", "of", "and", "or", "but",
+        "lost", "lose", "losing", "found", "find", "finding", "took", "take", "taking",
+        "brought", "bring", "bringing", "forgot", "forget", "forgetting", "left", "leave",
+        "leaving", "kept", "keep", "keeping", "gave", "give", "giving", "sent", "send",
+        "sending", "sold", "sell", "selling", "bought", "buy", "buying", "built", "build",
+        "building", "made", "make", "making", "used", "use", "using", "changed", "change",
+        "changing", "fixed", "fix", "fixing", "broke", "break", "breaking", "packed",
+        "pack", "packing", "washed", "wash", "washing", "cleaned", "clean", "cleaning",
+        "opened", "open", "opening", "closed", "close", "closing", "finished", "finish",
+        "finishing", "started", "start", "starting", "loved", "love", "loving", "liked",
+        "helped", "help", "helping", "visited", "visit", "visiting", "met", "meet",
+        "meeting", "saw", "see", "seeing", "heard", "hear", "hearing", "asked", "ask",
+        "asking", "told", "tell", "telling", "showed", "show", "showing", "called",
+        "call", "calling", "wagged", "wag", "wagging", "chased", "chase", "chasing",
+        "reached", "reach", "reaching", "dropped", "drop", "dropping", "held", "hold",
+        "holding", "checked", "check", "checking", "updated", "update", "updating",
+        "raised", "raise", "raising", "lowered", "lower", "lowering"
+    ]
+
+    private static let nounPhraseFollowingVerbs: Set<String> = [
+        "is", "isn't", "are", "aren't", "was", "wasn't", "were", "weren't",
+        "has", "hasn't", "have", "haven't", "had", "hadn't",
+        "will", "won't", "would", "wouldn't", "can", "can't", "could", "couldn't",
+        "should", "shouldn't", "must", "may", "might",
+        "won", "lost", "broke", "worked", "works", "arrived", "left", "came", "went",
+        "started", "ended", "changed", "helped", "cost", "costs", "took", "takes",
+        "looks", "looked", "seems", "seemed", "needs", "needed", "wants", "wanted",
+        "said", "says", "told", "asked", "called", "barked", "ran", "fell", "grew"
+    ]
+
+    private static let losePreceders: Set<String> = [
+        "to", "will", "won't", "would", "wouldn't", "can", "can't", "cannot", "could",
+        "couldn't", "should", "shouldn't", "must", "mustn't", "may", "might", "shall",
+        "do", "don't", "does", "doesn't", "did", "didn't", "never", "always", "often",
+        "sometimes", "almost", "nearly", "easily", "soon", "eventually", "finally",
+        "not", "you", "we", "they", "i"
+    ]
+
+    private static let loseDirectObjects: Set<String> = [
+        "weight", "track", "sight", "hope", "patience", "interest", "focus", "control",
+        "sleep", "money", "time", "touch", "count", "faith", "confidence", "momentum",
+        "ground", "steam", "traction", "heart", "courage", "temper", "cool", "face",
+        "altitude", "speed", "power", "signal", "connection", "data", "files", "work",
+        "progress", "points", "games", "matches", "elections", "customers", "users",
+        "clients", "followers", "subscribers", "jobs", "lives", "blood", "water", "heat",
+        "value", "meaning", "my", "your", "his", "her", "its", "our", "their", "the",
+        "a", "an", "this", "that", "these", "those", "any", "some", "all", "most",
+        "half", "both", "everything", "nothing", "something", "anything", "it", "them",
+        "him", "us", "you", "me"
+    ]
+
+    private static let looseIdiomaticVerbs: Set<String> = [
+        "break", "breaks", "broke", "broken", "breaking",
+        "cut", "cuts", "cutting",
+        "let", "lets", "letting",
+        "set", "sets", "setting",
+        "hang", "hangs", "hung", "hanging",
+        "come", "comes", "came", "coming",
+        "get", "gets", "got", "getting",
+        "turn", "turns", "turned", "turning",
+        "run", "runs", "ran", "running",
+        "slip", "slipped", "work", "worked",
+        "tear", "tore", "torn", "shake", "shook", "shaken",
+        "knock", "knocked", "pry", "pried", "pull", "pulled",
+        "wrench", "wrenched", "tie", "tied", "wear", "wore", "worn",
+        "keep", "kept", "leave", "left"
+    ]
+
+    private static let looseAdjectivePreceders: Set<String> = [
+        "is", "isn't", "are", "aren't", "was", "wasn't", "were", "weren't",
+        "be", "been", "being", "become", "became", "feel", "feels", "felt",
+        "look", "looks", "looked", "seem", "seems", "seemed", "stay", "stayed",
+        "remain", "remained", "very", "too", "so", "quite", "rather", "pretty",
+        "fairly", "on"
+    ]
+
+    private static let determinersForAdjective: Set<String> = [
+        "a", "an", "the", "this", "that", "these", "those", "some", "any", "no",
+        "every", "each", "another", "two", "three", "several", "many", "few"
+    ]
+
+    private static let looseModifiableNouns: Set<String> = [
+        "end", "ends", "screw", "screws", "tooth", "teeth", "knot", "knots", "thread",
+        "threads", "fit", "fitting", "cannon", "cannons", "change", "coins", "leaf",
+        "pages", "sheets", "papers", "skin", "clothing", "clothes", "shirt", "pants",
+        "trousers", "dress", "jacket", "coat", "shoes", "belt", "collar", "grip", "hold",
+        "handle", "wheel", "wire", "wires", "cable", "cables", "connection", "joint",
+        "bolt", "bolts", "nail", "nails", "hinge", "hinges", "stone", "stones", "gravel",
+        "sand", "soil", "dirt", "rock", "rocks", "tea", "powder", "flour", "hair",
+        "curls", "translation", "interpretation", "definition", "sense", "term", "terms",
+        "alliance", "coalition", "federation", "network", "collection", "group", "structure"
+    ]
+
+    private static let comparativeWords: Set<String> = [
+        "more", "less", "fewer", "better", "worse", "rather", "other", "faster", "slower",
+        "bigger", "smaller", "larger", "shorter", "longer", "higher", "lower", "older",
+        "younger", "easier", "harder", "stronger", "weaker", "closer", "further", "farther",
+        "cheaper", "safer", "louder", "quieter", "simpler", "greater", "heavier", "lighter",
+        "wider", "narrower", "deeper", "shallower", "richer", "poorer", "smarter", "nicer",
+        "clearer", "cleaner", "happier", "quicker", "sooner", "earlier", "later", "brighter",
+        "darker", "warmer", "cooler", "colder", "hotter", "thicker", "thinner", "sharper",
+        "softer", "smoother", "rougher", "tighter", "looser", "sweeter", "taller", "broader",
+        "steeper", "fresher", "stranger", "rarer", "finer", "purer", "truer", "healthier",
+        "wealthier", "busier", "lazier", "luckier", "prettier", "uglier", "angrier",
+        "hungrier", "noisier", "friendlier", "likelier", "deadlier", "costlier", "different",
+        "else"
+    ]
+
+    private static let nonComparativeInterveners: Set<String> = [
+        "and", "or", "but", "to", "in", "on", "at", "from", "with", "for", "of", "by",
+        "is", "are", "was", "were", "have", "has", "had", "will", "would", "can", "could",
+        "should", "do", "does", "did"
+    ]
+
+    private static let subjectStartersAfterThen: Set<String> = [
+        "i", "you", "he", "she", "it", "we", "they", "there", "the", "a", "an",
+        "this", "that", "my", "our", "your", "his", "her", "their", "again",
+        "maybe", "perhaps", "suddenly", "finally", "eventually", "came", "went"
+    ]
+
+    private static let temporalThenPreceders: Set<String> = [
+        "and", "but", "until", "till", "since", "by", "before", "after", "back",
+        "right", "just", "even", "only"
+    ]
+
+    private static let unconditionalItIsFollowers: Set<String> = [
+        "a", "an", "the", "not", "never", "always", "already", "still", "almost", "nearly",
+        "quite", "very", "too", "so", "really", "pretty", "fairly", "rather", "been",
+        "being", "going", "coming", "getting", "making", "doing", "having", "raining",
+        "snowing", "happening", "becoming", "called", "named", "known", "meant", "supposed",
+        "expected", "located", "based", "important", "impossible", "unlikely", "obvious",
+        "necessary", "essential", "crucial", "worth", "fine", "okay", "ok", "alright",
+        "here", "there", "where", "when", "why", "how", "because", "what", "who",
+        "my", "your", "his", "her", "our", "their", "nothing", "something", "anything",
+        "everything", "someone", "nobody", "everyone"
+    ]
+
+    private static let predicativeItIsFollowers: Set<String> = [
+        "easy", "easier", "hard", "harder", "difficult", "simple", "simpler", "possible",
+        "likely", "certain", "sure", "clear", "true", "false", "right", "wrong", "fair",
+        "unfair", "safe", "unsafe", "dangerous", "useful", "useless", "helpful", "common",
+        "rare", "normal", "strange", "weird", "odd", "funny", "interesting", "amazing",
+        "wonderful", "terrible", "awful", "horrible", "sad", "happy", "cold", "hot",
+        "warm", "cool", "dark", "bright", "quiet", "loud", "fast", "slow", "ready",
+        "done", "finished", "over", "late", "early", "broken", "fixed", "working",
+        "running", "starting", "stopping", "growing", "changing", "moving", "looking",
+        "feeling", "sounding", "turning", "made", "built", "designed", "written", "used",
+        "allowed", "included", "needed", "good", "great", "nice", "better", "bad", "worse",
+        "time", "much", "far", "just", "only", "also", "even"
+    ]
+
+    private static let clauseIntroducersBeforeItIs: Set<String> = [
+        "that", "because", "since", "as", "if", "when", "while", "though", "although",
+        "unless", "until", "whether", "and", "but", "or", "so", "yet",
+        "think", "thought", "know", "knew", "say", "said", "says", "believe", "hope",
+        "see", "saw", "find", "found", "feel", "felt", "guess", "suppose", "mean",
+        "means", "meant", "show", "shows", "showed", "prove", "proves", "proved",
+        "ensure", "realize", "realized", "realise", "realised", "notice", "noticed",
+        "hear", "heard", "tell", "told", "sure", "certain", "glad", "happy", "sorry",
+        "afraid", "clear", "obvious", "true"
+    ]
+
+    private static let nonNounAfterPredicativeAdjective: Set<String> = [
+        "to", "that", "for", "in", "on", "at", "with", "from", "by", "about", "as",
+        "if", "when", "while", "because", "since", "though", "although", "unless",
+        "until", "and", "or", "but", "so", "yet", "enough", "too", "now", "today",
+        "here", "there", "again", "better", "worse", "faster", "slower", "easier",
+        "harder", "more", "less"
+    ]
+
+    private static let youAreUnconditionalFollowers: Set<String> = [
+        "welcome", "right", "wrong", "sure", "ready", "late", "early", "done", "finished",
+        "invited", "allowed", "supposed", "meant", "expected", "required", "able", "unable",
+        "not", "never", "always", "already", "still", "probably", "definitely", "certainly",
+        "here", "there", "back", "out", "up", "down", "in", "on", "off", "over", "under",
+        "a", "an", "the", "so", "too", "quite", "really", "pretty"
+    ]
+
+    private static let whoIsFollowers: Set<String> = [
+        "there", "here", "ready", "next", "first", "last", "in", "on", "at", "up", "out",
+        "back", "with", "for", "against", "behind", "responsible", "available", "free",
+        "busy", "late", "early", "right", "wrong", "sure", "afraid", "happy", "glad",
+        "sorry", "tired", "sick", "been", "got", "a", "an", "the", "not", "never",
+        "always", "already", "still"
+    ]
+
+    private static let tooDegreeAdjectives: Set<String> = [
+        "late", "early", "soon", "long", "short", "far", "close", "high", "low", "fast",
+        "slow", "big", "small", "large", "hard", "easy", "difficult", "heavy", "light",
+        "hot", "cold", "warm", "cool", "old", "young", "expensive", "cheap", "busy",
+        "tired", "weak", "strong", "loud", "quiet", "dark", "bright", "tight", "loose",
+        "deep", "shallow", "wide", "narrow", "thick", "thin", "sweet", "salty", "bitter",
+        "sour", "spicy", "good", "bad"
+    ]
+
+    private static let copularAndDegreePrecedersForToo: Set<String> = [
+        "is", "isn't", "are", "aren't", "was", "wasn't", "were", "weren't", "be", "been",
+        "being", "seem", "seems", "seemed", "look", "looks", "looked", "feel", "feels",
+        "felt", "sound", "sounds", "sounded", "become", "became", "get", "gets", "got",
+        "getting", "way", "far", "much", "all", "not", "it's", "that's", "there's",
+        "he's", "she's", "you're", "we're", "they're", "i'm"
+    ]
+
+    private static let infinitiveOrPrepositionToPreceders: Set<String> = [
+        "want", "wants", "wanted", "need", "needs", "needed", "have", "has", "had",
+        "used", "ought", "supposed", "going", "try", "tries", "tried", "trying",
+        "start", "starts", "started", "begin", "begins", "began", "continue", "continued",
+        "decide", "decided", "plan", "planned", "hope", "hoped", "expect", "expected",
+        "learn", "learned", "like", "liked", "love", "loved", "prefer", "preferred",
+        "agree", "agreed", "refuse", "refused", "fail", "failed", "manage", "managed",
+        "offer", "offered", "promise", "promised", "seem", "seemed", "appear", "appeared",
+        "tend", "tended", "able", "unable", "ready", "willing", "eager", "happy", "glad",
+        "sorry", "afraid", "easy", "hard", "difficult", "possible", "impossible",
+        "important", "necessary", "time", "way", "place", "chance", "opportunity",
+        "decision", "effort", "attempt", "order", "according", "due", "prior", "similar",
+        "close", "next", "go", "goes", "went", "gone", "come", "comes", "came", "get",
+        "got", "give", "gave", "send", "sent", "talk", "talked", "speak", "spoke",
+        "listen", "listened", "write", "wrote", "move", "moved", "walk", "walked", "run",
+        "ran", "drive", "drove", "fly", "flew", "return", "returned", "belong", "belongs",
+        "belonged", "lead", "leads", "led", "refer", "refers", "referred", "apply",
+        "applies", "applied", "respond", "responded", "reply", "replied", "look", "looked",
+        "forward"
+    ]
+
+    private static let toInfinitiveVerbs: Set<String> = [
+        "be", "do", "have", "make", "get", "go", "see", "know", "take", "find", "give",
+        "tell", "work", "call", "try", "ask", "need", "feel", "become", "leave", "put",
+        "mean", "keep", "let", "begin", "seem", "help", "talk", "turn", "start", "show",
+        "hear", "play", "run", "move", "like", "live", "believe", "hold", "bring",
+        "happen", "write", "provide", "sit", "stand", "lose", "pay", "meet", "include",
+        "continue", "set", "learn", "change", "lead", "understand", "watch", "follow",
+        "stop", "create", "speak", "read", "allow", "add", "spend", "grow", "open",
+        "walk", "win", "offer", "remember", "love", "consider", "appear", "buy", "wait",
+        "serve", "die", "send", "expect", "build", "stay", "fall", "cut", "reach",
+        "remain", "suggest", "raise", "pass", "sell", "require", "report", "decide",
+        "pull", "fix", "ship", "test", "use", "say", "check", "update", "save", "close"
+    ]
+
+    private static let weatherNounModifiers: Set<String> = [
+        "the", "good", "bad", "nice", "great", "lovely", "beautiful", "awful", "terrible",
+        "horrible", "warm", "cold", "hot", "cool", "wet", "dry", "stormy", "sunny",
+        "rainy", "windy", "cloudy", "clear", "fair", "foul", "mild", "severe", "extreme",
+        "inclement", "harsh", "winter", "summer", "spring", "autumn", "fall", "local",
+        "today's", "tomorrow's"
+    ]
+
+    private static let weatherCompoundNouns: Set<String> = [
+        "forecast", "report", "station", "conditions", "patterns", "radar", "channel",
+        "warning", "alert", "advisory", "vane", "balloon"
+    ]
+
+    private static let effectNounPreceders: Set<String> = [
+        "the", "an", "this", "that", "these", "those", "any", "no", "some", "every",
+        "each", "little", "much", "positive", "negative", "side", "ripple", "butterfly",
+        "greenhouse", "domino", "halo", "placebo", "network", "sound", "visual", "special",
+        "net", "overall", "desired", "intended", "opposite", "same", "similar", "immediate",
+        "lasting", "profound", "significant", "major", "minor", "direct", "indirect",
+        "cumulative", "combined", "into", "take", "takes", "took", "taken", "taking"
+    ]
+
+    private static let affectVerbPreceders: Set<String> = [
+        "will", "won't", "would", "wouldn't", "can", "can't", "cannot", "could", "couldn't",
+        "should", "shouldn't", "must", "may", "might", "shall", "do", "don't", "does",
+        "doesn't", "did", "didn't", "not", "never", "always", "often", "directly",
+        "indirectly", "negatively", "positively", "adversely", "strongly", "deeply",
+        "greatly", "significantly", "seriously", "badly", "hardly", "barely", "to"
+    ]
+
+    private static let affectVerbObjects: Set<String> = [
+        "the", "a", "an", "this", "that", "these", "those", "my", "your", "his", "her",
+        "its", "our", "their", "me", "you", "him", "us", "them", "how", "what", "whether",
+        "who", "where", "when", "people", "users", "customers", "patients", "students",
+        "workers", "everyone", "anybody", "someone", "nobody", "something", "nothing",
+        "everything", "performance", "results", "sales", "health", "growth", "quality",
+        "speed", "memory", "battery", "prices", "costs", "outcomes", "decisions",
+        "behavior", "behaviour", "mood", "sleep", "traffic"
+    ]
+
+    private static let motionVerbsBeforePast: Set<String> = [
+        "walked", "walk", "walking", "ran", "run", "running", "drove", "drive", "driving",
+        "went", "go", "going", "came", "come", "coming", "flew", "fly", "flying",
+        "moved", "move", "moving", "slipped", "slip", "rushed", "rush", "strolled",
+        "stepped", "looked", "look", "looking", "got", "get", "getting"
+    ]
+
+    private static let pastTimeNouns: Set<String> = [
+        "few", "several", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+        "ten", "couple", "week", "weeks", "month", "months", "year", "years", "day",
+        "days", "hour", "hours", "minute", "minutes", "decade", "decades", "century",
+        "night", "summer", "winter", "spring", "autumn", "fall", "weekend", "experience",
+        "performance", "events", "mistakes", "history", "life"
+    ]
+
+    private static let clockNumbers: Set<String> = [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve", "midnight", "noon"
+    ]
+
+    private static let passedAuxiliariesAndSubjects: Set<String> = [
+        "i", "you", "he", "she", "it", "we", "they", "who",
+        "has", "have", "had", "having", "was", "were", "been",
+        "just", "already", "finally", "barely", "easily", "quickly", "slowly", "quietly"
+    ]
+
+    private static let exceptPreceders: Set<String> = [
+        "all", "everyone", "everybody", "everything", "anyone", "anybody", "anything",
+        "nobody", "nothing", "none", "nowhere"
+    ]
+
+    private static let acceptVerbPreceders: Set<String> = [
+        "to", "will", "won't", "would", "wouldn't", "can", "can't", "cannot", "could",
+        "couldn't", "should", "shouldn't", "must", "may", "might", "shall", "do", "don't",
+        "does", "doesn't", "did", "didn't", "please", "gladly", "happily", "willingly",
+        "reluctantly", "never", "always", "not", "i", "we", "they", "you"
+    ]
+
+    private static let acceptVerbObjects: Set<String> = [
+        "the", "a", "an", "this", "that", "these", "those", "my", "your", "his", "her",
+        "its", "our", "their", "any", "some", "no", "all", "full", "responsibility",
+        "blame", "credit", "payment", "payments", "cards", "cash", "checks", "cheques",
+        "returns", "applications", "offers", "invitations", "apologies", "terms",
+        "conditions", "cookies", "changes", "input", "feedback", "deliveries", "orders",
+        "donations", "gifts", "awards", "defeat", "reality", "it", "them"
+    ]
+
+    private static let principleModifiers: Set<String> = [
+        "guiding", "moral", "ethical", "basic", "fundamental", "core", "general", "first",
+        "underlying", "working", "operating", "organizing", "organising", "legal",
+        "scientific", "mathematical", "design", "accounting", "economic", "political", "of"
+    ]
+
+    private static let principalFollowedNouns: Set<String> = [
+        "investigator", "engineer", "architect", "designer", "scientist", "researcher",
+        "developer", "author", "owner", "partner", "shareholder", "director", "officer",
+        "dancer", "singer", "actor", "character", "component", "components", "reason",
+        "reasons", "cause", "causes", "source", "sources", "factor", "factors", "purpose",
+        "goal", "objective", "concern", "focus", "office", "residence", "amount", "balance"
+    ]
+
+    private static let pieceOfNouns: Set<String> = [
+        "cake", "paper", "advice", "work", "code", "news", "information", "evidence",
+        "art", "music", "writing", "hardware", "software", "equipment", "furniture",
+        "clothing", "cloth", "wood", "metal", "glass", "plastic", "stone", "land",
+        "meat", "bread", "cheese", "fruit", "pie", "pizza", "chocolate", "puzzle"
+    ]
+
+    private static let wherePrecedingNounsAndVerbs: Set<String> = [
+        "know", "knew", "wonder", "wondered", "ask", "asked", "tell", "told", "see",
+        "saw", "find", "found", "remember", "forgot", "forget", "show", "showed",
+        "point", "place", "places", "area", "room", "house", "city", "town", "country",
+        "world", "situation", "case", "cases"
+    ]
+}
+
 

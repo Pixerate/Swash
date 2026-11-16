@@ -16,7 +16,7 @@
 import Foundation
 import PixerateMarkdown
 
-enum SlackMarkdown {
+nonisolated enum SlackMarkdown {
     /// Parses Slack mrkdwn into the shared document model.
     static func parse(_ text: String) -> MarkdownDocument {
         let document = MarkdownDocument.parse(text)
@@ -104,7 +104,7 @@ enum SlackMarkdown {
 /// Slack's inline syntax within one line. Emphasis delimiters open after a non-word character and
 /// before a non-space, close after a non-space and before a non-word character, and are never
 /// doubled (`**x**` is literal in Slack).
-private struct SlackInlineParser {
+nonisolated private struct SlackInlineParser {
     let ns: NSString
 
     private static let star: unichar = 0x2A, underscore: unichar = 0x5F, tilde: unichar = 0x7E
@@ -349,7 +349,7 @@ private struct SlackInlineParser {
 
 extension MarkdownDocument {
     /// The document model for `text` in `flavor`: Slack mrkdwn has its own inline syntax.
-    static func parse(_ text: String, flavor: MarkdownFlavor) -> MarkdownDocument {
+    nonisolated static func parse(_ text: String, flavor: MarkdownFlavor) -> MarkdownDocument {
         flavor == .slack ? SlackMarkdown.parse(text) : parse(text)
     }
 }
