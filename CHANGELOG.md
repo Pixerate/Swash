@@ -1,5 +1,11 @@
 # swash
 
+## 1.28.2
+
+### Patch Changes
+
+- bee8662: Internal: Dependabot no longer proposes TypeScript major updates for the site until Astro's Svelte integration supports them.
+
 ## 1.28.1
 
 ### Patch Changes
