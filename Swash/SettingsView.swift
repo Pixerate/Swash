@@ -285,6 +285,7 @@ private struct WritingPartnerSettingsView: View {
     @AppStorage(WritingPartnerDefaults.agreementAndTense) private var agreementAndTense = true
     @AppStorage(WritingPartnerDefaults.missingWords) private var missingWords = true
     @AppStorage(WritingPartnerDefaults.quickNoteTidy) private var quickNoteTidy = true
+    @State private var showLearnedRules = false
 
     private var provider: WritingPartnerProvider {
         WritingPartnerDefaults.provider()
@@ -308,6 +309,15 @@ private struct WritingPartnerSettingsView: View {
 
     private var stats: WritingPartnerStats {
         voice == .chat ? chatStats : proseStats
+    }
+
+    private var learnedRules: [PunctuationRule] {
+        PunctuationRule.allCases.filter { $0 != .spelling && ($0 != .curlyQuotes || curlyQuotes) }
+    }
+
+    private var learnedSummary: String {
+        let stopped = learnedRules.filter { voice.rules.contains($0) && !stats.isActive($0) }.count
+        return stopped == 0 ? "All on" : "\(stopped) stopped"
     }
 
     private func reloadStats() {
@@ -335,7 +345,7 @@ private struct WritingPartnerSettingsView: View {
             } header: {
                 Text("Writing Partner")
             } footer: {
-                Text("When you finish a word, Swash gives it a capital, an apostrophe or a comma it needs (i → I, dont → don't, id like → I'd like, ok → OK, a capital to start a sentence, a comma before “but” that starts a new clause), and pressing Return at the end of a sentence adds its full stop or question mark. With Correct spelling on, it also fixes misspellings, in place of macOS's autocorrect. In Suggest mode, each fix is underlined for you to accept (Tab, ⌥⏎ or click) or dismiss (Esc). Each fix is its own step: press ⌘Z to undo it, and an undone or dismissed spelling fix leaves that word alone. Code, math, links' addresses and tables are never changed. In Slack documents the Chat voice keeps a light touch: apostrophes, capital I and spelling only. These fixes never leave this Mac.")
+                Text("Fixes punctuation, capitals, and spelling as you type on this Mac. In Suggest mode, press Tab or ⌥⏎ to accept, Esc to dismiss, or ⌘Z to undo.")
                     .settingsFooterStyle()
                 Link("What the writing partner sends", destination: URL(string: "https://github.com/Pixerate/Swash/blob/main/docs/writing-partner-privacy.md")!)
                     .font(.footnote)
@@ -362,13 +372,13 @@ private struct WritingPartnerSettingsView: View {
                     .disabled(WritingPartnerDefaults.provider() != .pixerate)
             } footer: {
                 if access.isSignedOut {
-                    Text("Signed in to Pixerate (the Account tab), the partner also reads the paragraph you've just written when you pause, and suggests structure such as a list or a heading. Until then, the fixes as you type work on this Mac.")
+                    Text("Sign in to Pixerate (Account) for paragraph structure suggestions on pause. On-device fixes work without an account.")
                         .settingsFooterStyle()
                 } else if !access.isSubscribed {
-                    Text("Reading the paragraph when you pause is part of Pixerate Pro (Settings › Account). On the Basic plan, the fixes as you type work on this Mac.")
+                    Text("Paragraph structure suggestions on pause require Pixerate Pro (Account). On-device fixes work on the Basic plan.")
                         .settingsFooterStyle()
                 } else {
-                    Text("When you pause, the partner sends the paragraph you've just written to Pixerate and may suggest structure, such as a list or a heading as part of Pixerate Pro. Code, math and tables are never sent.")
+                    Text("Sends the paragraph you just wrote to Pixerate on pause for structure suggestions. Code, math, and tables are never sent.")
                         .settingsFooterStyle()
                 }
             }
@@ -404,37 +414,44 @@ private struct WritingPartnerSettingsView: View {
             } header: {
                 Text("Typography")
             } footer: {
-                Text("In prose only, never in code, math or links: straight quotes and apostrophes become curly (“no”, don’t). Dashes (-- and --- between words become – and —) and ellipses (... becomes …) work like the other fixes: undo one straight away and the partner does it less.")
+                Text("Converts straight quotes, dashes (--, ---), and ellipses (...) in prose only. Undo with ⌘Z to teach the partner to do it less.")
                     .settingsFooterStyle()
             }
             .disabled(mode == .off)
 
             Section {
-                ForEach(PunctuationRule.allCases.filter { $0 != .spelling && ($0 != .curlyQuotes || curlyQuotes) }, id: \.self) { rule in
-                    LabeledContent(rule.title) {
-                        if !voice.rules.contains(rule) {
-                            Text("Off in Chat")
-                                .foregroundStyle(.tertiary)
-                        } else if !WritingPartnerDefaults.isRuleEnabled(rule) {
-                            Text("Off")
-                                .foregroundStyle(.tertiary)
-                        } else if rule.isPauseTierGrammar, let languageReason = unsupportedLanguageReason {
-                            Text(languageReason)
-                                .foregroundStyle(.tertiary)
-                        } else if stats.isActive(rule) {
-                            Text("On")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("Stopped after you undid it")
-                                .foregroundStyle(.orange)
+                DisclosureGroup(isExpanded: $showLearnedRules) {
+                    ForEach(learnedRules, id: \.self) { rule in
+                        LabeledContent(rule.title) {
+                            if !voice.rules.contains(rule) {
+                                Text("Off in Chat")
+                                    .foregroundStyle(.tertiary)
+                            } else if !WritingPartnerDefaults.isRuleEnabled(rule) {
+                                Text("Off")
+                                    .foregroundStyle(.tertiary)
+                            } else if rule.isPauseTierGrammar, let languageReason = unsupportedLanguageReason {
+                                Text(languageReason)
+                                    .foregroundStyle(.tertiary)
+                            } else if stats.isActive(rule) {
+                                Text("On")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("Stopped after you undid it")
+                                    .foregroundStyle(.orange)
+                            }
                         }
+                    }
+                } label: {
+                    LabeledContent("Learned rules") {
+                        Text(learnedSummary)
+                            .foregroundStyle(.secondary)
                     }
                 }
             } header: {
                 Text("What It Has Learned")
             } footer: {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Chat and Punctuate learn from ⌘Z separately: undoing a fix straight away makes its kind less likely in that voice, and two undos in a row stop it.")
+                    Text("Undoing a fix with ⌘Z makes it less likely in this voice; two undos in a row stop it.")
                         .settingsFooterStyle()
                     Button("Reset") {
                         UserDefaults.standard.removeObject(forKey: WritingPartnerDefaults.statsKey(for: voice))
@@ -445,8 +462,7 @@ private struct WritingPartnerSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .scrollDisabled(true)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(height: 520)
         .onAppear { reloadStats() }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
             reloadStats()

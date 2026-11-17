@@ -341,10 +341,57 @@ nonisolated enum ChatVoice {
     static let rules: [PunctuationRule] = [.pronounI, .contraction, .spelling]
 }
 
+/// The fast-tier text duet protocol (#61): computes local edits and checked ranges at word and
+/// sentence boundaries in raw-Markdown UTF-16 offsets, independent of AppKit/UIKit so it can move
+/// to a shared package and run on iOS as well as macOS.
+nonisolated protocol WritingPartner: Sendable {
+    /// The fixes to make after the person typed the character at `boundary` (raw-Markdown UTF-16
+    /// offset; the caret is just after it). `document` is `text` parsed in `flavor`.
+    func edits(
+        text: String,
+        boundary: Int,
+        document: MarkdownDocument,
+        flavor: MarkdownFlavor,
+        enterEndedLine: Bool?,
+        isActive: (PunctuationRule) -> Bool,
+        spellingCorrection: ((_ word: String, _ range: NSRange, _ text: String) -> String?)?
+    ) -> [PunctuationEdit]
+
+    /// What the voice looks at for the boundary at `boundary`: the word before it, or the line it
+    /// ends when it's a newline. Nil when that isn't prose, so there's nothing to show as checked.
+    func checkedRange(text: String, boundary: Int, document: MarkdownDocument) -> NSRange?
+}
+
 /// The Punctuate voice: the editor package's text mechanics checks (`TextMechanics` in
 /// PixerateMarkdown, Pixerate/editor#892), with Swash's rules, flavours and spell checker. The
 /// rules themselves live in the editor, so every Pixerate editor fixes text the same way.
-nonisolated enum PunctuateVoice {
+nonisolated struct PunctuateVoice: WritingPartner, Sendable {
+    init() {}
+
+    func edits(
+        text: String,
+        boundary: Int,
+        document: MarkdownDocument,
+        flavor: MarkdownFlavor,
+        enterEndedLine: Bool? = nil,
+        isActive: (PunctuationRule) -> Bool = { _ in true },
+        spellingCorrection: ((_ word: String, _ range: NSRange, _ text: String) -> String?)? = nil
+    ) -> [PunctuationEdit] {
+        Self.edits(
+            text: text,
+            boundary: boundary,
+            document: document,
+            flavor: flavor,
+            enterEndedLine: enterEndedLine,
+            isActive: isActive,
+            spellingCorrection: spellingCorrection
+        )
+    }
+
+    func checkedRange(text: String, boundary: Int, document: MarkdownDocument) -> NSRange? {
+        Self.checkedRange(text: text, boundary: boundary, document: document)
+    }
+
     /// The fixes to make after the person typed the character at `boundary` (raw-Markdown UTF-16
     /// offset; the caret is just after it). `document` is `text` parsed in `flavor`.
     static func edits(

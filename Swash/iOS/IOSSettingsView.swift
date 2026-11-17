@@ -44,4 +44,8 @@ struct IOSSettingsView: View {
         }
     }
 }
+
+#Preview("iOS Settings") {
+    IOSSettingsView()
+}
 #endif

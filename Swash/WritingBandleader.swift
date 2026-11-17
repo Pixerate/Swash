@@ -905,7 +905,7 @@ nonisolated final class WritingPauseDetector: @unchecked Sendable {
 // Swash proposes it on pause or save, previews it, and applies it as one undo step. There are no
 // local tidy rules: without Pixerate (signed in with Pro), Quick Notes aren't tidied.
 
-extension JazzTextRange {
+nonisolated extension JazzTextRange {
     var nsRange: NSRange { NSRange(location: start, length: end - start) }
 }
 
