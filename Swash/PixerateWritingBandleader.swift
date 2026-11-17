@@ -76,6 +76,36 @@ nonisolated final class PixerateWritingBandleader: WritingBandleader, @unchecked
             return nil
         }
     }
+
+    func reportFeedback(_ request: JazzTextFeedbackRequest) async {
+        guard !request.items.isEmpty else { return }
+        var req = request
+        if req.teamId == nil {
+            if let teamId = teamIdProvider?() {
+                req.teamId = teamId
+            } else if postHandler == nil {
+                req.teamId = await MainActor.run { PixerateAccess.shared.account.activeTeam?.id }
+            }
+        }
+
+        let body: Data
+        do {
+            let encoder = JSONEncoder()
+            body = try encoder.encode(req)
+        } catch {
+            return
+        }
+
+        do {
+            if let postHandler {
+                _ = try await postHandler("/api/agent/text-feedback", body)
+            } else {
+                _ = try await PixerateAccess.shared.post(path: "/api/agent/text-feedback", body: body)
+            }
+        } catch {
+            // Feedback is best-effort; ignore refusal or offline errors quietly.
+        }
+    }
 }
 
 extension WritingBandleaderFactory {

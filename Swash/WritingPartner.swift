@@ -409,6 +409,9 @@ nonisolated struct PartnerEdit: Equatable, Sendable {
     var rules: [PunctuationRule]
     var spellingWords: [String]
     var actionName: String? = nil
+    var bandleaderSuggestionId: String? = nil
+    var bandleaderSuggestionKind: JazzTextSuggestionKind? = nil
+    var bandleaderCheckId: String? = nil
 }
 
 /// Where one of the voice's edits landed in the fixed text, and what it did.
