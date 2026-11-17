@@ -12,21 +12,31 @@
 
 #if os(macOS)
 import AppKit
+import NaturalLanguage
 import Observation
 import PixerateCore
 import PixerateMarkdown
 
-/// Tracks the most recently active document's flavour so Settings › Writing can show which voice
-/// is playing even when the Settings window is key (#105).
+/// Tracks the most recently active document's flavour and language so Settings › Writing can show
+/// which voice is playing and any language reason even when the Settings window is key (#105, #111).
 @MainActor
 @Observable
 final class WritingPartnerActiveVoice {
     static let shared = WritingPartnerActiveVoice()
 
     var documentFlavor: MarkdownFlavor?
+    var documentLanguage: NLLanguage = .english
 
     func currentFlavor(default defaultFlavor: MarkdownFlavor) -> MarkdownFlavor {
         documentFlavor ?? defaultFlavor
+    }
+
+    func updateLanguage(for text: String) {
+        documentLanguage = GrammarLanguageSupport.detectLanguage(in: text)
+    }
+
+    func unsupportedLanguageReason(for provider: WritingPartnerProvider) -> String? {
+        GrammarLanguageSupport.unsupportedReason(for: documentLanguage, provider: provider)
     }
 }
 
@@ -423,6 +433,7 @@ final class WritingPartnerSession {
         // Pause detection: record typing and back off while editing continues
         if isOn, hasPauseProvider {
             let rawText = coordinator.rawText(of: textView)
+            MainActor.assumeIsolated { WritingPartnerActiveVoice.shared.updateLanguage(for: rawText) }
             if let extracted = BandleaderContextExtractor.extract(from: rawText, caret: raw.location, flavor: coordinator.parent.flavor) {
                 lastKnownParagraphRange = extracted.range
                 lastKnownParagraphText = extracted.paragraph
@@ -753,6 +764,7 @@ final class WritingPartnerSession {
     /// The director committed an edit: it's an undo step of the partner's, and what comes after it moved.
     private func committed(_ range: NSRange, text: String, caretBefore: Int) {
         let delta = (text as NSString).length - range.length
+        let closedSentence = pendingStep?.rules.contains(.terminalPunctuation) == true
         let rangeAfter = NSRange(location: range.location, length: (text as NSString).length)
         if let edit = pendingStep {
             let voice = coordinator.map { WritingPartnerVoice(flavor: $0.parent.flavor) } ?? .punctuate
@@ -787,6 +799,28 @@ final class WritingPartnerSession {
             fix.boundaries = fix.boundaries.map { (move($0.location), $0.enterEndedLine) }
             fix.remaining = fix.remaining.map { var edit = $0; edit.range.location = move(edit.range.location); return edit }
             fixInFlight = fix
+        }
+        // When the partner itself just closed a sentence, check any finished word immediately after it
+        // so its first word gets a capital (#111).
+        if closedSentence, let textView, let coordinator {
+            let current = coordinator.rawText(of: textView) as NSString
+            let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+            var scan = range.location + (text as NSString).length
+            while scan < current.length, scan < selection.location {
+                let c = current.character(at: scan)
+                if c == 0x20 || c == 0x0A || c == 0x09 { scan += 1 } else { break }
+            }
+            if scan < current.length, scan < selection.location, PunctuateVoice.isWordCharacter(current.character(at: scan)) {
+                var wordEnd = scan
+                while wordEnd < current.length, PunctuateVoice.isWordCharacter(current.character(at: wordEnd)) {
+                    wordEnd += 1
+                }
+                if wordEnd < current.length, wordEnd < selection.location,
+                   (PunctuateVoice.isWordBoundary(current.character(at: wordEnd)) || current.character(at: wordEnd) == 0x0A),
+                   !pendingBoundaries.contains(where: { $0.location == wordEnd }) {
+                    pendingBoundaries.append((wordEnd, nil))
+                }
+            }
         }
         if !suggestions.isEmpty {
             suggestions = suggestions.compactMap { suggestion in
@@ -957,6 +991,8 @@ final class WritingPartnerSession {
 
         guard let pause = pauseDetector.checkPause() else { return }
         let rawText = coordinator.rawText(of: textView)
+        let detectedLanguage = GrammarLanguageSupport.detectLanguage(in: rawText)
+        WritingPartnerActiveVoice.shared.documentLanguage = detectedLanguage
         guard let extracted = BandleaderContextExtractor.extract(from: rawText, caret: pause.caret, flavor: coordinator.parent.flavor) else { return }
 
         let stats = WritingPartnerStats.load(defaults)
@@ -969,6 +1005,7 @@ final class WritingPartnerSession {
             after: extracted.after,
             flavor: coordinator.parent.flavor.jazzTextFlavor,
             voices: voices,
+            language: detectedLanguage == .english ? nil : detectedLanguage.rawValue,
             feedback: recentFeedback
         )
 
@@ -994,6 +1031,7 @@ final class WritingPartnerSession {
         }
     }
 
+    @MainActor
     private func applyBandleaderResponse(
         _ response: JazzTextLeadResponse,
         for paragraph: String,
@@ -1028,19 +1066,49 @@ final class WritingPartnerSession {
             }
         }
 
+        // Pause-tier grammar corrections (#111): above the threshold they play through the partner's
+        // cursor, below it they're offered. A correction that overlaps one of the plan's is dropped.
+        let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        var grammarAutomatic: [PartnerEdit] = []
+        var grammarOffered: [PartnerEdit] = []
+        if !response.grammar.isEmpty {
+            let flavor = coordinator.parent.flavor
+            let stats = WritingPartnerStats.load(defaults, voice: WritingPartnerVoice(flavor: flavor))
+            let isActive: (PunctuationRule) -> Bool = { [defaults = self.defaults] rule in
+                WritingPartnerDefaults.isRuleEnabled(rule, defaults) && stats.isActive(rule)
+            }
+            let grammar = GrammarVoice.pauseEdits(
+                from: response,
+                paragraph: paragraph,
+                paragraphRange: paragraphRange,
+                documentText: rawText,
+                caret: selection.location,
+                flavor: flavor,
+                provider: WritingPartnerDefaults.provider(defaults),
+                mode: mode,
+                languageOverride: WritingPartnerActiveVoice.shared.documentLanguage,
+                isActive: isActive
+            )
+            let planned = plan.automaticEdits.map(\.range) + plan.offeredEdits.map(\.range)
+            let isFree = { (edit: PartnerEdit) in planned.allSatisfy { NSIntersectionRange($0, edit.range).length == 0 } }
+            grammarAutomatic = grammar.automatic.filter(isFree)
+            grammarOffered = grammar.suggestions.filter(isFree)
+        }
+        let offeredEdits = (plan.offeredEdits + grammarOffered).sorted { $0.range.location < $1.range.location }
+        let automaticEdits = (plan.automaticEdits + grammarAutomatic).sorted { $0.range.location < $1.range.location }
+
         // Offer uncertain / Suggest-mode inline suggestions as underlines (#103, #120).
-        if !plan.offeredEdits.isEmpty {
-            let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
-            offer(plan.offeredEdits, triggerEnd: selection.location, in: textView, coordinator: coordinator)
+        if !offeredEdits.isEmpty {
+            offer(offeredEdits, triggerEnd: selection.location, in: textView, coordinator: coordinator)
         }
 
         // Apply high-confidence inline suggestions at once through the partner's cursor (#120).
-        if !plan.automaticEdits.isEmpty {
+        if !automaticEdits.isEmpty {
             if var inFlight = fixInFlight, !inFlight.isCancelled {
-                inFlight.remaining.append(contentsOf: plan.automaticEdits)
+                inFlight.remaining.append(contentsOf: automaticEdits)
                 fixInFlight = inFlight
             } else {
-                play(Fix(remaining: plan.automaticEdits, boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
+                play(Fix(remaining: automaticEdits, boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
             }
         }
 

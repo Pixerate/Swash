@@ -830,7 +830,9 @@ struct InteractionRunner {
                  defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
                  defaults.set(false, forKey: WritingPartnerDefaults.spelling)
              }
-             // Two undos in a row stop a rule
+             // Two undos in a row stop a rule. These cases repeat "dont" on purpose, so Doubled
+             // words (#111) is off until the cleanup below.
+             defaults.set(false, forKey: WritingPartnerDefaults.doubledWords)
              defaults.removeObject(forKey: WritingPartnerDefaults.stats)
              defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
              defaults.set(false, forKey: WritingPartnerDefaults.spelling)
@@ -1086,6 +1088,7 @@ struct InteractionRunner {
              }
 
              defaults.removeObject(forKey: WritingPartnerDefaults.spelling)
+             defaults.removeObject(forKey: WritingPartnerDefaults.doubledWords)
              if let savedMode { defaults.set(savedMode, forKey: WritingPartnerDefaults.mode) } else { defaults.removeObject(forKey: WritingPartnerDefaults.mode) }
              if let savedStats { defaults.set(savedStats, forKey: WritingPartnerDefaults.stats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.stats) }
              if let savedChatStats { defaults.set(savedChatStats, forKey: WritingPartnerDefaults.chatStats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.chatStats) }

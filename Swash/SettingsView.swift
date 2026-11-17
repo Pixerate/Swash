@@ -280,8 +280,24 @@ private struct WritingPartnerSettingsView: View {
     @State private var spellingOn = WritingPartnerDefaults.spelling()
     private var access: PixerateAccess = .shared
     @AppStorage(WritingPartnerDefaults.curlyQuotes) private var curlyQuotes = false
+    @AppStorage(WritingPartnerDefaults.doubledWords) private var doubledWords = true
+    @AppStorage(WritingPartnerDefaults.aAndAn) private var aAndAn = true
+    @AppStorage(WritingPartnerDefaults.agreementAndTense) private var agreementAndTense = true
+    @AppStorage(WritingPartnerDefaults.missingWords) private var missingWords = true
     @AppStorage(WritingPartnerDefaults.quickNoteTidy) private var quickNoteTidy = true
     @State private var showLearnedRules = false
+
+    private var provider: WritingPartnerProvider {
+        WritingPartnerDefaults.provider()
+    }
+
+    private var unsupportedLanguageReason: String? {
+        activeVoice.unsupportedLanguageReason(for: provider)
+    }
+
+    private var isPauseGrammarAvailable: Bool {
+        provider != .none && unsupportedLanguageReason == nil
+    }
 
     private var flavor: MarkdownFlavor {
         activeVoice.currentFlavor(default: defaultFlavor)
@@ -368,6 +384,32 @@ private struct WritingPartnerSettingsView: View {
             }
 
             Section {
+                Toggle("Doubled words", isOn: $doubledWords)
+                Toggle("A and an", isOn: $aAndAn)
+                Toggle("Agreement and tense", isOn: $agreementAndTense)
+                    .disabled(!isPauseGrammarAvailable)
+                Toggle("Missing words", isOn: $missingWords)
+                    .disabled(!isPauseGrammarAvailable)
+                if let languageReason = unsupportedLanguageReason {
+                    LabeledContent("Language") {
+                        Text(languageReason)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("Grammar")
+            } footer: {
+                if let languageReason = unsupportedLanguageReason {
+                    Text("\(languageReason). Doubled words and A and an run on this Mac as you type; Agreement and tense and Missing words run when you pause. Each rule learns from ⌘Z.")
+                        .settingsFooterStyle()
+                } else {
+                    Text("Doubled words (the the → the, keeping had had and that that) and A and an (a apple → an apple, an user → a user) run on this Mac as you type. Agreement and tense (the results shows, tense slips, should of) and Missing words (went the shop → went to the shop) run when you pause. Each rule learns from ⌘Z, and is off in code, math, tables, verse, dialogue and quotations.")
+                        .settingsFooterStyle()
+                }
+            }
+            .disabled(mode == .off)
+
+            Section {
                 Toggle("Curly quotes", isOn: $curlyQuotes)
             } header: {
                 Text("Typography")
@@ -383,6 +425,12 @@ private struct WritingPartnerSettingsView: View {
                         LabeledContent(rule.title) {
                             if !voice.rules.contains(rule) {
                                 Text("Off in Chat")
+                                    .foregroundStyle(.tertiary)
+                            } else if !WritingPartnerDefaults.isRuleEnabled(rule) {
+                                Text("Off")
+                                    .foregroundStyle(.tertiary)
+                            } else if rule.isPauseTierGrammar, let languageReason = unsupportedLanguageReason {
+                                Text(languageReason)
                                     .foregroundStyle(.tertiary)
                             } else if stats.isActive(rule) {
                                 Text("On")

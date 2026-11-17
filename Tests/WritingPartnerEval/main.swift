@@ -905,7 +905,8 @@ nonisolated enum Scorer {
                         isRestored = finalNorm.first == origNorm.first
                     case .contraction, .spelling:
                         isRestored = finalNorm.lowercased() == origNorm.lowercased()
-                    case .pronounI, .capitals, .terminalPunctuation, .clauseComma, .curlyQuotes, .dashes, .ellipses:
+                    case .pronounI, .capitals, .terminalPunctuation, .clauseComma, .curlyQuotes, .dashes, .ellipses,
+                         .doubledWords, .aAndAn, .agreementAndTense, .missingWords:
                         isRestored = finalNorm == origNorm
                     }
                     if isRestored {
@@ -924,7 +925,8 @@ nonisolated enum Scorer {
                         isWrong = finalNorm.first != origNorm.first
                     case .contraction, .spelling:
                         isWrong = finalNorm.lowercased() != origNorm.lowercased()
-                    case .pronounI, .capitals, .terminalPunctuation, .clauseComma, .curlyQuotes, .dashes, .ellipses:
+                    case .pronounI, .capitals, .terminalPunctuation, .clauseComma, .curlyQuotes, .dashes, .ellipses,
+                         .doubledWords, .aAndAn, .agreementAndTense, .missingWords:
                         isWrong = finalNorm != origNorm
                     }
                     if isWrong {
