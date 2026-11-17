@@ -1171,7 +1171,7 @@ do {
     let refusals: [(String, Error)] = [
         ("signedOut", PixerateRefusal.signedOut),
         ("outOfFuel", PixerateRefusal.subscriptionRequired),
-        ("rateLimited", PixerateRefusal.rateLimited),
+        ("rateLimited", PixerateRefusal.rateLimited(until: Date().addingTimeInterval(60))),
         ("offline", URLError(.notConnectedToInternet))
     ]
 

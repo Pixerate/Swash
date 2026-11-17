@@ -549,12 +549,13 @@ nonisolated final class BandleaderSessionMemory: @unchecked Sendable {
     func dismiss(suggestion: JazzTextSuggestion, in paragraph: String) {
         let key = makeKey(suggestion: suggestion, paragraph: paragraph)
         dismissedSuggestionKeys.insert(key)
-        dismissedSuggestionIds.insert(suggestion.effectiveId)
+        // Only a server id names the same suggestion across paragraphs; the derived id doesn't
+        if let id = suggestion.id { dismissedSuggestionIds.insert(id) }
         let ns = paragraph as NSString
         let range = suggestion.range.nsRange
         if range.location >= 0, NSMaxRange(range) <= ns.length {
             let original = ns.substring(with: range)
-            dismissWord(original, replacement: suggestion.replacement, suggestionId: suggestion.effectiveId)
+            dismissWord(original, replacement: suggestion.replacement, suggestionId: suggestion.id)
         }
     }
 
@@ -568,7 +569,7 @@ nonisolated final class BandleaderSessionMemory: @unchecked Sendable {
     }
 
     func isDismissed(suggestion: JazzTextSuggestion, in paragraph: String) -> Bool {
-        if dismissedSuggestionIds.contains(suggestion.effectiveId) {
+        if let id = suggestion.id, dismissedSuggestionIds.contains(id) {
             return true
         }
         let key = makeKey(suggestion: suggestion, paragraph: paragraph)
