@@ -151,8 +151,10 @@
 				SparkleUpdater.swift,
 				"Swash-iOS.entitlements",
 				Swash.entitlements,
+				Swash.sdef,
 				SwashApp.swift,
 				SwashAppIntents.swift,
+				SwashAppleScript.swift,
 			);
 			target = 0460137330045F6800853817 /* SwashQuickLookExtension */;
 		};

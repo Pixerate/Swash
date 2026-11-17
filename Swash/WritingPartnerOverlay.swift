@@ -616,6 +616,9 @@ final class SuggestionPromptView: NSView {
         case .title: symbolName = "textformat.characters"
         case .alert: symbolName = "exclamationmark.triangle"
         case .quote: symbolName = "quote.opening"
+        case .spelling, .wrongWord: symbolName = "textformat.abc"
+        case .houseStyle: symbolName = "person.2"
+        case .tone: symbolName = "waveform"
         }
         iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: suggestion.kind.title)
 

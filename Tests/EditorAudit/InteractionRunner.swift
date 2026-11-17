@@ -987,6 +987,106 @@ struct InteractionRunner {
                  "slack=\(slackUndo.text) prose=\(proseAfterSlack.text) chatI=\(chatLearned.isActive(.pronounI)) proseI=\(proseLearned.isActive(.pronounI))",
                  expect: "slack=so i i i don't  prose=So I  chatI=false proseI=true")
 
+             // Subscription pause tier (#120): applies certain spelling & team-term suggestions at once
+             // through the partner's cursor, offers uncertain ones as in Suggest mode, learns vocabulary,
+             // and reports accepted/undone/dismissed feedback.
+             do {
+                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+                 defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+                 defaults.set(true, forKey: WritingPartnerDefaults.spelling)
+
+                 let initial = "We use pixerate form their on Uchiage."
+                 let box = TextBox(initial)
+                 let tv = makeEditor(box, styled: false)
+                 let coord = tv.delegate as! SwashTextView.Coordinator
+                 caretAfter(initial, in: tv)
+
+                 let stub = StubWritingBandleader { req in
+                     let ns = req.paragraph as NSString
+                     var suggestions: [JazzTextSuggestion] = []
+                     let pixRange = ns.range(of: "pixerate")
+                     if pixRange.location != NSNotFound {
+                         suggestions.append(JazzTextSuggestion(
+                             id: "sug-term-pixerate",
+                             kind: .houseStyle,
+                             range: JazzTextRange(start: pixRange.location, end: NSMaxRange(pixRange)),
+                             replacement: "Pixerate",
+                             why: "Team term casing",
+                             confidence: 0.98,
+                             applyAtOnce: true,
+                             checkId: "terms.pixerate"
+                         ))
+                     }
+                     let formRange = ns.range(of: "form")
+                     if formRange.location != NSNotFound {
+                         suggestions.append(JazzTextSuggestion(
+                             id: "sug-wrong-form",
+                             kind: .wrongWord,
+                             range: JazzTextRange(start: formRange.location, end: NSMaxRange(formRange)),
+                             replacement: "from",
+                             why: "Wrong word in context",
+                             confidence: 0.93,
+                             applyAtOnce: true
+                         ))
+                     }
+                     let theirRange = ns.range(of: "their")
+                     if theirRange.location != NSNotFound {
+                         suggestions.append(JazzTextSuggestion(
+                             id: "sug-offer-their",
+                             kind: .wrongWord,
+                             range: JazzTextRange(start: theirRange.location, end: NSMaxRange(theirRange)),
+                             replacement: "there",
+                             why: "Possible wrong word",
+                             confidence: 0.65,
+                             applyAtOnce: false
+                         ))
+                     }
+                     return JazzTextLeadResponse(
+                         genre: .prose,
+                         palette: [JazzTextVoice(voice: .punctuate, strength: 1.0)],
+                         suggestions: suggestions,
+                         vocabulary: ["Uchiage"],
+                         why: "Team terms and spelling"
+                     )
+                 }
+
+                 let detector = WritingPauseDetector(pauseDelay: 0)
+                 detector.noteTyping(
+                     character: 0x2E,
+                     paragraph: initial,
+                     range: NSRange(location: 0, length: (initial as NSString).length),
+                     caret: (initial as NSString).length
+                 )
+                 coord.writingPartner.setBandleaderForTesting(stub)
+                 coord.writingPartner.setPauseDetectorForTesting(detector)
+                 coord.writingPartner.triggerPauseCheckForTesting(in: tv, coordinator: coord)
+                 waitForPartner(tv)
+
+                 let offeredAfterPause = coord.writingPartner.suggestions.map { "\($0.edit.original)->\($0.edit.replacement)" }.joined(separator: ",")
+                 let vocabKnown = coord.writingPartner.sessionMemoryForTesting.isKnownWord("Uchiage")
+                 let acceptedIds = stub.feedbackItems.filter { $0.outcome == .accepted }.map(\.suggestionId).joined(separator: ",")
+                 log("writing-partner-bandleader-spelling-pause", initial,
+                     "text=\(box.text) offered=\(offeredAfterPause) vocab=\(vocabKnown) accepted=\(acceptedIds)",
+                     expect: "text=We use Pixerate from their on Uchiage. offered=their->there vocab=true accepted=sug-term-pixerate,sug-wrong-form")
+
+                 // Accept the offered uncertain suggestion with Tab -> plays through cursor and reports .accepted
+                 caretAfter("their", in: tv)
+                 tv.doCommand(by: #selector(NSResponder.insertTab(_:)))
+                 waitForPartner(tv)
+                 let acceptedAfterTab = stub.feedbackItems.filter { $0.outcome == .accepted }.map(\.suggestionId).joined(separator: ",")
+                 log("writing-partner-bandleader-spelling-accept", "Tab on offered 'their'",
+                     "text=\(box.text) offered=\(coord.writingPartner.suggestions.count) accepted=\(acceptedAfterTab)",
+                     expect: "text=We use Pixerate from there on Uchiage. offered=0 accepted=sug-term-pixerate,sug-wrong-form,sug-offer-their")
+
+                 // Undo the accepted suggestion -> reverts to 'their' and reports .undone
+                 tv.undoManager?.undo(); pump(0.3)
+                 waitForPartner(tv)
+                 let lastFeedback = stub.feedbackItems.last.map { "\($0.suggestionId):\($0.outcome.rawValue)" } ?? "none"
+                 log("writing-partner-bandleader-spelling-undo", "⌘Z after accepting 'there'",
+                     "text=\(box.text) lastFeedback=\(lastFeedback)",
+                     expect: "text=We use Pixerate from their on Uchiage. lastFeedback=sug-offer-their:undone")
+             }
+
              defaults.removeObject(forKey: WritingPartnerDefaults.spelling)
              defaults.removeObject(forKey: WritingPartnerDefaults.doubledWords)
              if let savedMode { defaults.set(savedMode, forKey: WritingPartnerDefaults.mode) } else { defaults.removeObject(forKey: WritingPartnerDefaults.mode) }

@@ -69,6 +69,37 @@ nonisolated enum JazzTextSuggestionKind: String, Codable, Sendable, CaseIterable
     case title = "title"
     case alert = "alert"
     case quote = "quote"
+    case spelling = "spelling"
+    case wrongWord = "wrong-word"
+    case houseStyle = "house-style"
+    case tone = "tone"
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        switch raw {
+        case "list": self = .list
+        case "heading": self = .heading
+        case "math": self = .math
+        case "title": self = .title
+        case "alert": self = .alert
+        case "quote": self = .quote
+        case "spelling": self = .spelling
+        case "wrong-word", "wrongWord", "wrong_word": self = .wrongWord
+        case "house-style", "houseStyle", "house_style", "terms", "team-terms", "vocabulary": self = .houseStyle
+        case "tone": self = .tone
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unknown JazzTextSuggestionKind: \(raw)"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 
     var title: String {
         switch self {
@@ -78,6 +109,31 @@ nonisolated enum JazzTextSuggestionKind: String, Codable, Sendable, CaseIterable
         case .title: return "Make this a title"
         case .alert: return "Format as alert"
         case .quote: return "Format as quote"
+        case .spelling: return "Fix spelling"
+        case .wrongWord: return "Use the right word"
+        case .houseStyle: return "Follow house style"
+        case .tone: return "Adjust tone"
+        }
+    }
+
+    /// True when the suggestion edits words or phrases inline through the partner's cursor or
+    /// underline offer (#98, #120), rather than proposing a block-level structural card.
+    var isInlineEdit: Bool {
+        switch self {
+        case .spelling, .wrongWord, .houseStyle, .tone:
+            return true
+        case .list, .heading, .math, .title, .alert, .quote:
+            return false
+        }
+    }
+
+    /// True when the suggestion is governed by the spelling & vocabulary tier (#98, #120).
+    var isSpellingKind: Bool {
+        switch self {
+        case .spelling, .wrongWord, .houseStyle:
+            return true
+        default:
+            return false
         }
     }
 }
@@ -189,16 +245,179 @@ nonisolated struct JazzTextRange: Codable, Sendable, Equatable {
 }
 
 nonisolated struct JazzTextSuggestion: Codable, Sendable, Equatable {
+    var id: String?
     var kind: JazzTextSuggestionKind
     var range: JazzTextRange
     var replacement: String
     var why: String
+    var confidence: Double?
+    var applyAtOnce: Bool?
+    var checkId: String?
 
-    init(kind: JazzTextSuggestionKind, range: JazzTextRange, replacement: String, why: String) {
+    init(
+        id: String? = nil,
+        kind: JazzTextSuggestionKind,
+        range: JazzTextRange,
+        replacement: String,
+        why: String,
+        confidence: Double? = nil,
+        applyAtOnce: Bool? = nil,
+        checkId: String? = nil
+    ) {
+        self.id = id
         self.kind = kind
         self.range = range
         self.replacement = replacement
         self.why = why
+        self.confidence = confidence
+        self.applyAtOnce = applyAtOnce
+        self.checkId = checkId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case range
+        case replacement
+        case why
+        case confidence
+        case applyAtOnce
+        case checkId
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decodeIfPresent(String.self, forKey: .id)
+        self.kind = try container.decode(JazzTextSuggestionKind.self, forKey: .kind)
+        self.range = try container.decode(JazzTextRange.self, forKey: .range)
+        self.replacement = try container.decode(String.self, forKey: .replacement)
+        self.why = try container.decodeIfPresent(String.self, forKey: .why) ?? ""
+        self.confidence = try container.decodeIfPresent(Double.self, forKey: .confidence)
+        self.applyAtOnce = try container.decodeIfPresent(Bool.self, forKey: .applyAtOnce)
+        self.checkId = try container.decodeIfPresent(String.self, forKey: .checkId)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(id, forKey: .id)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(range, forKey: .range)
+        try container.encode(replacement, forKey: .replacement)
+        try container.encode(why, forKey: .why)
+        try container.encodeIfPresent(confidence, forKey: .confidence)
+        try container.encodeIfPresent(applyAtOnce, forKey: .applyAtOnce)
+        try container.encodeIfPresent(checkId, forKey: .checkId)
+    }
+
+    /// Stable identifier used when reporting feedback (`Pixerate/schemas#87`) even if the server omitted `id`.
+    var effectiveId: String {
+        id ?? "\(kind.rawValue):\(range.start)-\(range.end):\(replacement)"
+    }
+
+    /// Certain inline suggestions apply at once through the partner's cursor in Automatic mode;
+    /// lower-confidence or ambiguous ones are offered as underlined suggestions (#103, #120).
+    var shouldApplyAtOnce: Bool {
+        guard kind.isInlineEdit else { return false }
+        if let applyAtOnce { return applyAtOnce }
+        if let confidence { return confidence >= 0.85 }
+        return true
+    }
+}
+
+// MARK: - Feedback Schema Types (Pixerate/schemas#87)
+
+nonisolated enum JazzTextFeedbackOutcome: String, Codable, Sendable, CaseIterable {
+    case accepted = "accepted"
+    case edited = "edited"
+    case dismissed = "dismissed"
+    case ignored = "ignored"
+    case undone = "undone"
+}
+
+nonisolated struct JazzTextFeedbackItem: Codable, Sendable, Equatable {
+    var suggestionId: String
+    var kind: JazzTextSuggestionKind
+    var outcome: JazzTextFeedbackOutcome
+    var original: String?
+    var replacement: String
+    var finalText: String?
+    var checkId: String?
+
+    init(
+        suggestionId: String,
+        kind: JazzTextSuggestionKind,
+        outcome: JazzTextFeedbackOutcome,
+        original: String? = nil,
+        replacement: String,
+        finalText: String? = nil,
+        checkId: String? = nil
+    ) {
+        self.suggestionId = suggestionId
+        self.kind = kind
+        self.outcome = outcome
+        self.original = original
+        self.replacement = replacement
+        self.finalText = finalText
+        self.checkId = checkId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case suggestionId
+        case kind
+        case outcome
+        case original
+        case replacement
+        case finalText
+        case checkId
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.suggestionId = try container.decode(String.self, forKey: .suggestionId)
+        self.kind = try container.decode(JazzTextSuggestionKind.self, forKey: .kind)
+        self.outcome = try container.decode(JazzTextFeedbackOutcome.self, forKey: .outcome)
+        self.original = try container.decodeIfPresent(String.self, forKey: .original)
+        self.replacement = try container.decode(String.self, forKey: .replacement)
+        self.finalText = try container.decodeIfPresent(String.self, forKey: .finalText)
+        self.checkId = try container.decodeIfPresent(String.self, forKey: .checkId)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(suggestionId, forKey: .suggestionId)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(outcome, forKey: .outcome)
+        try container.encodeIfPresent(original, forKey: .original)
+        try container.encode(replacement, forKey: .replacement)
+        try container.encodeIfPresent(finalText, forKey: .finalText)
+        try container.encodeIfPresent(checkId, forKey: .checkId)
+    }
+}
+
+nonisolated struct JazzTextFeedbackRequest: Codable, Sendable, Equatable {
+    var items: [JazzTextFeedbackItem]
+    var teamId: String?
+
+    init(items: [JazzTextFeedbackItem], teamId: String? = nil) {
+        self.items = items
+        self.teamId = teamId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case items
+        case teamId
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.items = try container.decodeIfPresent([JazzTextFeedbackItem].self, forKey: .items) ?? []
+        self.teamId = try container.decodeIfPresent(String.self, forKey: .teamId)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(items, forKey: .items)
+        try container.encodeIfPresent(teamId, forKey: .teamId)
     }
 }
 
@@ -317,6 +536,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
     var voices: [JazzTextVoiceState]
     var teamId: String?
     var language: String?
+    var feedback: [JazzTextFeedbackItem]?
 
     init(
         paragraph: String,
@@ -325,7 +545,8 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         flavor: JazzTextFlavor = .gfm,
         voices: [JazzTextVoiceState] = [],
         teamId: String? = nil,
-        language: String? = nil
+        language: String? = nil,
+        feedback: [JazzTextFeedbackItem]? = nil
     ) {
         self.paragraph = paragraph
         self.before = before
@@ -334,6 +555,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         self.voices = voices
         self.teamId = teamId
         self.language = language
+        self.feedback = feedback
     }
 
     enum CodingKeys: String, CodingKey {
@@ -344,6 +566,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         case voices
         case teamId
         case language
+        case feedback
     }
 
     init(from decoder: Decoder) throws {
@@ -355,6 +578,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         self.voices = try container.decodeIfPresent([JazzTextVoiceState].self, forKey: .voices) ?? []
         self.teamId = try container.decodeIfPresent(String.self, forKey: .teamId)
         self.language = try container.decodeIfPresent(String.self, forKey: .language)
+        self.feedback = try container.decodeIfPresent([JazzTextFeedbackItem].self, forKey: .feedback)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -366,6 +590,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         try container.encode(voices, forKey: .voices)
         try container.encodeIfPresent(teamId, forKey: .teamId)
         try container.encodeIfPresent(language, forKey: .language)
+        try container.encodeIfPresent(feedback, forKey: .feedback)
     }
 }
 
@@ -374,6 +599,7 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
     var palette: [JazzTextVoice]
     var suggestions: [JazzTextSuggestion]
     var grammar: [JazzTextGrammarCorrection]
+    var vocabulary: [String]?
     var why: String
     var fuelBalance: Int?
 
@@ -382,6 +608,7 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
         palette: [JazzTextVoice],
         suggestions: [JazzTextSuggestion] = [],
         grammar: [JazzTextGrammarCorrection] = [],
+        vocabulary: [String]? = nil,
         why: String,
         fuelBalance: Int? = nil
     ) {
@@ -389,6 +616,7 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
         self.palette = palette
         self.suggestions = suggestions
         self.grammar = grammar
+        self.vocabulary = vocabulary
         self.why = why
         self.fuelBalance = fuelBalance
     }
@@ -398,6 +626,7 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
         case palette
         case suggestions
         case grammar
+        case vocabulary
         case why
         case fuelBalance
     }
@@ -408,6 +637,7 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
         self.palette = try container.decode([JazzTextVoice].self, forKey: .palette)
         self.suggestions = try container.decodeIfPresent([JazzTextSuggestion].self, forKey: .suggestions) ?? []
         self.grammar = try container.decodeIfPresent([JazzTextGrammarCorrection].self, forKey: .grammar) ?? []
+        self.vocabulary = try container.decodeIfPresent([String].self, forKey: .vocabulary)
         self.why = try container.decode(String.self, forKey: .why)
         self.fuelBalance = try container.decodeIfPresent(Int.self, forKey: .fuelBalance)
     }
@@ -420,6 +650,7 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
         if !grammar.isEmpty {
             try container.encode(grammar, forKey: .grammar)
         }
+        try container.encodeIfPresent(vocabulary, forKey: .vocabulary)
         try container.encode(why, forKey: .why)
         try container.encodeIfPresent(fuelBalance, forKey: .fuelBalance)
     }
@@ -427,20 +658,108 @@ nonisolated struct JazzTextLeadResponse: Codable, Sendable, Equatable {
 
 // MARK: - WritingBandleader Protocol & Providers
 
-/// Remembers suggestions dismissed during the editing session so the bandleader learns for the session.
+/// Remembers suggestions dismissed, vocabulary learned, and feedback reported during the editing session.
 nonisolated final class BandleaderSessionMemory: @unchecked Sendable {
     private var dismissedSuggestionKeys: Set<String> = []
+    private var dismissedSuggestionIds: Set<String> = []
+    private var dismissedWordReplacements: Set<String> = []
+    private var learnedVocabulary: Set<String> = []
+    private var feedbackHistory: [JazzTextFeedbackItem] = []
 
     init() {}
 
     func dismiss(suggestion: JazzTextSuggestion, in paragraph: String) {
         let key = makeKey(suggestion: suggestion, paragraph: paragraph)
         dismissedSuggestionKeys.insert(key)
+        // Only a server id names the same suggestion across paragraphs; the derived id doesn't
+        if let id = suggestion.id { dismissedSuggestionIds.insert(id) }
+        let ns = paragraph as NSString
+        let range = suggestion.range.nsRange
+        if range.location >= 0, NSMaxRange(range) <= ns.length {
+            let original = ns.substring(with: range)
+            dismissWord(original, replacement: suggestion.replacement, suggestionId: suggestion.id)
+        }
+    }
+
+    func dismissWord(_ original: String, replacement: String, suggestionId: String? = nil) {
+        let pairKey = "\(original.lowercased())->\(replacement.lowercased())"
+        dismissedWordReplacements.insert(pairKey)
+        if let suggestionId {
+            dismissedSuggestionIds.insert(suggestionId)
+        }
+        learnWord(original)
     }
 
     func isDismissed(suggestion: JazzTextSuggestion, in paragraph: String) -> Bool {
+        if let id = suggestion.id, dismissedSuggestionIds.contains(id) {
+            return true
+        }
         let key = makeKey(suggestion: suggestion, paragraph: paragraph)
-        return dismissedSuggestionKeys.contains(key)
+        if dismissedSuggestionKeys.contains(key) {
+            return true
+        }
+        let ns = paragraph as NSString
+        let range = suggestion.range.nsRange
+        if range.location >= 0, NSMaxRange(range) <= ns.length {
+            let original = ns.substring(with: range)
+            let pairKey = "\(original.lowercased())->\(suggestion.replacement.lowercased())"
+            if dismissedWordReplacements.contains(pairKey) {
+                return true
+            }
+        }
+        return false
+    }
+
+    func isWordReplacementDismissed(original: String, replacement: String, suggestionId: String? = nil) -> Bool {
+        if let suggestionId, dismissedSuggestionIds.contains(suggestionId) {
+            return true
+        }
+        let pairKey = "\(original.lowercased())->\(replacement.lowercased())"
+        return dismissedWordReplacements.contains(pairKey)
+    }
+
+    func learnWord(_ word: String) {
+        let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        learnedVocabulary.insert(trimmed)
+        learnedVocabulary.insert(trimmed.lowercased())
+    }
+
+    func learnWords(_ words: [String]) {
+        for word in words {
+            learnWord(word)
+        }
+    }
+
+    func isKnownWord(_ word: String) -> Bool {
+        let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return learnedVocabulary.contains(trimmed) || learnedVocabulary.contains(trimmed.lowercased())
+    }
+
+    var vocabulary: Set<String> {
+        learnedVocabulary
+    }
+
+    func recordFeedback(_ item: JazzTextFeedbackItem) {
+        feedbackHistory.append(item)
+        switch item.outcome {
+        case .dismissed, .undone:
+            dismissedSuggestionIds.insert(item.suggestionId)
+            if let original = item.original, !original.isEmpty {
+                dismissWord(original, replacement: item.replacement, suggestionId: item.suggestionId)
+            }
+        case .accepted, .edited, .ignored:
+            break
+        }
+    }
+
+    var recordedFeedback: [JazzTextFeedbackItem] {
+        feedbackHistory
+    }
+
+    func latestOutcome(for suggestionId: String) -> JazzTextFeedbackOutcome? {
+        feedbackHistory.last(where: { $0.suggestionId == suggestionId })?.outcome
     }
 
     private func makeKey(suggestion: JazzTextSuggestion, paragraph: String) -> String {
@@ -449,11 +768,20 @@ nonisolated final class BandleaderSessionMemory: @unchecked Sendable {
 
     func clear() {
         dismissedSuggestionKeys.removeAll()
+        dismissedSuggestionIds.removeAll()
+        dismissedWordReplacements.removeAll()
+        learnedVocabulary.removeAll()
+        feedbackHistory.removeAll()
     }
 }
 
 nonisolated protocol WritingBandleader: Sendable {
     func lead(request: JazzTextLeadRequest) async throws -> JazzTextLeadResponse?
+    func reportFeedback(_ request: JazzTextFeedbackRequest) async
+}
+
+nonisolated extension WritingBandleader {
+    func reportFeedback(_ request: JazzTextFeedbackRequest) async {}
 }
 
 /// The default bandleader when signed out, offline or switched off: local voices only.
@@ -862,8 +1190,22 @@ nonisolated final class WritingPauseDetector: @unchecked Sendable {
     ) {
         pendingParagraph = oldParagraph
         pendingRange = oldRange
+        pendingCaret = oldRange.location
         // Immediate trigger on leaving a paragraph (if revision hasn't been requested)
         scheduledTime = clock()
+    }
+
+    /// Updates the pending paragraph text and range when in-paragraph edits (like local punctuation)
+    /// change the text while a pause timer is already scheduled.
+    func updatePendingParagraph(
+        _ paragraph: String,
+        range: NSRange,
+        caret: Int
+    ) {
+        guard scheduledTime != nil else { return }
+        pendingParagraph = paragraph
+        pendingRange = range
+        pendingCaret = caret
     }
 
     /// Evaluates if a pause has occurred. Returns the paragraph and range if eligible, or nil.
@@ -919,22 +1261,260 @@ extension WritingBandleaderFactory {
         if let overrideBandleader { return overrideBandleader }
         return isPixerateAvailable() ? makePixerateBandleader() : NoneWritingBandleader()
     }
+
+    /// Calls the active pause-tier bandleader (`override` if set, else `provider`), and when the
+    /// Pixerate tier returns `nil` or throws (signed out, out of Fuel `402`, rate-limited `429`,
+    /// or offline), falls back to the on-device bandleader if available (#120).
+    static func leadWithFallback(
+        request: JazzTextLeadRequest,
+        provider: WritingPartnerProvider,
+        override: (any WritingBandleader)? = nil
+    ) async -> (response: JazzTextLeadResponse, bandleader: any WritingBandleader)? {
+        if let override {
+            if let response = try? await override.lead(request: request) {
+                return (response, override)
+            }
+            if isOnDeviceAvailable() {
+                let fallback = makeOnDeviceBandleader()
+                if let response = try? await fallback.lead(request: request) {
+                    return (response, fallback)
+                }
+            }
+            return nil
+        }
+
+        if let activeOverride = overrideBandleader {
+            if let response = try? await activeOverride.lead(request: request) {
+                return (response, activeOverride)
+            }
+            if isOnDeviceAvailable() {
+                let fallback = makeOnDeviceBandleader()
+                if let response = try? await fallback.lead(request: request) {
+                    return (response, fallback)
+                }
+            }
+            return nil
+        }
+
+        switch provider {
+        case .pixerate:
+            let primary = makePixerateBandleader()
+            if let response = try? await primary.lead(request: request) {
+                return (response, primary)
+            }
+            if isOnDeviceAvailable() {
+                let fallback = makeOnDeviceBandleader()
+                if let response = try? await fallback.lead(request: request) {
+                    return (response, fallback)
+                }
+            }
+            return nil
+        case .onDevice:
+            let onDevice = makeOnDeviceBandleader()
+            if let response = try? await onDevice.lead(request: request) {
+                return (response, onDevice)
+            }
+            return nil
+        case .none:
+            return nil
+        }
+    }
 }
 
 /// A bandleader that answers from a handler, for tests.
 nonisolated final class StubWritingBandleader: WritingBandleader, @unchecked Sendable {
     typealias Handler = @Sendable (JazzTextLeadRequest) async throws -> JazzTextLeadResponse?
+    typealias FeedbackHandler = @Sendable (JazzTextFeedbackRequest) async -> Void
 
     private let handler: Handler
+    private let feedbackHandler: FeedbackHandler?
     private(set) var requests: [JazzTextLeadRequest] = []
+    private(set) var feedbackRequests: [JazzTextFeedbackRequest] = []
 
-    init(handler: @escaping Handler) {
+    var feedbackItems: [JazzTextFeedbackItem] {
+        feedbackRequests.flatMap(\.items)
+    }
+
+    init(
+        handler: @escaping Handler,
+        feedbackHandler: FeedbackHandler? = nil
+    ) {
         self.handler = handler
+        self.feedbackHandler = feedbackHandler
     }
 
     func lead(request: JazzTextLeadRequest) async throws -> JazzTextLeadResponse? {
         requests.append(request)
         return try await handler(request)
+    }
+
+    func reportFeedback(_ request: JazzTextFeedbackRequest) async {
+        feedbackRequests.append(request)
+        await feedbackHandler?(request)
+    }
+}
+
+// MARK: - Bandleader Suggestion Planner (#120)
+
+/// Plans how a `JazzTextLeadResponse` should be applied in the editor:
+/// - `vocabulary`: personal and team vocabulary words learned from the server so they are neither
+///   flagged nor "corrected" away by the local spell checker.
+/// - `automaticEdits`: high-confidence / immediate inline spelling, wrong-word, and team-term fixes
+///   played at once through the partner's cursor in Automatic mode (each as its own undo step).
+/// - `offeredEdits`: lower-confidence inline suggestions (`shouldApplyAtOnce == false`) in Automatic
+///   mode, or all inline suggestions in Suggest mode (#103), offered as underlined suggestions.
+/// - `structuralSuggestion`: the first non-dismissed block-level structural suggestion (list, heading, etc.).
+nonisolated enum BandleaderSuggestionPlanner {
+    struct Plan: Sendable, Equatable {
+        var voiceSettings: ParagraphVoiceSettings
+        var vocabulary: [String]
+        var automaticEdits: [PartnerEdit]
+        var offeredEdits: [PartnerEdit]
+        var structuralSuggestion: JazzTextSuggestion?
+    }
+
+    static func plan(
+        response: JazzTextLeadResponse,
+        paragraph: String,
+        paragraphRange: NSRange,
+        documentText: String,
+        flavor: MarkdownFlavor = .github,
+        mode: WritingPartnerMode = .automatic,
+        spellingEnabled: Bool = true,
+        memory: BandleaderSessionMemory
+    ) -> Plan {
+        let voiceSettings = ParagraphVoiceSettings.from(response: response, paragraphRange: paragraphRange)
+
+        var learnedWords: [String] = []
+        if let vocab = response.vocabulary {
+            for word in vocab {
+                let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty, !learnedWords.contains(trimmed) {
+                    learnedWords.append(trimmed)
+                }
+            }
+            memory.learnWords(learnedWords)
+        }
+
+        let paragraphNS = paragraph as NSString
+        let documentNS = documentText as NSString
+        let document = MarkdownDocument.parse(documentText, flavor: flavor)
+        let excludedRanges = Self.excludedRanges(in: document)
+
+        var automaticEdits: [PartnerEdit] = []
+        var offeredEdits: [PartnerEdit] = []
+        var structuralSuggestion: JazzTextSuggestion?
+
+        // Sort inline edits ascending by start offset so we can reject overlapping suggestions cleanly
+        var occupiedRanges: [NSRange] = []
+
+        for suggestion in response.suggestions {
+            guard !memory.isDismissed(suggestion: suggestion, in: paragraph) else { continue }
+
+            if !suggestion.kind.isInlineEdit {
+                if structuralSuggestion == nil {
+                    structuralSuggestion = suggestion
+                }
+                continue
+            }
+
+            if suggestion.kind.isSpellingKind && !spellingEnabled {
+                continue
+            }
+
+            let localStart = suggestion.range.start
+            let localEnd = suggestion.range.end
+            guard localStart >= 0, localEnd >= localStart, localEnd <= paragraphNS.length else { continue }
+
+            let localRange = NSRange(location: localStart, length: localEnd - localStart)
+            let rawRange = NSRange(location: paragraphRange.location + localStart, length: localRange.length)
+            guard NSMaxRange(rawRange) <= documentNS.length else { continue }
+
+            let original = paragraphNS.substring(with: localRange)
+            guard documentNS.substring(with: rawRange) == original else { continue }
+            guard original != suggestion.replacement else { continue }
+
+            // Never touch code, math, HTML, front matter, tables, or link URLs
+            if excludedRanges.contains(where: { NSIntersectionRange($0, rawRange).length > 0 }) {
+                continue
+            }
+
+            // If this word is in the user's vocabulary (and the suggestion isn't an explicit house-style
+            // team term rule), do not flag or "correct" it away.
+            if suggestion.kind != .houseStyle && memory.isKnownWord(original) {
+                continue
+            }
+
+            // Skip if the user already undid or dismissed this specific word -> replacement
+            if memory.isWordReplacementDismissed(
+                original: original,
+                replacement: suggestion.replacement,
+                suggestionId: suggestion.effectiveId
+            ) {
+                continue
+            }
+
+            // Avoid overlapping inline edits in the same paragraph pass
+            if occupiedRanges.contains(where: { NSIntersectionRange($0, rawRange).length > 0 }) {
+                continue
+            }
+            occupiedRanges.append(rawRange)
+
+            let rules: [PunctuationRule] = suggestion.kind.isSpellingKind ? [.spelling] : []
+            let spellingWords: [String] = suggestion.kind.isSpellingKind ? [original] : []
+            let edit = PartnerEdit(
+                range: rawRange,
+                original: original,
+                replacement: suggestion.replacement,
+                rules: rules,
+                spellingWords: spellingWords,
+                actionName: WritingPartnerDefaults.actionName,
+                bandleaderSuggestionId: suggestion.effectiveId,
+                bandleaderSuggestionKind: suggestion.kind,
+                bandleaderCheckId: suggestion.checkId
+            )
+
+            if mode == .automatic && suggestion.shouldApplyAtOnce {
+                automaticEdits.append(edit)
+            } else if mode != .off {
+                offeredEdits.append(edit)
+            }
+        }
+
+        automaticEdits.sort { $0.range.location < $1.range.location }
+        offeredEdits.sort { $0.range.location < $1.range.location }
+
+        return Plan(
+            voiceSettings: voiceSettings,
+            vocabulary: learnedWords,
+            automaticEdits: automaticEdits,
+            offeredEdits: offeredEdits,
+            structuralSuggestion: structuralSuggestion
+        )
+    }
+
+    private static func excludedRanges(in document: MarkdownDocument) -> [NSRange] {
+        var ranges: [NSRange] = []
+        document.root.walk { node in
+            switch node.kind {
+            case .code, .codeBlock, .math, .htmlInline, .htmlBlock, .frontMatter, .table:
+                ranges.append(node.range)
+            case .link, .image:
+                // Exclude the URL/title tail after the `[label]` part of a link or image
+                if let lastChild = node.children.last {
+                    let tailStart = NSMaxRange(lastChild.range)
+                    let tailEnd = NSMaxRange(node.range)
+                    if tailEnd > tailStart {
+                        ranges.append(NSRange(location: tailStart, length: tailEnd - tailStart))
+                    }
+                } else {
+                    ranges.append(node.range)
+                }
+            default:
+                break
+            }
+        }
+        return ranges
     }
 }
 

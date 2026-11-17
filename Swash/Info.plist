@@ -50,6 +50,8 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>530</string>
+	<key>NSAppleScriptEnabled</key>
+	<true/>
 	<key>NSServices</key>
 	<array>
 		<dict>
@@ -69,6 +71,8 @@
 			</array>
 		</dict>
 	</array>
+	<key>OSAScriptingDefinition</key>
+	<string>Swash.sdef</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>

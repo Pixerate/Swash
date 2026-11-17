@@ -1453,6 +1453,247 @@ do {
           "Unsupported document language leaves pause-tier grammar rules off")
 }
 
+// MARK: - Subscription Spelling, Vocabulary, Team Terms & Feedback (#120, Pixerate/schemas#87, Pixerate/jazz#30)
+
+do {
+    // 1. Decoding server suggestions for spelling, wrong-word, and team terms (house-style / terms)
+    let serverJSON = """
+    {
+      "genre": "prose",
+      "palette": [{"voice": "punctuate", "strength": 1.0}],
+      "vocabulary": ["Pixerate", "Uchiage", "Swash"],
+      "suggestions": [
+        {
+          "id": "sug-team-1",
+          "kind": "terms",
+          "range": {"start": 3, "end": 11},
+          "replacement": "Pixerate",
+          "why": "Team house style: capitalize product name",
+          "confidence": 0.98,
+          "applyAtOnce": true,
+          "checkId": "terms.product-casing"
+        },
+        {
+          "id": "sug-wrong-1",
+          "kind": "wrong-word",
+          "range": {"start": 17, "end": 21},
+          "replacement": "from",
+          "why": "Wrong word in context: 'from' instead of 'form'",
+          "confidence": 0.94,
+          "applyAtOnce": true
+        },
+        {
+          "id": "sug-uncertain-1",
+          "kind": "wrong-word",
+          "range": {"start": 22, "end": 27},
+          "replacement": "there",
+          "why": "Possible wrong word: 'there' vs 'their'",
+          "confidence": 0.65,
+          "applyAtOnce": false
+        },
+        {
+          "id": "sug-vocab-ignored",
+          "kind": "spelling",
+          "range": {"start": 31, "end": 38},
+          "replacement": "UchiageFixed",
+          "why": "Should be suppressed because Uchiage is in vocabulary",
+          "confidence": 0.95,
+          "applyAtOnce": true
+        }
+      ],
+      "why": "Checked with personal vocabulary and team terms",
+      "fuelBalance": 84
+    }
+    """
+    let decoded = try! JSONDecoder().decode(JazzTextLeadResponse.self, from: Data(serverJSON.utf8))
+    check(decoded.vocabulary == ["Pixerate", "Uchiage", "Swash"], "Server response decodes personal & team vocabulary")
+    check(decoded.suggestions.count == 4, "Decoded all 4 server suggestions")
+    check(decoded.suggestions[0].kind == .houseStyle, "'terms' kind maps to .houseStyle")
+    check(decoded.suggestions[0].checkId == "terms.product-casing", "Preserves house-style checkId")
+    check(decoded.suggestions[0].shouldApplyAtOnce, "Certain team-term suggestion applies at once")
+    check(decoded.suggestions[1].kind == .wrongWord && decoded.suggestions[1].shouldApplyAtOnce, "Certain wrong-word suggestion applies at once")
+    check(!decoded.suggestions[2].shouldApplyAtOnce, "Uncertain wrong-word suggestion is offered rather than applied at once")
+
+    // 2. Planner separates immediate edits from offered suggestions and protects vocabulary & code
+    let paragraph = "In pixerate sent form their on Uchiage with `pixerate`."
+    let memory = BandleaderSessionMemory()
+    let plan = BandleaderSuggestionPlanner.plan(
+        response: decoded,
+        paragraph: paragraph,
+        paragraphRange: NSRange(location: 0, length: (paragraph as NSString).length),
+        documentText: paragraph,
+        flavor: .github,
+        mode: .automatic,
+        spellingEnabled: true,
+        memory: memory
+    )
+    check(memory.isKnownWord("Uchiage") && memory.isKnownWord("uchiage"), "Vocabulary words are learned in session memory")
+    check(plan.automaticEdits.count == 2, "2 certain suggestions planned for immediate playback: got \(plan.automaticEdits.count)")
+    check(plan.automaticEdits.map { "\($0.original)->\($0.replacement)" } == ["pixerate->Pixerate", "form->from"],
+          "Automatic edits fix team term and certain wrong-word error, skipping vocabulary word 'Uchiage'")
+    check(plan.offeredEdits.count == 1, "1 uncertain suggestion planned for Suggest-style offer")
+    check(plan.offeredEdits.first?.original == "their" && plan.offeredEdits.first?.replacement == "there",
+          "Uncertain wrong-word suggestion is offered as underline")
+
+    // In Suggest mode, even high-confidence suggestions are offered rather than applied at once
+    let suggestMemory = BandleaderSessionMemory()
+    let suggestPlan = BandleaderSuggestionPlanner.plan(
+        response: decoded,
+        paragraph: paragraph,
+        paragraphRange: NSRange(location: 0, length: (paragraph as NSString).length),
+        documentText: paragraph,
+        flavor: .github,
+        mode: .suggest,
+        spellingEnabled: true,
+        memory: suggestMemory
+    )
+    check(suggestPlan.automaticEdits.isEmpty && suggestPlan.offeredEdits.count == 3,
+          "In Suggest mode, all 3 eligible suggestions are offered")
+
+    // Inline code is never modified even if server sends a range inside backticks
+    let codeSuggestion = JazzTextSuggestion(
+        id: "sug-code",
+        kind: .houseStyle,
+        range: JazzTextRange(start: 45, end: 53), // inside `pixerate`
+        replacement: "Pixerate",
+        why: "Should skip inline code"
+    )
+    let codePlan = BandleaderSuggestionPlanner.plan(
+        response: JazzTextLeadResponse(genre: .prose, palette: [], suggestions: [codeSuggestion], why: ""),
+        paragraph: paragraph,
+        paragraphRange: NSRange(location: 0, length: (paragraph as NSString).length),
+        documentText: paragraph,
+        flavor: .github,
+        mode: .automatic,
+        spellingEnabled: true,
+        memory: memory
+    )
+    check(codePlan.automaticEdits.isEmpty && codePlan.offeredEdits.isEmpty, "Planner never edits inside inline code")
+
+    // 3. Feedback reporting (POST /api/agent/text-feedback, Pixerate/schemas#87)
+    nonisolated final class FeedbackRecorder: @unchecked Sendable {
+        var paths: [String] = []
+        var requests: [JazzTextFeedbackRequest] = []
+    }
+    let recorder = FeedbackRecorder()
+    let feedbackBandleader = PixerateWritingBandleader(
+        postHandler: { path, body in
+            recorder.paths.append(path)
+            if let req = try? JSONDecoder().decode(JazzTextFeedbackRequest.self, from: body) {
+                recorder.requests.append(req)
+            }
+            return Data("{\"ok\":true}".utf8)
+        },
+        teamIdProvider: { "team_pixerate" }
+    )
+
+    let feedbackItems = [
+        JazzTextFeedbackItem(
+            suggestionId: "sug-team-1",
+            kind: .houseStyle,
+            outcome: .accepted,
+            original: "pixerate",
+            replacement: "Pixerate",
+            finalText: "Pixerate",
+            checkId: "terms.product-casing"
+        ),
+        JazzTextFeedbackItem(
+            suggestionId: "sug-uncertain-1",
+            kind: .wrongWord,
+            outcome: .dismissed,
+            original: "their",
+            replacement: "there"
+        ),
+        JazzTextFeedbackItem(
+            suggestionId: "sug-wrong-1",
+            kind: .wrongWord,
+            outcome: .undone,
+            original: "form",
+            replacement: "from",
+            finalText: "form"
+        )
+    ]
+    await feedbackBandleader.reportFeedback(JazzTextFeedbackRequest(items: feedbackItems))
+    check(recorder.paths == ["/api/agent/text-feedback"], "Feedback posts to /api/agent/text-feedback")
+    check(recorder.requests.first?.teamId == "team_pixerate", "Feedback includes active teamId")
+    check(recorder.requests.first?.items == feedbackItems, "Feedback round-trips accepted, dismissed, and undone outcomes")
+
+    // Undone or dismissed feedback teaches session memory so the same correction isn't offered again
+    for item in feedbackItems {
+        memory.recordFeedback(item)
+    }
+    let repeatPlan = BandleaderSuggestionPlanner.plan(
+        response: decoded,
+        paragraph: paragraph,
+        paragraphRange: NSRange(location: 0, length: (paragraph as NSString).length),
+        documentText: paragraph,
+        flavor: .github,
+        mode: .automatic,
+        spellingEnabled: true,
+        memory: memory
+    )
+    check(repeatPlan.automaticEdits.map(\.original) == ["pixerate"],
+          "Undone correction ('form'->'from') is not applied again in the session")
+    check(repeatPlan.offeredEdits.isEmpty,
+          "Dismissed suggestion ('their'->'there') is not offered again in the session")
+
+    // 4. Fallback chain: Signed out, out of Fuel (402), rate-limited (429), or offline -> on-device tier -> local spell checker
+    let savedMakePixerate = WritingBandleaderFactory.makePixerateBandleader
+    let savedMakeOnDevice = WritingBandleaderFactory.makeOnDeviceBandleader
+    let savedIsPixerate = WritingBandleaderFactory.isPixerateAvailable
+    let savedIsOnDevice = WritingBandleaderFactory.isOnDeviceAvailable
+    let savedOverride = WritingBandleaderFactory.overrideBandleader
+    WritingBandleaderFactory.overrideBandleader = nil
+
+    let onDeviceStub = StubWritingBandleader { req in
+        JazzTextLeadResponse(
+            genre: .prose,
+            palette: [JazzTextVoice(voice: .punctuate, strength: 1.0)],
+            suggestions: [
+                JazzTextSuggestion(
+                    id: "on-device-1",
+                    kind: .wrongWord,
+                    range: JazzTextRange(start: 0, end: 4),
+                    replacement: "From",
+                    why: "On-device fallback fixed wrong word"
+                )
+            ],
+            why: "On-device fallback"
+        )
+    }
+    WritingBandleaderFactory.makeOnDeviceBandleader = { onDeviceStub }
+
+    let sampleReq = JazzTextLeadRequest(paragraph: "Form here we go.")
+    let refusals: [(String, Error)] = [
+        ("signedOut", PixerateRefusal.signedOut),
+        ("outOfFuel", PixerateRefusal.subscriptionRequired),
+        ("rateLimited", PixerateRefusal.rateLimited(until: Date().addingTimeInterval(60))),
+        ("offline", URLError(.notConnectedToInternet))
+    ]
+
+    for (label, refusalError) in refusals {
+        WritingBandleaderFactory.isPixerateAvailable = { true }
+        WritingBandleaderFactory.isOnDeviceAvailable = { true }
+        WritingBandleaderFactory.makePixerateBandleader = {
+            PixerateWritingBandleader(postHandler: { _, _ in throw refusalError })
+        }
+        let fallbackResult = await WritingBandleaderFactory.leadWithFallback(request: sampleReq, provider: .pixerate)
+        check(fallbackResult?.response.why == "On-device fallback",
+              "When Pixerate fails with \(label), falls back to on-device tier")
+    }
+
+    // When on-device is also unavailable, falls back cleanly to nil (local PunctuateVoice + system spell checker)
+    WritingBandleaderFactory.isOnDeviceAvailable = { false }
+    let localFallback = await WritingBandleaderFactory.leadWithFallback(request: sampleReq, provider: .pixerate)
+    check(localFallback == nil, "When both Pixerate and on-device are unavailable, falls back to local spell checker")
+
+    WritingBandleaderFactory.makePixerateBandleader = savedMakePixerate
+    WritingBandleaderFactory.makeOnDeviceBandleader = savedMakeOnDevice
+    WritingBandleaderFactory.isPixerateAvailable = savedIsPixerate
+    WritingBandleaderFactory.isOnDeviceAvailable = savedIsOnDevice
+    WritingBandleaderFactory.overrideBandleader = savedOverride
+}
+
 // WritingPartner protocol conformance (#61): PunctuateVoice conforms to WritingPartner so the fast-tier
 // duet can be injected or moved to a shared package
 do {
