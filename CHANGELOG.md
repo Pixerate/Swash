@@ -1,5 +1,16 @@
 # swash
 
+## 1.29.0
+
+### Minor Changes
+
+- 709056f: Swash is scriptable with AppleScript on macOS: create a note, open Quick Note, count words and format Markdown. Automation with AppleScript and Shortcuts is documented in `docs/AUTOMATION.md`.
+- 90c25e2: Formalise the `WritingPartner` protocol for the fast-tier text duet and resolve Swift 6 actor-isolation warnings across the writing partner, bandleader, and Slack Markdown parser.
+
+### Patch Changes
+
+- 2c91d18: Compact the Writing settings tab by collapsing learned rules into a disclosure group, shortening verbose section footers, and capping the tab height with scrolling.
+
 ## 1.28.2
 
 ### Patch Changes
