@@ -875,6 +875,7 @@ final class WritingPartnerSession {
         }
     }
 
+    @MainActor
     private func applyBandleaderResponse(
         _ response: JazzTextLeadResponse,
         for paragraph: String,
