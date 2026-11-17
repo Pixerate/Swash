@@ -1,0 +1,63 @@
+name: Preview Screenshots
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'Swash/**/*.swift'
+      - 'Tests/SwashiOSTests/PreviewSnapshotTests.swift'
+      - '.github/workflows/preview-screenshots.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: preview-screenshots-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  render-previews:
+    name: Render Preview Screenshots
+    runs-on: macos-26
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Render iOS preview screenshots
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          runtimes = json.load(sys.stdin)["devices"]
+          ios = sorted((r for r in runtimes if ".iOS-" in r), key=lambda r: [int(p) for p in r.rsplit(".iOS-", 1)[1].split("-")], reverse=True)
+          print(next(d["udid"] for r in ios for d in runtimes[r] if d["name"].startswith("iPhone")))
+          ')
+          mkdir -p docs/previews
+          TEST_RUNNER_SWASH_PREVIEW_EXPORT_DIR="$PWD/docs/previews" \
+          xcodebuild test \
+            -scheme Swash \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -configuration Debug \
+            -derivedDataPath build-previews \
+            -only-testing:SwashiOSTests/PreviewSnapshotTests \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Commit updated preview screenshots
+        run: |
+          if [ -z "$(git status --porcelain docs/previews)" ]; then
+            echo "No preview screenshot changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/previews
+          git commit -m "chore: update preview screenshots [skip ci]"
+          git push origin HEAD:${{ github.head_ref }}
