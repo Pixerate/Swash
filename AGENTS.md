@@ -25,3 +25,10 @@ On completion of any work, agents must execute the following workflow:
 ## 4. CI Monitoring & Resolution
 - **Monitor CI**: After pushing to GitHub, monitor the GitHub Actions / CI process execution (e.g. using `gh run list` / `gh run watch` or checking status).
 - **Fix Errors & Warnings**: If the CI process fails or reports any errors or warnings, inspect the logs immediately, resolve the issues, re-validate locally, and push the fix. Repeat until CI builds cleanly without errors or warnings.
+
+## SwiftUI Dynamic Previews
+When adding or modifying SwiftUI `View`s, include Xcode dynamic previews per [Previews in Xcode](https://developer.apple.com/documentation/swiftui/previews-in-xcode):
+- Use the `#Preview` macro (not legacy `PreviewProvider`).
+- Use `@Previewable` with `@State` / `@Bindable` for interactive bindings instead of `.constant(...)` or custom wrapper structs.
+- Use `PreviewModifier` for shared preview environments/dependencies, and `#Preview(traits:)` or `#Preview(arguments:)` to cover key states and layout variants.
+- `#Preview(arguments:)` needs macOS 27 / iOS 26, above the macOS app's 15.7 deployment target: mark such previews in macOS-built code `@available(macOS 27, iOS 26, *)`.
