@@ -388,4 +388,10 @@ private extension FormatCommand {
         }
     }
 }
+#Preview("iOS Editor") {
+    @Previewable @State var document = SwashDocument(text: "# Swash\n\nLive **Markdown** preview.")
+    NavigationStack {
+        IOSContentView(document: $document, fileURL: nil)
+    }
+}
 #endif

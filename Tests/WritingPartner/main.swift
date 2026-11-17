@@ -328,7 +328,7 @@ do {
     """
     /// What the stub received. A class, because the @Sendable stub can't mutate captured locals
     /// (in top-level async code that crashed the runner).
-    final class Sent: @unchecked Sendable { var path: String?; var body: Data? }
+    nonisolated final class Sent: @unchecked Sendable { var path: String?; var body: Data? }
     let sent = Sent()
     let bandleader = PixerateWritingBandleader(
         postHandler: { path, body in
@@ -397,8 +397,12 @@ do {
 
 // 3. Pause detection on a manual clock
 do {
-    var currentTime = Date(timeIntervalSince1970: 1000)
-    let detector = WritingPauseDetector(pauseDelay: 1.2, clock: { currentTime })
+    nonisolated final class PauseClock: @unchecked Sendable {
+        var now = Date(timeIntervalSince1970: 1000)
+        func advance(_ seconds: TimeInterval) { now = now.addingTimeInterval(seconds) }
+    }
+    let clock = PauseClock()
+    let detector = WritingPauseDetector(pauseDelay: 1.2, clock: { clock.now })
 
     // Initially, nothing pending
     check(detector.checkPause() == nil, "No pause on clean state")
@@ -412,24 +416,24 @@ do {
     check(detector.isScheduled, "Pause is scheduled after typing period")
 
     // Advancing time before delay elapsed
-    currentTime = currentTime.addingTimeInterval(0.5)
+    clock.advance(0.5)
     check(detector.checkPause() == nil, "No pause before 1.2s delay elapsed")
 
     // Typing 'b' keeps advancing deadline (backoff/debouncing)
     detector.noteTyping(character: unichar(0x62), paragraph: "Hello world a. b", range: NSRange(location: 0, length: 16), caret: 16)
-    currentTime = currentTime.addingTimeInterval(0.8)
+    clock.advance(0.8)
     check(detector.checkPause() == nil, "No pause while person keeps typing within backoff window")
 
     // Typing '!' (sentence end)
     detector.noteTyping(character: 0x21, paragraph: "Hello world a. b!", range: NSRange(location: 0, length: 17), caret: 17)
-    currentTime = currentTime.addingTimeInterval(1.3)
+    clock.advance(1.3)
     let pause = detector.checkPause()
     check(pause != nil, "Pause triggers after sentence end and 1.2s delay")
     check(pause?.paragraph == "Hello world a. b!", "Pause returns correct paragraph")
 
     // Second check immediately or after same paragraph revision returns nil (memoized)
     detector.noteTyping(character: 0x21, paragraph: "Hello world a. b!", range: NSRange(location: 0, length: 17), caret: 17)
-    currentTime = currentTime.addingTimeInterval(1.3)
+    clock.advance(1.3)
     check(detector.checkPause() == nil, "At most one request per paragraph revision")
 
     // Leaving paragraph triggers immediate pause check
@@ -725,7 +729,7 @@ do {
     ]
 
     // Generator function for mock eval: behaves consistently for both Pixerate and OnDevice models
-    func generateEvalResponse(for req: JazzTextLeadRequest) -> JazzTextLeadResponse {
+    let generateEvalResponse: @Sendable (JazzTextLeadRequest) -> JazzTextLeadResponse = { req in
         let text = req.paragraph
         if text.contains("\n") && text.components(separatedBy: "\n").count >= 3 {
             let items = text.components(separatedBy: "\n").map { "- \($0)" }.joined(separator: "\n")
@@ -805,14 +809,14 @@ do {
     let pixerateEvalLeader = PixerateWritingBandleader(
         postHandler: { _, body in
             let req = try JSONDecoder().decode(JazzTextLeadRequest.self, from: body)
-            let res = generateEvalResponse(for: req)
+            let res = generateEvalResponse(req)
             return try JSONEncoder().encode(res)
         }
     )
 
     let onDeviceEvalLeader = OnDeviceWritingBandleader(
         customGenerator: { req in
-            return generateEvalResponse(for: req)
+            return generateEvalResponse(req)
         }
     )
 
@@ -1192,6 +1196,18 @@ do {
     WritingBandleaderFactory.isPixerateAvailable = savedIsPixerate
     WritingBandleaderFactory.isOnDeviceAvailable = savedIsOnDevice
     WritingBandleaderFactory.overrideBandleader = savedOverride
+}
+
+// WritingPartner protocol conformance (#61): PunctuateVoice conforms to WritingPartner so the fast-tier
+// duet can be injected or moved to a shared package
+do {
+    let partner: any WritingPartner = PunctuateVoice()
+    let text = "i dont "
+    let doc = MarkdownDocument.parse(text, flavor: .github)
+    let checked = partner.checkedRange(text: text, boundary: 6, document: doc)
+    check(checked == NSRange(location: 2, length: 4), "WritingPartner protocol checkedRange returns the word before the boundary")
+    let edits = partner.edits(text: text, boundary: 6, document: doc, flavor: .github, enterEndedLine: nil, isActive: { !$0.isTypography }, spellingCorrection: nil)
+    check(edits.contains(where: { $0.replacement == "don't" && $0.rules.contains(.contraction) }), "WritingPartner protocol edits computes contraction replacement")
 }
 
 print("\(passes) passed, \(failures) failed")
