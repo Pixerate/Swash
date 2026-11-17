@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+<dictionary title="Swash Terminology">
+    <suite name="Swash Suite" code="Swsh" description="Commands for creating and formatting Markdown notes in Swash.">
+        <command name="create note" code="SwshNewN" description="Create and open a new Markdown document in Swash.">
+            <cocoa class="SwashCreateNoteCommand"/>
+            <parameter name="titled" code="SwshTitl" type="text" optional="yes" description="Title for the new Markdown document (defaults to 'Untitled Note').">
+                <cocoa key="title"/>
+            </parameter>
+            <parameter name="with content" code="SwshCont" type="text" optional="yes" description="Initial Markdown body content.">
+                <cocoa key="content"/>
+            </parameter>
+            <result type="text" description="File path of the created Markdown document."/>
+        </command>
+        <command name="open quick note" code="SwshQNot" description="Open Swash's Quick Note panel.">
+            <cocoa class="SwashQuickNoteCommand"/>
+        </command>
+        <command name="count words" code="SwshWCnt" description="Calculate word, character, and line count for Markdown text.">
+            <cocoa class="SwashCountWordsCommand"/>
+            <direct-parameter type="text" description="Markdown or plain text to measure."/>
+            <result type="text" description="Summary string of word, character, and line counts."/>
+        </command>
+        <command name="format markdown" code="SwshFmtM" description="Format plain text as a Markdown code block, quote block, or header.">
+            <cocoa class="SwashFormatMarkdownCommand"/>
+            <direct-parameter type="text" description="Plain text to format."/>
+            <parameter name="as style" code="SwshStyl" type="text" optional="yes" description="Style: 'code block' (default), 'quote block', or 'header'.">
+                <cocoa key="style"/>
+            </parameter>
+            <result type="text" description="Formatted Markdown text."/>
+        </command>
+    </suite>
+</dictionary>
