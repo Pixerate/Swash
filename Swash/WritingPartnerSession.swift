@@ -217,7 +217,10 @@ final class WritingPartnerSession {
         var isCancelled = false
     }
 
-    init(defaults: UserDefaults = .standard) {
+    var partner: any WritingPartner
+
+    init(partner: any WritingPartner = PunctuateVoice(), defaults: UserDefaults = .standard) {
+        self.partner = partner
         self.defaults = defaults
     }
 
@@ -443,7 +446,7 @@ final class WritingPartnerSession {
 
             let text = working as String
             let document = working == raw as NSString ? coordinator.formatting(for: text).document : MarkdownDocument.parse(text, flavor: flavor)
-            if shift == 0, let range = PunctuateVoice.checkedRange(text: text, boundary: boundary, document: document) {
+            if shift == 0, let range = partner.checkedRange(text: text, boundary: boundary, document: document) {
                 checked.append(range)
             }
             let isActive: (PunctuationRule) -> Bool = { [weak self] rule in
@@ -454,9 +457,9 @@ final class WritingPartnerSession {
                 }
                 return ruleIsOn(rule)
             }
-            let edits = PunctuateVoice.edits(text: text, boundary: boundary, document: document, flavor: flavor,
-                                             enterEndedLine: pending.enterEndedLine, isActive: isActive,
-                                             spellingCorrection: spellingCorrection)
+            let edits = partner.edits(text: text, boundary: boundary, document: document, flavor: flavor,
+                                      enterEndedLine: pending.enterEndedLine, isActive: isActive,
+                                      spellingCorrection: spellingCorrection)
             for edit in edits.sorted(by: { $0.range.location > $1.range.location }) {
                 let spellingWord = edit.rules.contains(.spelling) ? working.substring(with: edit.range) : nil
                 working = working.replacingCharacters(in: edit.range, with: edit.replacement) as NSString

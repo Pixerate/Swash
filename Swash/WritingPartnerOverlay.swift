@@ -211,7 +211,7 @@ final class WritingPartnerOverlay: NSView {
         return resolved
     }
 
-    static func caret(_ rect: NSRect) -> FlairTreatmentCaret {
+    nonisolated static func caret(_ rect: NSRect) -> FlairTreatmentCaret {
         FlairTreatmentCaret(x: Double(rect.midX), y: Double(rect.minY), height: Double(rect.height))
     }
 
