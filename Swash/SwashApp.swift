@@ -27,6 +27,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         WritingBandleaderFactory.installPixerateBandleader()
         WritingBandleaderFactory.installOnDeviceBandleader()
+        AgentBridge.shared.startIfEnabled()
         DispatchQueue.main.async {
             DefaultAppManager.shared.checkAndPromptIfNecessary()
         }

@@ -472,70 +472,83 @@ private struct WritingPartnerSettingsView: View {
 
 // MARK: - Agents
 
-/// Connects open documents to `pixerate-mcp-bridge`, so AI agents can read and edit them (#49).
+/// Hosts a local Streamable HTTP MCP server so AI agents can read and edit open documents.
 private struct AgentSettingsView: View {
     @AppStorage(AgentBridgeDefaults.enabled) private var enabled = false
-    @AppStorage(AgentBridgeDefaults.url) private var url = AgentBridgeDefaults.defaultURL
+    @AppStorage(AgentBridgeDefaults.port) private var port = Int(AgentBridgeDefaults.defaultPort)
     @AppStorage(AgentBridgeDefaults.token) private var token = ""
+    @State private var copiedConfig = false
     private let bridge = AgentBridge.shared
 
     private var statusText: String {
         guard enabled else { return "Off" }
         switch bridge.status {
-        case .connected:
-            return bridge.documentCount == 1 ? "Connected" : "Connected (\(bridge.connectedCount) of \(bridge.documentCount) documents)"
-        case .connecting:
-            return "Connecting…"
-        case .disconnected:
-            return "Not connected"
-        case .closed:
-            return bridge.documentCount == 0 ? "Connects when a document is open" : "Not connected"
+        case .stopped:
+            return "Stopped"
+        case .starting:
+            return "Starting…"
+        case .listening(let port):
+            let docs = bridge.documentCount
+            if docs == 0 {
+                return "Listening on \(AgentBridgeDefaults.endpointURL(port: port))"
+            }
+            return "Listening on \(AgentBridgeDefaults.endpointURL(port: port)) (\(docs) \(docs == 1 ? "document" : "documents"))"
+        case .failed(let message):
+            return "Failed: \(message)"
         }
     }
 
     private var statusColor: Color {
         guard enabled else { return .secondary }
         switch bridge.status {
-        case .connected: return .green
-        case .connecting: return .orange
-        default: return bridge.documentCount == 0 ? .secondary : .red
+        case .listening: return .green
+        case .starting: return .orange
+        case .failed: return .red
+        case .stopped: return .secondary
         }
     }
 
     var body: some View {
         Form {
             Section {
-                Toggle("Let agents edit open documents", isOn: $enabled)
+                Toggle("Let agents connect to Swash", isOn: $enabled)
                     .onChange(of: enabled) { bridge.settingsChanged() }
                 LabeledContent("Status") {
                     Label(statusText, systemImage: "circle.fill")
                         .labelStyle(.titleAndIcon)
                         .foregroundStyle(statusColor)
-                }
-                if enabled, bridge.status != .connected, let detail = bridge.detail {
-                    Text(detail)
-                        .settingsFooterStyle()
                         .textSelection(.enabled)
                 }
             } header: {
-                Text("Pixerate MCP Bridge")
+                Text("MCP Server")
             } footer: {
-                Text("Agents such as Claude Code connect through pixerate-mcp-bridge, which runs on this Mac. Each open document is listed to them, and they edit it with the same tools as the Pixerate editor. Every change can be undone.")
+                Text("Swash runs a local Streamable HTTP MCP server on this Mac. Agents such as Antigravity, Claude Code, and Cursor connect directly to read and edit open documents. Every change can be undone.")
                     .settingsFooterStyle()
             }
 
             Section {
-                TextField("Bridge URL", text: $url)
+                TextField("Port", value: $port, format: .number.grouping(.never))
                     .onSubmit { bridge.settingsChanged() }
-                SecureField("Token", text: $token)
+                SecureField("Token (optional)", text: $token)
                     .onSubmit { bridge.settingsChanged() }
-            } footer: {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Start the bridge with npx pixerate-mcp-bridge --token <secret>, and enter the same token here.")
-                        .settingsFooterStyle()
-                    Button("Reconnect") { bridge.settingsChanged() }
-                        .disabled(!enabled)
+                LabeledContent("Client Setup") {
+                    HStack {
+                        Button(copiedConfig ? "Copied" : "Copy MCP Config") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(bridge.mcpConfigSnippet(), forType: .string)
+                            copiedConfig = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                copiedConfig = false
+                            }
+                        }
+                        if enabled {
+                            Button("Restart") { bridge.restartServer() }
+                        }
+                    }
                 }
+            } footer: {
+                Text("Add the copied mcpServers entry to your MCP client's configuration. Leave Token blank for local-only access without a bearer token.")
+                    .settingsFooterStyle()
             }
         }
         .formStyle(.grouped)
