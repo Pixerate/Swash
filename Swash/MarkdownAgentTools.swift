@@ -9,7 +9,7 @@
 //  (GOTCHAS #9), not the web editor's ProseMirror positions. Every write is one undo step.
 //
 //  Foundation, PixerateCore and PixerateMarkdown only, so scripts/run_agent_tools_tests.sh can
-//  compile it without the app. `AgentBridge.swift` connects it to `pixerate-mcp-bridge`.
+//  compile it without the app. `AgentBridge.swift` serves it over the embedded MCP server.
 //
 
 #if os(macOS)

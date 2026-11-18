@@ -446,7 +446,7 @@ final class LocalMCPServer {
 
                 if let parsed = self.tryParseHTTPRequest(accumulated) {
                     await self.processHTTPRequest(parsed, on: connection)
-                } else if isComplete || accumulated.count > 4 * 1024 * 1024 {
+                } else if isComplete || accumulated.count > Self.maximumBodySize + 64 * 1024 {
                     self.sendHTTPResponse(on: connection, status: "400 Bad Request", body: Data())
                 } else {
                     self.receiveHTTPRequest(on: connection, buffer: accumulated)
@@ -480,14 +480,55 @@ final class LocalMCPServer {
             headers[key] = val
         }
 
-        let contentLength = Int(headers["content-length"] ?? "0") ?? 0
+        // A negative or absurd length would trap in `subdata` (any local process could crash Swash)
+        guard let contentLength = Int(headers["content-length"] ?? "0"),
+              contentLength >= 0, contentLength <= Self.maximumBodySize else {
+            return HTTPRequest(method: "INVALID", path: "", headers: headers, body: Data())
+        }
         let bodyStart = headerEnd.upperBound
         guard data.count >= bodyStart + contentLength else { return nil }
         let body = data.subdata(in: bodyStart..<(bodyStart + contentLength))
         return HTTPRequest(method: String(parts[0]).uppercased(), path: String(parts[1]), headers: headers, body: body)
     }
 
+    /// The largest request body accepted.
+    nonisolated static let maximumBodySize = 4 * 1024 * 1024
+
+    /// Whether a request may reach the tools. Web pages can send requests to 127.0.0.1 too, and the
+    /// token is optional, so (as the MCP Streamable HTTP transport requires) a request that comes
+    /// from a browser page on another origin, or names a host other than this machine (DNS
+    /// rebinding), is refused. POSTs must be `application/json`, which a page on another origin
+    /// can't send without a CORS preflight, and this server never answers one with CORS headers.
+    nonisolated static func isAllowed(method: String, headers: [String: String], port: UInt16) -> Bool {
+        let localHosts: Set<String> = ["127.0.0.1", "localhost", "[::1]"]
+        func isLocal(host: String) -> Bool {
+            let lower = host.lowercased()
+            if localHosts.contains(lower) { return true }
+            return localHosts.contains { lower == "\($0):\(port)" }
+        }
+        guard let host = headers["host"], isLocal(host: host) else { return false }
+        if let origin = headers["origin"] {
+            guard let originHost = URL(string: origin)?.host(percentEncoded: false),
+                  ["127.0.0.1", "localhost", "::1"].contains(originHost.lowercased()) else { return false }
+        }
+        if method == "POST" {
+            let type = headers["content-type"]?.split(separator: ";").first?
+                .trimmingCharacters(in: .whitespaces).lowercased()
+            guard type == "application/json" else { return false }
+        }
+        return true
+    }
+
     private func processHTTPRequest(_ req: HTTPRequest, on connection: NWConnection) async {
+        guard req.method != "INVALID" else {
+            sendHTTPResponse(on: connection, status: "400 Bad Request", body: Data())
+            return
+        }
+        guard Self.isAllowed(method: req.method, headers: req.headers, port: port) else {
+            sendHTTPResponse(on: connection, status: "403 Forbidden", body: Data())
+            return
+        }
+
         // Check optional Bearer token
         if let expectedToken = token() {
             let auth = req.headers["authorization"] ?? ""
