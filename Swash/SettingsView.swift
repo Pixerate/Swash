@@ -490,9 +490,9 @@ private struct AgentSettingsView: View {
         case .listening(let port):
             let docs = bridge.documentCount
             if docs == 0 {
-                return "Listening on \(AgentBridgeDefaults.endpointURL(port: port))"
+                return "Listening on \(MCPHTTP.endpointURL(port: port))"
             }
-            return "Listening on \(AgentBridgeDefaults.endpointURL(port: port)) (\(docs) \(docs == 1 ? "document" : "documents"))"
+            return "Listening on \(MCPHTTP.endpointURL(port: port)) (\(docs) \(docs == 1 ? "document" : "documents"))"
         case .failed(let message):
             return "Failed: \(message)"
         }
@@ -529,9 +529,9 @@ private struct AgentSettingsView: View {
             Section {
                 TextField("Port", value: $port, format: .number.grouping(.never))
                     .onSubmit { bridge.settingsChanged() }
-                if !AgentBridgeDefaults.validPorts.contains(port) {
+                if !MCPHTTP.validPorts.contains(port) {
                     // String(…) so the numbers aren't localised with grouping separators ("4,477").
-                    Text("Use a port from \(String(AgentBridgeDefaults.validPorts.lowerBound)) to \(String(AgentBridgeDefaults.validPorts.upperBound)). Swash listens on \(String(bridge.port)) until then.")
+                    Text("Use a port from \(String(MCPHTTP.validPorts.lowerBound)) to \(String(MCPHTTP.validPorts.upperBound)). Swash listens on \(String(bridge.port)) until then.")
                         .foregroundStyle(.red)
                         .settingsFooterStyle()
                 }

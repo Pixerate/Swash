@@ -398,6 +398,49 @@ func run() async {
         check(result.isError, "write on a read-only document fails")
         expectEqual(h.document.markdown, "Text", "read-only document unchanged")
     }
+
+    // MARK: MCP routing (PixerateCore's MCPToolRouter, configured as AgentBridge does)
+    do {
+        let catalog = Harness("")
+        let notes = Harness("Notes text"), slack = Harness("Slack *text*", flavor: .slack)
+        slack.document.readOnlyReason = "the file is locked"
+        let router = MCPToolRouter(configuration: .init(serverName: "Swash", serverVersion: "1", singular: "document",
+                                                        noTargetsMessage: "No documents are open in Swash. Open a Markdown document first."),
+                                   catalog: catalog.registry)
+        let empty = await router.callTool("get_text", [:])
+        expectEqual(empty.text ?? "", "No documents are open in Swash. Open a Markdown document first.", "no documents open")
+
+        let notesTarget = MCPToolTarget(id: "notes", name: "Notes.md", registry: notes.registry, info: ["flavor": "github"])
+        let slackTarget = MCPToolTarget(id: "slack", name: "Slack.md", registry: slack.registry, readOnlyReason: "the file is locked", info: ["flavor": "slack"])
+        router.attach(notesTarget)
+        try? await Task.sleep(nanoseconds: 2_000_000)
+        router.attach(slackTarget)
+
+        guard case .success(let listed) = await router.handle(method: "tools/list", params: nil) else { return check(false, "tools/list") }
+        let tools = listed["tools"]?.arrayValue ?? []
+        expectEqual(tools.compactMap { $0["name"]?.stringValue },
+                    ["list_documents", "get_text", "find_text", "insert_text", "replace_text", "replace_range", "replace_selection", "set_selection", "format_text", "set_block_type"],
+                    "tools/list is the full catalogue, though the active document is read-only")
+        check(tools.allSatisfy { $0["name"]?.stringValue == "list_documents" || $0["inputSchema"]?["properties"]?["document"] != nil }, "every tool takes the document argument")
+
+        let active = await router.callTool("get_text", [:])
+        check(active.value["content"]?.stringValue == "Slack *text*", "defaults to the last attached document")
+        let byName = await router.callTool("get_text", ["document": "notes.md"])
+        check(byName.value["content"]?.stringValue == "Notes text", "routes by name")
+
+        let readOnly = await router.callTool("replace_text", ["find": "text", "replace": "x"])
+        check(readOnly.isError && (readOnly.text ?? "").contains("\"Slack.md\" is read-only (the file is locked)"), "read-only error: \(readOnly.text ?? "")")
+        expectEqual(slack.document.markdown, "Slack *text*", "read-only document unchanged")
+
+        let edited = await router.callTool("replace_text", ["document": "notes", "find": "text", "replace": "body"])
+        check(!edited.isError, "write routed by id: \(edited.text ?? "")")
+        expectEqual(notes.document.markdown, "Notes body", "the write reaches the named document")
+
+        router.activate(notesTarget)
+        let docs = router.listTargetsResult().structuredContent?["documents"]?.arrayValue ?? []
+        expectEqual(docs.compactMap { $0["id"]?.stringValue }, ["notes", "slack"], "list_documents puts the active document first")
+        check(docs.last?["flavor"]?.stringValue == "slack" && docs.last?["readOnly"] == .bool(true), "list_documents reports flavor and readOnly")
+    }
 }
 
 await run()
