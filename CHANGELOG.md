@@ -1,5 +1,16 @@
 # swash
 
+## 1.31.0
+
+### Minor Changes
+
+- fece983: Writing partner: a Grammar voice. Doubled words and "a"/"an" are fixed on device as you type; agreement and tense, and missing words, are corrected on a pause through the bandleader (Apple Intelligence or Pixerate). Each rule has a switch in Settings › Writing and learns from ⌘Z, and the pause-tier rules stay off for languages the provider doesn't support.
+
+### Patch Changes
+
+- 5b0a8d9: Contributor guidelines ask for SwiftUI dynamic previews (`#Preview`, `@Previewable`, `PreviewModifier`) on new or changed views.
+- 12f3de2: Expand iOS `PreviewSnapshotTests` to render additional SwiftUI views (`FormatPanel`, `IOSOutlineList`, `IOSDocumentInfoView`) into `docs/previews/`.
+
 ## 1.30.0
 
 ### Minor Changes
