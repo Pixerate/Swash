@@ -530,7 +530,8 @@ private struct AgentSettingsView: View {
                 TextField("Port", value: $port, format: .number.grouping(.never))
                     .onSubmit { bridge.settingsChanged() }
                 if !AgentBridgeDefaults.validPorts.contains(port) {
-                    Text("Use a port from \(AgentBridgeDefaults.validPorts.lowerBound) to \(AgentBridgeDefaults.validPorts.upperBound). Swash listens on \(bridge.port) until then.")
+                    // String(…) so the numbers aren't localised with grouping separators ("4,477").
+                    Text("Use a port from \(String(AgentBridgeDefaults.validPorts.lowerBound)) to \(String(AgentBridgeDefaults.validPorts.upperBound)). Swash listens on \(String(bridge.port)) until then.")
                         .foregroundStyle(.red)
                         .settingsFooterStyle()
                 }
