@@ -59,7 +59,9 @@ final class AgentDocumentSession: MarkdownToolTarget {
     }
 
     let registry = ToolRegistry()
-    fileprivate var attachedAt = Date()
+    /// When the document's window last became active (or the document opened), so tool calls
+    /// without a `document` argument go to the document the person was last looking at.
+    fileprivate var activatedAt = Date()
     /// The selection the tools last set, for documents shown without an editor.
     private var lastSelection = NSRange(location: 0, length: 0)
     private var tools: MarkdownToolProvider?
@@ -133,6 +135,10 @@ final class AgentBridge {
 
     @ObservationIgnored private var sessions: [ObjectIdentifier: AgentDocumentSession] = [:]
     @ObservationIgnored private var server: LocalMCPServer?
+    /// A document-less, editable session whose registry is the full tool catalogue. The server
+    /// can't tell clients that the tool list changed (it has no SSE stream), and clients list tools
+    /// once when they connect, so `tools/list` must not depend on which documents are open.
+    @ObservationIgnored private let catalog = AgentDocumentSession()
 
     private var defaults: UserDefaults { .standard }
     var isEnabled: Bool { defaults.bool(forKey: AgentBridgeDefaults.enabled) }
@@ -160,12 +166,17 @@ final class AgentBridge {
 
     /// Starts serving a document's tools (and starts the MCP server when enabled).
     func attach(_ session: AgentDocumentSession) {
-        session.attachedAt = Date()
+        session.activatedAt = Date()
         sessions[ObjectIdentifier(session)] = session
         documentCount = sessions.count
         if isEnabled && server == nil {
             startServer()
         }
+    }
+
+    /// Makes a document the default target for tool calls (its window became active).
+    func activate(_ session: AgentDocumentSession) {
+        session.activatedAt = Date()
     }
 
     /// Stops serving a document's tools.
@@ -213,7 +224,8 @@ final class AgentBridge {
 
     /// Builds the `mcpServers` JSON snippet for Settings › Copy MCP Config.
     func mcpConfigSnippet() -> String {
-        var entry: [String: Any] = ["url": endpointURL]
+        // Claude Code reads an entry without `type` as a stdio server and rejects it.
+        var entry: [String: Any] = ["type": "http", "url": endpointURL]
         if let token {
             entry["headers"] = ["Authorization": "Bearer \(token)"]
         }
@@ -255,7 +267,7 @@ final class AgentBridge {
     // MARK: - MCP JSON-RPC Dispatch
 
     private func orderedSessions() -> [AgentDocumentSession] {
-        sessions.values.sorted { $0.attachedAt > $1.attachedAt }
+        sessions.values.sorted { $0.activatedAt > $1.activatedAt }
     }
 
     private func resolveSession(forDocument key: String?) -> AgentDocumentSession? {
@@ -287,12 +299,8 @@ final class AgentBridge {
             return .success([:])
 
         case "tools/list":
-            var tools: [JSONValue] = [listDocumentsToolJSON()]
-            if let primary = orderedSessions().first {
-                for def in primary.registry.listTools() {
-                    tools.append(withOptionalDocumentParameter(def).json)
-                }
-            }
+            let tools = [listDocumentsToolJSON()]
+                + catalog.registry.listTools().map { withOptionalDocumentParameter($0).json }
             return .success(["tools": .array(tools)])
 
         case "tools/call":
@@ -328,6 +336,15 @@ final class AgentBridge {
                 return .success(err.json.objectValue ?? [:])
             }
 
+            // A read-only document's registry hides its write tools, which would otherwise come
+            // back as a confusing "Unknown tool" for a tool that tools/list advertised.
+            if let reason = session.readOnlyReason,
+               !session.registry.listTools().contains(where: { $0.name == name }),
+               catalog.registry.listTools().contains(where: { $0.name == name }) {
+                let message = "\"\(session.name)\" is read-only (\(reason)), so \(name) can't edit it."
+                return .success(McpToolResult(content: [.text(message)], isError: true).json.objectValue ?? [:])
+            }
+
             let result = await session.registry.callTool(name, args, actor: ToolActor(id: "mcp", name: "MCP Client"))
             return .success(result.json.objectValue ?? [:])
 
@@ -360,7 +377,7 @@ final class AgentBridge {
         var props = schema["properties"]?.objectValue ?? JSONObject()
         props["document"] = [
             "type": "string",
-            "description": "Optional document id or name from list_documents. Defaults to the active document."
+            "description": "Optional document id or name from list_documents. Defaults to the document most recently active in Swash."
         ]
         schema["properties"] = .object(props)
         copy.inputSchema = .object(schema)
@@ -682,6 +699,7 @@ struct AgentToolsHookup: ViewModifier {
     let readOnlyReason: String?
     let flavor: MarkdownFlavor
     @State private var session = AgentDocumentSession()
+    @Environment(\.appearsActive) private var appearsActive
 
     func body(content: Content) -> some View {
         content
@@ -690,6 +708,9 @@ struct AgentToolsHookup: ViewModifier {
                 AgentBridge.shared.attach(session)
             }
             .onDisappear { AgentBridge.shared.detach(session) }
+            .onChange(of: appearsActive) { _, active in
+                if active { AgentBridge.shared.activate(session) }
+            }
             .onChange(of: name) { configure() }
             .onChange(of: readOnlyReason) { configure() }
             .onChange(of: flavor) { configure() }
