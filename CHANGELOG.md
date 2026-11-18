@@ -1,5 +1,11 @@
 # swash
 
+## 1.33.0
+
+### Minor Changes
+
+- d9b8e5a: Add hybrid GenUI Markdown block support (`stats`, `callout`, `actions`, `chart`, `tree`, `orgchart`, `proposals`, `form`) and permission-gated sandboxed `WKWebView` widgets (`widget` / `genui-widget`) across Edit Text, Preview, and AgentBridge MCP discovery.
+
 ## 1.32.0
 
 ### Minor Changes
