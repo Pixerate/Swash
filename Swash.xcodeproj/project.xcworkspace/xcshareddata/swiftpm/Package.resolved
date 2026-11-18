@@ -1,13 +1,13 @@
 {
-  "originHash" : "c8f938956fbeb23dc20b7f822a63acfc21d55597cd84df74e761cc51414f8c43",
+  "originHash" : "f1ebad247df107de68d173d5266ad8360f0891bef2ba7ba106612e3d5c753af9",
   "pins" : [
     {
       "identity" : "editor",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Pixerate/editor",
       "state" : {
-        "revision" : "47310211fefa42ac39af92bbacc5319c610c1144",
-        "version" : "0.78.1"
+        "revision" : "ad4979cda75d284b54e415e5b9e46ebb44f2ddcc",
+        "version" : "0.81.0"
       }
     },
     {
