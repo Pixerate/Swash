@@ -710,9 +710,11 @@ class SwashNSTextView: NSTextView {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: FolderAccessManager.accessGrantedNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: WidgetTrustManager.trustDidChangeNotification, object: nil)
         guard let window = self.window else { return }
         NotificationCenter.default.addObserver(self, selector: #selector(handleWindowUpdated), name: NSWindow.didBecomeKeyNotification, object: window)
         NotificationCenter.default.addObserver(self, selector: #selector(handleFolderAccessGranted), name: FolderAccessManager.accessGrantedNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleFolderAccessGranted), name: WidgetTrustManager.trustDidChangeNotification, object: nil)
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.handleWindowUpdated()
@@ -2103,12 +2105,14 @@ struct SwashTextView: NSViewRepresentable {
             case table(range: NSRange, source: String, headers: [String], alignments: [TableAlignment], rows: [[String]])
             case image(range: NSRange, alt: String, urlString: String, rawMarkdown: String, width: CGFloat? = nil)
             case mermaid(range: NSRange, source: String, rawMarkdown: String)
+            case genui(range: NSRange, block: GenUIParsedBlock, rawMarkdown: String)
             
             var location: Int {
                 switch self {
                 case .table(let range, _, _, _, _): return range.location
                 case .image(let range, _, _, _, _): return range.location
                 case .mermaid(let range, _, _): return range.location
+                case .genui(let range, _, _): return range.location
                 }
             }
             
@@ -2120,6 +2124,8 @@ struct SwashTextView: NSViewRepresentable {
                     return .image(range: NSRange(location: range.location - delta, length: range.length), alt: alt, urlString: urlString, rawMarkdown: rawMarkdown, width: width)
                 case .mermaid(let range, let source, let rawMarkdown):
                     return .mermaid(range: NSRange(location: range.location - delta, length: range.length), source: source, rawMarkdown: rawMarkdown)
+                case .genui(let range, let block, let rawMarkdown):
+                    return .genui(range: NSRange(location: range.location - delta, length: range.length), block: block, rawMarkdown: rawMarkdown)
                 }
             }
         }
@@ -2133,6 +2139,8 @@ struct SwashTextView: NSViewRepresentable {
                     return .image(range: request.range, alt: alt, urlString: urlString, rawMarkdown: rawMarkdown, width: width)
                 case .mermaid(let source, let rawMarkdown):
                     return .mermaid(range: request.range, source: source, rawMarkdown: rawMarkdown)
+                case .genui(let block, let rawMarkdown):
+                    return .genui(range: request.range, block: block, rawMarkdown: rawMarkdown)
                 }
             }
         }
@@ -2206,6 +2214,18 @@ struct SwashTextView: NSViewRepresentable {
                             displayImage = MarkdownParser.scaleImageForEditor(displayImage, maxWidth: maxWidth)
                         }
                         let attachment = ImageTextAttachment(image: displayImage, alt: "Mermaid Diagram", urlString: "", rawMarkdown: rawMarkdown)
+                        let attrAttachment = NSMutableAttributedString(attachment: attachment)
+                        attrAttachment.addAttributes([
+                            .font: NSFont.systemFont(ofSize: 14),
+                            .foregroundColor: NSColor.textColor
+                        ], range: NSRange(location: 0, length: attrAttachment.length))
+                        textStorage.replaceCharacters(in: validRange, with: attrAttachment)
+                    }
+                case .genui(let range, let block, let rawMarkdown):
+                    let validRange = NSIntersectionRange(range, NSRange(location: 0, length: textStorage.length))
+                    if validRange.length > 0 {
+                        let documentKey = parent.baseURL?.path ?? textView.window?.representedURL?.path ?? "untitled"
+                        let attachment = GenUITextAttachment(block: block, documentKey: documentKey, rawMarkdown: rawMarkdown)
                         let attrAttachment = NSMutableAttributedString(attachment: attachment)
                         attrAttachment.addAttributes([
                             .font: NSFont.systemFont(ofSize: 14),

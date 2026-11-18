@@ -29,6 +29,9 @@ swiftc $EXTRAS \
   Swash/MarkdownEditorStyler.swift \
   Swash/CodeHighlightTheme.swift \
   Swash/RichContentRenderer.swift \
+  Swash/GenUIBlock.swift \
+  Swash/WidgetTrustManager.swift \
+  Swash/GenUIBlockView.swift \
   Swash/FormatCommands.swift \
   Swash/MarkdownPreviewView.swift \
   Swash/DetectedLink.swift \

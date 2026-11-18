@@ -69,9 +69,42 @@ final class AgentDocumentSession: MarkdownToolTarget {
         self.tools = tools
         do {
             try registry.register(tools.provider(id: "document", namespace: ""))
+            try registry.register(Self.genUIProvider())
         } catch {
             assertionFailure("Agent tools did not register: \(error)")
         }
+    }
+
+    private static func genUIProvider() -> AgentToolProvider {
+        let listGenUIBlocks = AgentTool(
+            name: "list_genui_blocks",
+            title: "List supported GenUI blocks",
+            description: "Returns the fenced Markdown code-block languages and capabilities supported by Swash for @pixerate/genui-core embedded UI blocks and permission-gated sandboxed widgets.",
+            inputSchema: [
+                "type": "object",
+                "properties": [:],
+                "additionalProperties": false,
+            ],
+            annotations: ToolAnnotations(title: "List supported GenUI blocks", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false),
+            handler: { _, _ in
+                .value(.object([
+                    "builtInKinds": .array(GenUIBlockKind.allCases.filter { $0 != .widget }.map { .string($0.rawValue) }),
+                    "supportedLanguages": .array(GenUIBlockRegistry.supportedLanguages.map { .string($0) }),
+                    "sandboxedWidgets": [
+                        "languages": .array([.string("widget"), .string("genui-widget")]),
+                        "permissionGated": .bool(true),
+                        "fields": .array([.string("title"), .string("height"), .string("html"), .string("script")])
+                    ]
+                ]))
+            }
+        )
+        return AgentToolProvider(
+            id: "genui",
+            namespace: "",
+            title: "GenUI Blocks",
+            description: "Discover Markdown fenced code-block UI capabilities in Swash.",
+            tools: { [listGenUIBlocks] }
+        )
     }
 
     var markdown: String { readMarkdown() }

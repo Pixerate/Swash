@@ -159,6 +159,7 @@ struct EditorAttachmentRequest {
         case table(source: String, headers: [String], alignments: [TableAlignment], rows: [[String]])
         case image(alt: String, urlString: String, rawMarkdown: String, width: CGFloat?)
         case mermaid(source: String, rawMarkdown: String)
+        case genui(block: GenUIParsedBlock, rawMarkdown: String)
     }
     let range: NSRange
     let kind: Kind
@@ -722,6 +723,12 @@ final class MarkdownEditorStyler {
             if language == "mermaid" {
                 setParagraphStyle(context, lineSpacing: 0, paragraphSpacing: 8, paragraphSpacingBefore: 8, over: node.range)
                 attachments.append(EditorAttachmentRequest(range: node.range, kind: .mermaid(source: node.literal, rawMarkdown: source(node.range))))
+                codeRanges.append(node.range)
+                return
+            }
+            if let genuiBlock = GenUIBlockParser.parse(info: info, source: node.literal) {
+                setParagraphStyle(context, lineSpacing: 0, paragraphSpacing: 8, paragraphSpacingBefore: 8, over: node.range)
+                attachments.append(EditorAttachmentRequest(range: node.range, kind: .genui(block: genuiBlock, rawMarkdown: source(node.range))))
                 codeRanges.append(node.range)
                 return
             }
