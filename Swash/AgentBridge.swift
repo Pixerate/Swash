@@ -20,6 +20,8 @@ enum AgentBridgeDefaults {
     static let port = "agentBridgePort"
     static let token = "agentBridgeToken"
     static let defaultPort: UInt16 = 4477
+    /// Ports the server accepts: unprivileged, so binding never needs root.
+    static let validPorts: ClosedRange<Int> = 1024...65535
 
     static func endpointURL(port: UInt16) -> String {
         "http://127.0.0.1:\(port)/mcp"
@@ -145,7 +147,7 @@ final class AgentBridge {
 
     var port: UInt16 {
         let raw = defaults.integer(forKey: AgentBridgeDefaults.port)
-        if raw >= 1024 && raw <= 65535 { return UInt16(raw) }
+        if AgentBridgeDefaults.validPorts.contains(raw) { return UInt16(raw) }
         return AgentBridgeDefaults.defaultPort
     }
 
@@ -193,7 +195,7 @@ final class AgentBridge {
             return
         }
         if let server {
-            if server.port != port {
+            if server.port != port || server.hasFailed {
                 restartServer()
             }
         } else {
@@ -284,10 +286,7 @@ final class AgentBridge {
     private func handleRPC(method: String, params: JSONObject?) async -> MCPDispatchResult {
         switch method {
         case "initialize":
-            let requestedVersion = params?["protocolVersion"]?.stringValue
-            let version = (requestedVersion == "2024-11-05" || requestedVersion == "2025-03-26")
-                ? requestedVersion!
-                : "2025-03-26"
+            let version = LocalMCPServer.negotiatedProtocolVersion(requested: params?["protocolVersion"]?.stringValue)
             let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
             return .success([
                 "protocolVersion": .string(version),
@@ -420,6 +419,7 @@ final class LocalMCPServer {
     func start() {
         logger.notice("Starting MCP server on 127.0.0.1:\(self.port)")
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+            hasFailed = true
             onStateChange(.failed("Invalid port \(port)."))
             return
         }
@@ -441,7 +441,15 @@ final class LocalMCPServer {
                         self.onStateChange(.listening(port: self.port))
                     case .failed(let error):
                         self.logger.error("Listener failed on port \(self.port): \(error.localizedDescription)")
-                        self.onStateChange(.failed(error.localizedDescription))
+                        // A failed listener must still be cancelled to release it. Detach it first,
+                        // so its `.cancelled` update is ignored and the failure stays visible.
+                        self.listener = nil
+                        self.hasFailed = true
+                        listener.cancel()
+                        self.onStateChange(.failed(Self.failureMessage(error, port: self.port)))
+                        let completion = self.onStopped
+                        self.onStopped = nil
+                        completion?()
                     case .cancelled:
                         self.listener = nil
                         self.onStateChange(.stopped)
@@ -462,8 +470,19 @@ final class LocalMCPServer {
 
             listener.start(queue: .main)
         } catch {
+            hasFailed = true
             onStateChange(.failed(error.localizedDescription))
         }
+    }
+
+    /// Whether the listener failed (and was released), so the settings can retry it.
+    private(set) var hasFailed = false
+
+    private static func failureMessage(_ error: NWError, port: UInt16) -> String {
+        if case .posix(.EADDRINUSE) = error {
+            return "Port \(port) is in use by another app. Choose another port."
+        }
+        return error.localizedDescription
     }
 
     func stop(completion: (() -> Void)? = nil) {
@@ -569,6 +588,25 @@ final class LocalMCPServer {
         return true
     }
 
+    /// MCP protocol versions this server speaks, newest first.
+    nonisolated static let supportedProtocolVersions = ["2025-06-18", "2025-03-26", "2024-11-05"]
+
+    /// The version to answer `initialize` with: the client's if supported, else the newest.
+    nonisolated static func negotiatedProtocolVersion(requested: String?) -> String {
+        requested.flatMap { supportedProtocolVersions.contains($0) ? $0 : nil } ?? supportedProtocolVersions[0]
+    }
+
+    /// Compares the `Authorization` header with the token in constant time.
+    nonisolated static func isAuthorized(header: String?, token: String) -> Bool {
+        let expected = Array("Bearer \(token)".utf8)
+        let given = Array((header ?? "").utf8)
+        var diff = UInt8(expected.count == given.count ? 0 : 1)
+        for i in expected.indices {
+            diff |= expected[i] ^ (i < given.count ? given[i] : 0)
+        }
+        return diff == 0
+    }
+
     private func processHTTPRequest(_ req: HTTPRequest, on connection: NWConnection) async {
         guard req.method != "INVALID" else {
             sendHTTPResponse(on: connection, status: "400 Bad Request", body: Data())
@@ -579,22 +617,39 @@ final class LocalMCPServer {
             return
         }
 
-        // Check optional Bearer token
-        if let expectedToken = token() {
-            let auth = req.headers["authorization"] ?? ""
-            if auth != "Bearer \(expectedToken)" {
-                sendJSONResponse(
-                    on: connection,
-                    status: "401 Unauthorized",
-                    json: ["jsonrpc": "2.0", "error": ["code": -32001, "message": "Unauthorized"]]
-                )
-                return
-            }
-        }
-
+        // Paths first, so OAuth discovery (`/.well-known/...`) gets a plain 404 rather than a 401
+        // that would send clients looking for an authorization server this server doesn't have.
         let pathOnly = req.path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? req.path
         guard pathOnly == "/mcp" || pathOnly == "/" else {
             sendHTTPResponse(on: connection, status: "404 Not Found", body: Data())
+            return
+        }
+
+        if let expectedToken = token(),
+           !Self.isAuthorized(header: req.headers["authorization"], token: expectedToken) {
+            sendJSONResponse(
+                on: connection,
+                status: "401 Unauthorized",
+                extraHeaders: ["WWW-Authenticate": #"Bearer realm="Swash", error="invalid_token""#],
+                json: ["jsonrpc": "2.0", "id": .null, "error": [
+                    "code": -32001,
+                    "message": "Unauthorized: send \"Authorization: Bearer <token>\" with the token from Swash Settings › Agents."
+                ]]
+            )
+            return
+        }
+
+        // Clients send the negotiated version on every request after `initialize` (2025-06-18).
+        if let version = req.headers["mcp-protocol-version"],
+           !Self.supportedProtocolVersions.contains(version) {
+            sendJSONResponse(
+                on: connection,
+                status: "400 Bad Request",
+                json: ["jsonrpc": "2.0", "id": .null, "error": [
+                    "code": -32600,
+                    "message": .string("Unsupported MCP-Protocol-Version \(version). Supported: \(Self.supportedProtocolVersions.joined(separator: ", ")).")
+                ]]
+            )
             return
         }
 

@@ -529,6 +529,11 @@ private struct AgentSettingsView: View {
             Section {
                 TextField("Port", value: $port, format: .number.grouping(.never))
                     .onSubmit { bridge.settingsChanged() }
+                if !AgentBridgeDefaults.validPorts.contains(port) {
+                    Text("Use a port from \(AgentBridgeDefaults.validPorts.lowerBound) to \(AgentBridgeDefaults.validPorts.upperBound). Swash listens on \(bridge.port) until then.")
+                        .foregroundStyle(.red)
+                        .settingsFooterStyle()
+                }
                 SecureField("Token (optional)", text: $token)
                     .onSubmit { bridge.settingsChanged() }
                 LabeledContent("Client Setup") {
