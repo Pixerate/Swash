@@ -566,6 +566,9 @@ struct StyledTextView: UIViewRepresentable {
                     let available = max(120, textView.bounds.width - textView.textContainerInset.left - textView.textContainerInset.right - 24)
                     image = MarkdownParser.scaleImageForEditor(image, maxWidth: min(550, available))
                     attachment = ImageTextAttachment(image: image, alt: "Mermaid Diagram", urlString: "", rawMarkdown: rawMarkdown)
+                case .genui(let block, let rawMarkdown):
+                    let image = MarkdownParser.placeholderImage(alt: "GenUI: \(block.kind.rawValue)")
+                    attachment = ImageTextAttachment(image: image, alt: "GenUI: \(block.kind.rawValue)", urlString: "", rawMarkdown: rawMarkdown)
                 }
                 let replacement = NSMutableAttributedString(attachment: attachment)
                 replacement.addAttributes(baseAttributes, range: NSRange(location: 0, length: replacement.length))

@@ -675,8 +675,12 @@ struct MarkdownBlockView: View, Equatable {
             MarkdownMermaidView(source: node.literal)
             
         case .codeBlock(_, let info):
-            let language = info.split(whereSeparator: { $0 == " " || $0 == "\t" }).first.map(String.init)
-            CodeBlockView(code: node.literal.hasSuffix("\n") ? String(node.literal.dropLast()) : node.literal, language: language, fontSize: context.typography.scaled(13))
+            if let genuiBlock = GenUIBlockParser.parse(info: info, source: node.literal) {
+                GenUIBlockView(block: genuiBlock, documentKey: context.baseURL?.path ?? "untitled")
+            } else {
+                let language = info.split(whereSeparator: { $0 == " " || $0 == "\t" }).first.map(String.init)
+                CodeBlockView(code: node.literal.hasSuffix("\n") ? String(node.literal.dropLast()) : node.literal, language: language, fontSize: context.typography.scaled(13))
+            }
             
         case .htmlBlock:
             MarkdownHTMLBlockView(html: node.literal, context: context)
