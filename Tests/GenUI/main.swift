@@ -65,6 +65,13 @@ private func runTests() {
     check(trust.isTrusted(documentKey: "/tmp/doc.md"), "trusted after grant")
     trust.revokeTrust(for: "/tmp/doc.md")
     check(!trust.isTrusted(documentKey: "/tmp/doc.md"), "untrusted after revoke")
+    // Every unsaved document shares one key, so it can never be trusted
+    check(!trust.canGrantTrust(for: WidgetTrustManager.unsavedDocumentKey), "unsaved documents can't be trusted")
+    trust.grantTrust(for: WidgetTrustManager.unsavedDocumentKey)
+    check(!trust.isTrusted(documentKey: WidgetTrustManager.unsavedDocumentKey), "granting an unsaved document does nothing")
+    defaults.set([WidgetTrustManager.unsavedDocumentKey], forKey: "swash_trusted_widget_documents")
+    check(!WidgetTrustManager(userDefaults: defaults).isTrusted(documentKey: WidgetTrustManager.unsavedDocumentKey),
+          "a stored grant for unsaved documents (from an earlier build) is ignored")
     defaults.removePersistentDomain(forName: suiteName)
 }
 

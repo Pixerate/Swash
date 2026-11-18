@@ -442,15 +442,19 @@ struct SandboxedWidgetView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(data.title ?? "Interactive Widget Blocked")
                         .font(.subheadline.weight(.semibold))
-                    Text("Custom HTML/JS widgets require your permission before running in this document.")
+                    Text(trustManager.canGrantTrust(for: documentKey)
+                         ? "Custom HTML/JS widgets require your permission before running in this document."
+                         : "Save this document to allow its custom HTML/JS widgets to run.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-                Button("Allow Widgets") {
-                    trustManager.grantTrust(for: documentKey)
+                if trustManager.canGrantTrust(for: documentKey) {
+                    Button("Allow Widgets") {
+                        trustManager.grantTrust(for: documentKey)
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
             }
             .padding(12)
             .background(Color.orange.opacity(0.08))
@@ -479,14 +483,48 @@ struct SandboxedWidgetView: View {
     }
 }
 
+
+/// A widget's web view: no persistent storage or cookies, and no navigation. The widget's HTML is
+/// loaded once; links, forms, `location` changes, meta refresh and `window.open` are refused (CSP
+/// doesn't cover navigation, so without this a widget could load any site or send its data out
+/// in a URL).
+private enum WidgetWebViewSupport {
+    @MainActor
+    static func makeWebView(navigationDelegate: WKNavigationDelegate) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.defaultWebpagePreferences.allowsContentJavaScript = true
+        config.preferences.javaScriptCanOpenWindowsAutomatically = false
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = navigationDelegate
+        return webView
+    }
+
+    /// Only the initial `loadHTMLString` (about:blank, triggered by the app) is allowed.
+    @MainActor
+    static func allows(_ action: WKNavigationAction) -> Bool {
+        action.navigationType == .other
+            && action.targetFrame?.isMainFrame == true
+            && action.request.url?.absoluteString == "about:blank"
+    }
+}
+
+final class WidgetNavigationLock: NSObject, WKNavigationDelegate {
+    var lastHTML: String
+    init(lastHTML: String) { self.lastHTML = lastHTML }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+        decisionHandler(WidgetWebViewSupport.allows(navigationAction) ? .allow : .cancel)
+    }
+}
+
 #if os(macOS)
 private struct SandboxedWidgetWebView: NSViewRepresentable {
     let html: String
 
     func makeNSView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.defaultWebpagePreferences.allowsContentJavaScript = true
-        let webView = WKWebView(frame: .zero, configuration: config)
+        let webView = WidgetWebViewSupport.makeWebView(navigationDelegate: context.coordinator)
         webView.setValue(false, forKey: "drawsBackground")
         webView.loadHTMLString(html, baseURL: nil)
         return webView
@@ -499,21 +537,14 @@ private struct SandboxedWidgetWebView: NSViewRepresentable {
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(lastHTML: html) }
-
-    final class Coordinator {
-        var lastHTML: String
-        init(lastHTML: String) { self.lastHTML = lastHTML }
-    }
+    func makeCoordinator() -> WidgetNavigationLock { WidgetNavigationLock(lastHTML: html) }
 }
 #else
 private struct SandboxedWidgetWebView: UIViewRepresentable {
     let html: String
 
     func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.defaultWebpagePreferences.allowsContentJavaScript = true
-        let webView = WKWebView(frame: .zero, configuration: config)
+        let webView = WidgetWebViewSupport.makeWebView(navigationDelegate: context.coordinator)
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.loadHTMLString(html, baseURL: nil)
@@ -527,12 +558,7 @@ private struct SandboxedWidgetWebView: UIViewRepresentable {
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(lastHTML: html) }
-
-    final class Coordinator {
-        var lastHTML: String
-        init(lastHTML: String) { self.lastHTML = lastHTML }
-    }
+    func makeCoordinator() -> WidgetNavigationLock { WidgetNavigationLock(lastHTML: html) }
 }
 #endif
 

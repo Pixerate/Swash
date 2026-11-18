@@ -1,3 +1,4 @@
+import PixerateMarkdown
 @testable import Swash
 import SwiftUI
 import UIKit
@@ -8,7 +9,20 @@ final class PreviewSnapshotTests: XCTestCase {
     private struct PreviewCase {
         let name: String
         let style: UIUserInterfaceStyle
+        let size: CGSize
         let makeView: () -> AnyView
+
+        init(
+            name: String,
+            style: UIUserInterfaceStyle,
+            size: CGSize = CGSize(width: 393, height: 852),
+            makeView: @escaping () -> AnyView
+        ) {
+            self.name = name
+            self.style = style
+            self.size = size
+            self.makeView = makeView
+        }
     }
 
     func testRenderSwiftUIPreviews() async throws {
@@ -19,6 +33,13 @@ final class PreviewSnapshotTests: XCTestCase {
             try FileManager.default.createDirectory(at: exportDir, withIntermediateDirectories: true)
         }
 
+        let formatEntries = FormatManifest.entries(for: .menu).filter(\.command.isAvailableOnIOS)
+        let sampleMarkdown = "# Swash\n\nA fast Markdown editor for Mac, iPad, and iPhone.\n\n## Getting Started\n\n### Formatting\n\n## Export"
+        let sampleOutline = MarkdownOutline(text: sampleMarkdown)
+        let emptyOutline = MarkdownOutline(text: "")
+        let sampleStats = MarkdownStatistics(text: sampleMarkdown)
+        let sampleSelectionStats = MarkdownStatistics(text: "A fast Markdown editor for Mac, iPad, and iPhone.")
+
         let cases: [PreviewCase] = [
             PreviewCase(name: "iOS-Settings-Light", style: .light) {
                 AnyView(IOSSettingsView())
@@ -26,10 +47,42 @@ final class PreviewSnapshotTests: XCTestCase {
             PreviewCase(name: "iOS-Settings-Dark", style: .dark) {
                 AnyView(IOSSettingsView())
             },
+            PreviewCase(name: "iOS-FormatPanel-Light", style: .light, size: CGSize(width: 393, height: 260)) {
+                AnyView(FormatPanel(entries: formatEntries, apply: { _ in }, close: {}))
+            },
+            PreviewCase(name: "iOS-FormatPanel-Dark", style: .dark, size: CGSize(width: 393, height: 260)) {
+                AnyView(FormatPanel(entries: formatEntries, apply: { _ in }, close: {}))
+            },
+            PreviewCase(name: "iOS-OutlineList-Light", style: .light) {
+                AnyView(
+                    NavigationStack {
+                        IOSOutlineList(outline: sampleOutline, currentIndex: 1, select: { _ in })
+                            .navigationTitle("Outline")
+                    }
+                )
+            },
+            PreviewCase(name: "iOS-OutlineList-Empty-Light", style: .light) {
+                AnyView(
+                    NavigationStack {
+                        IOSOutlineList(outline: emptyOutline, currentIndex: nil, select: { _ in })
+                            .navigationTitle("Outline")
+                    }
+                )
+            },
+            PreviewCase(name: "iOS-DocumentInfo-Light", style: .light) {
+                AnyView(
+                    IOSDocumentInfoView(
+                        title: "Sample.md",
+                        document: sampleStats,
+                        selection: sampleSelectionStats,
+                        headings: sampleOutline.headings.count
+                    )
+                )
+            },
         ]
 
         for entry in cases {
-            let png = try await renderToPNG(view: entry.makeView(), style: entry.style)
+            let png = try await renderToPNG(view: entry.makeView(), style: entry.style, size: entry.size)
             XCTAssertGreaterThan(png.count, 0, "Empty PNG for \(entry.name)")
 
             if let exportDir {

@@ -25,12 +25,21 @@ final class WidgetTrustManager: ObservableObject {
 
     private let userDefaults: UserDefaults
 
+    /// The key an unsaved document gets. Every unsaved document shares it, so trust can't be
+    /// granted to it: approving one pasted widget would approve them all, permanently.
+    static let unsavedDocumentKey = "untitled"
+
+    /// Whether widgets can be allowed for `documentKey` at all (only for a saved file).
+    func canGrantTrust(for documentKey: String) -> Bool {
+        documentKey != Self.unsavedDocumentKey && !documentKey.isEmpty
+    }
+
     func isTrusted(documentKey: String) -> Bool {
-        trustedKeys.contains(documentKey)
+        canGrantTrust(for: documentKey) && trustedKeys.contains(documentKey)
     }
 
     func grantTrust(for documentKey: String) {
-        guard !trustedKeys.contains(documentKey) else { return }
+        guard canGrantTrust(for: documentKey), !trustedKeys.contains(documentKey) else { return }
         trustedKeys.insert(documentKey)
         persist()
         NotificationCenter.default.post(name: Self.trustDidChangeNotification, object: documentKey)
