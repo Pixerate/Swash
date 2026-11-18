@@ -351,3 +351,7 @@
 - **Issue**: Curly quotes, dashes and ellipses (#104) come from the editor's `curly-quotes`, `dashes` and `ellipses` checks, which are off unless a host turns them on. Whether people want curly quotes at all is taste; dashes and ellipses are close to corrections.
 - **Solution**: `WritingPartnerDefaults.curlyQuotes` is a switch in Settings › Writing › Typography, off by default. Dashes and ellipses have no switch: `isRuleEnabled` is always true for them, so like the other rules they're on and learn from undo (two undos in a row stop them), and they show in "What It Has Learned". `PunctuationRule.isTypography` still leaves all three out of the voice tests' default and the strip-and-restore eval, which measure correction, not style.
 
+
+## 86. Web Pages Can Reach the Embedded MCP Server on 127.0.0.1
+- **Issue**: A page in any browser can POST to `http://127.0.0.1:4477/mcp`. A `text/plain` POST needs no CORS preflight, and DNS rebinding can make a foreign host name resolve to 127.0.0.1. The token is optional, so without checks any website could call the document tools.
+- **Solution**: `LocalMCPServer.isAllowed` refuses (403) a request whose `Host` isn't this machine, whose `Origin` is present and not local, or a POST that isn't `application/json`, as the MCP Streamable HTTP transport requires. The server never answers a preflight with CORS headers. Reject a negative or oversized `Content-Length` before slicing the body, or `subdata` traps.

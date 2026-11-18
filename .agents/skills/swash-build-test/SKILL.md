@@ -81,7 +81,7 @@ The Format menu, shortcuts, bubble-menu labels and code languages come from the 
 xcodebuild test -scheme Swash -destination "platform=iOS Simulator,name=iPhone 17" CODE_SIGNING_ALLOWED=NO  # iOS Edit Text editor (Tests/SwashiOSTests)
 ```
 
-To try the agent tools end to end, run the bridge from an editor checkout (`node ../editor/packages/core/dist/bridge/cli.js --port 4499 --token t0ken`, MCP on stdio) and open a document in a Debug build with `open -n -a build/.../Swash.app doc.md --args -agentBridgeEnabled YES -agentBridgeToken t0ken -agentBridgeURL ws://127.0.0.1:4499 -ApplePersistenceIgnoreState YES`. Launch arguments override the settings without saving them. See GOTCHAS #69.
+To try the agent tools end to end, launch a Debug build with the embedded MCP server on a spare port: `open -n -a "$PWD/build/.../Swash.app" "$PWD/doc.md" --args -agentBridgeEnabled YES -agentBridgePort 4478 -ApplePersistenceIgnoreState YES` (`open -a` needs an absolute path, and the listener can take up to a minute on first launch). Then POST JSON-RPC to `http://127.0.0.1:4478/mcp` with `Content-Type: application/json` (`initialize`, `tools/list`, `tools/call`). Launch arguments override the settings without saving them. See GOTCHAS #69.
 
 After `./scripts/run_spec_tests.sh`, restore the snapshots (GOTCHAS #8).
 
