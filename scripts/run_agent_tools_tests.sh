@@ -1,6 +1,6 @@
 #!/bin/bash
 # Calls each agent tool (Swash/MarkdownAgentTools.swift) through a PixerateCore ToolRegistry with
-# valid and invalid arguments, as pixerate-mcp-bridge does (#49).
+# valid and invalid arguments, as the embedded MCP server does (#49).
 set -eo pipefail
 cd "$(dirname "$0")/.."
 source scripts/pixerate_markdown.sh

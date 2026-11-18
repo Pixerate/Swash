@@ -20,6 +20,8 @@ enum AgentBridgeDefaults {
     static let port = "agentBridgePort"
     static let token = "agentBridgeToken"
     static let defaultPort: UInt16 = 4477
+    /// Ports the server accepts: unprivileged, so binding never needs root.
+    static let validPorts: ClosedRange<Int> = 1024...65535
 
     static func endpointURL(port: UInt16) -> String {
         "http://127.0.0.1:\(port)/mcp"
@@ -59,7 +61,9 @@ final class AgentDocumentSession: MarkdownToolTarget {
     }
 
     let registry = ToolRegistry()
-    fileprivate var attachedAt = Date()
+    /// When the document's window last became active (or the document opened), so tool calls
+    /// without a `document` argument go to the document the person was last looking at.
+    fileprivate var activatedAt = Date()
     /// The selection the tools last set, for documents shown without an editor.
     private var lastSelection = NSRange(location: 0, length: 0)
     private var tools: MarkdownToolProvider?
@@ -133,13 +137,17 @@ final class AgentBridge {
 
     @ObservationIgnored private var sessions: [ObjectIdentifier: AgentDocumentSession] = [:]
     @ObservationIgnored private var server: LocalMCPServer?
+    /// A document-less, editable session whose registry is the full tool catalogue. The server
+    /// can't tell clients that the tool list changed (it has no SSE stream), and clients list tools
+    /// once when they connect, so `tools/list` must not depend on which documents are open.
+    @ObservationIgnored private let catalog = AgentDocumentSession()
 
     private var defaults: UserDefaults { .standard }
     var isEnabled: Bool { defaults.bool(forKey: AgentBridgeDefaults.enabled) }
 
     var port: UInt16 {
         let raw = defaults.integer(forKey: AgentBridgeDefaults.port)
-        if raw >= 1024 && raw <= 65535 { return UInt16(raw) }
+        if AgentBridgeDefaults.validPorts.contains(raw) { return UInt16(raw) }
         return AgentBridgeDefaults.defaultPort
     }
 
@@ -160,12 +168,17 @@ final class AgentBridge {
 
     /// Starts serving a document's tools (and starts the MCP server when enabled).
     func attach(_ session: AgentDocumentSession) {
-        session.attachedAt = Date()
+        session.activatedAt = Date()
         sessions[ObjectIdentifier(session)] = session
         documentCount = sessions.count
         if isEnabled && server == nil {
             startServer()
         }
+    }
+
+    /// Makes a document the default target for tool calls (its window became active).
+    func activate(_ session: AgentDocumentSession) {
+        session.activatedAt = Date()
     }
 
     /// Stops serving a document's tools.
@@ -182,7 +195,7 @@ final class AgentBridge {
             return
         }
         if let server {
-            if server.port != port {
+            if server.port != port || server.hasFailed {
                 restartServer()
             }
         } else {
@@ -213,7 +226,8 @@ final class AgentBridge {
 
     /// Builds the `mcpServers` JSON snippet for Settings › Copy MCP Config.
     func mcpConfigSnippet() -> String {
-        var entry: [String: Any] = ["url": endpointURL]
+        // Claude Code reads an entry without `type` as a stdio server and rejects it.
+        var entry: [String: Any] = ["type": "http", "url": endpointURL]
         if let token {
             entry["headers"] = ["Authorization": "Bearer \(token)"]
         }
@@ -255,7 +269,7 @@ final class AgentBridge {
     // MARK: - MCP JSON-RPC Dispatch
 
     private func orderedSessions() -> [AgentDocumentSession] {
-        sessions.values.sorted { $0.attachedAt > $1.attachedAt }
+        sessions.values.sorted { $0.activatedAt > $1.activatedAt }
     }
 
     private func resolveSession(forDocument key: String?) -> AgentDocumentSession? {
@@ -272,10 +286,7 @@ final class AgentBridge {
     private func handleRPC(method: String, params: JSONObject?) async -> MCPDispatchResult {
         switch method {
         case "initialize":
-            let requestedVersion = params?["protocolVersion"]?.stringValue
-            let version = (requestedVersion == "2024-11-05" || requestedVersion == "2025-03-26")
-                ? requestedVersion!
-                : "2025-03-26"
+            let version = LocalMCPServer.negotiatedProtocolVersion(requested: params?["protocolVersion"]?.stringValue)
             let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
             return .success([
                 "protocolVersion": .string(version),
@@ -287,12 +298,8 @@ final class AgentBridge {
             return .success([:])
 
         case "tools/list":
-            var tools: [JSONValue] = [listDocumentsToolJSON()]
-            if let primary = orderedSessions().first {
-                for def in primary.registry.listTools() {
-                    tools.append(withOptionalDocumentParameter(def).json)
-                }
-            }
+            let tools = [listDocumentsToolJSON()]
+                + catalog.registry.listTools().map { withOptionalDocumentParameter($0).json }
             return .success(["tools": .array(tools)])
 
         case "tools/call":
@@ -328,6 +335,15 @@ final class AgentBridge {
                 return .success(err.json.objectValue ?? [:])
             }
 
+            // A read-only document's registry hides its write tools, which would otherwise come
+            // back as a confusing "Unknown tool" for a tool that tools/list advertised.
+            if let reason = session.readOnlyReason,
+               !session.registry.listTools().contains(where: { $0.name == name }),
+               catalog.registry.listTools().contains(where: { $0.name == name }) {
+                let message = "\"\(session.name)\" is read-only (\(reason)), so \(name) can't edit it."
+                return .success(McpToolResult(content: [.text(message)], isError: true).json.objectValue ?? [:])
+            }
+
             let result = await session.registry.callTool(name, args, actor: ToolActor(id: "mcp", name: "MCP Client"))
             return .success(result.json.objectValue ?? [:])
 
@@ -360,7 +376,7 @@ final class AgentBridge {
         var props = schema["properties"]?.objectValue ?? JSONObject()
         props["document"] = [
             "type": "string",
-            "description": "Optional document id or name from list_documents. Defaults to the active document."
+            "description": "Optional document id or name from list_documents. Defaults to the document most recently active in Swash."
         ]
         schema["properties"] = .object(props)
         copy.inputSchema = .object(schema)
@@ -403,6 +419,7 @@ final class LocalMCPServer {
     func start() {
         logger.notice("Starting MCP server on 127.0.0.1:\(self.port)")
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+            hasFailed = true
             onStateChange(.failed("Invalid port \(port)."))
             return
         }
@@ -424,7 +441,15 @@ final class LocalMCPServer {
                         self.onStateChange(.listening(port: self.port))
                     case .failed(let error):
                         self.logger.error("Listener failed on port \(self.port): \(error.localizedDescription)")
-                        self.onStateChange(.failed(error.localizedDescription))
+                        // A failed listener must still be cancelled to release it. Detach it first,
+                        // so its `.cancelled` update is ignored and the failure stays visible.
+                        self.listener = nil
+                        self.hasFailed = true
+                        listener.cancel()
+                        self.onStateChange(.failed(Self.failureMessage(error, port: self.port)))
+                        let completion = self.onStopped
+                        self.onStopped = nil
+                        completion?()
                     case .cancelled:
                         self.listener = nil
                         self.onStateChange(.stopped)
@@ -445,8 +470,19 @@ final class LocalMCPServer {
 
             listener.start(queue: .main)
         } catch {
+            hasFailed = true
             onStateChange(.failed(error.localizedDescription))
         }
+    }
+
+    /// Whether the listener failed (and was released), so the settings can retry it.
+    private(set) var hasFailed = false
+
+    private static func failureMessage(_ error: NWError, port: UInt16) -> String {
+        if case .posix(.EADDRINUSE) = error {
+            return "Port \(port) is in use by another app. Choose another port."
+        }
+        return error.localizedDescription
     }
 
     func stop(completion: (() -> Void)? = nil) {
@@ -552,6 +588,25 @@ final class LocalMCPServer {
         return true
     }
 
+    /// MCP protocol versions this server speaks, newest first.
+    nonisolated static let supportedProtocolVersions = ["2025-06-18", "2025-03-26", "2024-11-05"]
+
+    /// The version to answer `initialize` with: the client's if supported, else the newest.
+    nonisolated static func negotiatedProtocolVersion(requested: String?) -> String {
+        requested.flatMap { supportedProtocolVersions.contains($0) ? $0 : nil } ?? supportedProtocolVersions[0]
+    }
+
+    /// Compares the `Authorization` header with the token in constant time.
+    nonisolated static func isAuthorized(header: String?, token: String) -> Bool {
+        let expected = Array("Bearer \(token)".utf8)
+        let given = Array((header ?? "").utf8)
+        var diff = UInt8(expected.count == given.count ? 0 : 1)
+        for i in expected.indices {
+            diff |= expected[i] ^ (i < given.count ? given[i] : 0)
+        }
+        return diff == 0
+    }
+
     private func processHTTPRequest(_ req: HTTPRequest, on connection: NWConnection) async {
         guard req.method != "INVALID" else {
             sendHTTPResponse(on: connection, status: "400 Bad Request", body: Data())
@@ -562,22 +617,39 @@ final class LocalMCPServer {
             return
         }
 
-        // Check optional Bearer token
-        if let expectedToken = token() {
-            let auth = req.headers["authorization"] ?? ""
-            if auth != "Bearer \(expectedToken)" {
-                sendJSONResponse(
-                    on: connection,
-                    status: "401 Unauthorized",
-                    json: ["jsonrpc": "2.0", "error": ["code": -32001, "message": "Unauthorized"]]
-                )
-                return
-            }
-        }
-
+        // Paths first, so OAuth discovery (`/.well-known/...`) gets a plain 404 rather than a 401
+        // that would send clients looking for an authorization server this server doesn't have.
         let pathOnly = req.path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? req.path
         guard pathOnly == "/mcp" || pathOnly == "/" else {
             sendHTTPResponse(on: connection, status: "404 Not Found", body: Data())
+            return
+        }
+
+        if let expectedToken = token(),
+           !Self.isAuthorized(header: req.headers["authorization"], token: expectedToken) {
+            sendJSONResponse(
+                on: connection,
+                status: "401 Unauthorized",
+                extraHeaders: ["WWW-Authenticate": #"Bearer realm="Swash", error="invalid_token""#],
+                json: ["jsonrpc": "2.0", "id": .null, "error": [
+                    "code": -32001,
+                    "message": "Unauthorized: send \"Authorization: Bearer <token>\" with the token from Swash Settings › Agents."
+                ]]
+            )
+            return
+        }
+
+        // Clients send the negotiated version on every request after `initialize` (2025-06-18).
+        if let version = req.headers["mcp-protocol-version"],
+           !Self.supportedProtocolVersions.contains(version) {
+            sendJSONResponse(
+                on: connection,
+                status: "400 Bad Request",
+                json: ["jsonrpc": "2.0", "id": .null, "error": [
+                    "code": -32600,
+                    "message": .string("Unsupported MCP-Protocol-Version \(version). Supported: \(Self.supportedProtocolVersions.joined(separator: ", ")).")
+                ]]
+            )
             return
         }
 
@@ -682,6 +754,7 @@ struct AgentToolsHookup: ViewModifier {
     let readOnlyReason: String?
     let flavor: MarkdownFlavor
     @State private var session = AgentDocumentSession()
+    @Environment(\.appearsActive) private var appearsActive
 
     func body(content: Content) -> some View {
         content
@@ -690,6 +763,9 @@ struct AgentToolsHookup: ViewModifier {
                 AgentBridge.shared.attach(session)
             }
             .onDisappear { AgentBridge.shared.detach(session) }
+            .onChange(of: appearsActive) { _, active in
+                if active { AgentBridge.shared.activate(session) }
+            }
             .onChange(of: name) { configure() }
             .onChange(of: readOnlyReason) { configure() }
             .onChange(of: flavor) { configure() }

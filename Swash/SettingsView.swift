@@ -529,6 +529,12 @@ private struct AgentSettingsView: View {
             Section {
                 TextField("Port", value: $port, format: .number.grouping(.never))
                     .onSubmit { bridge.settingsChanged() }
+                if !AgentBridgeDefaults.validPorts.contains(port) {
+                    // String(…) so the numbers aren't localised with grouping separators ("4,477").
+                    Text("Use a port from \(String(AgentBridgeDefaults.validPorts.lowerBound)) to \(String(AgentBridgeDefaults.validPorts.upperBound)). Swash listens on \(String(bridge.port)) until then.")
+                        .foregroundStyle(.red)
+                        .settingsFooterStyle()
+                }
                 SecureField("Token (optional)", text: $token)
                     .onSubmit { bridge.settingsChanged() }
                 LabeledContent("Client Setup") {
