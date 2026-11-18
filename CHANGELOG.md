@@ -1,5 +1,14 @@
 # swash
 
+## 1.33.1
+
+### Patch Changes
+
+- c2ff25e: Embedded MCP server fixes: `tools/list` always lists every document tool, so agents that connect before a document is open (or while a read-only one is in front) can still edit; tool calls without a `document` go to the most recently active window instead of the last-opened one; write tools on a read-only document explain why they failed; and Copy MCP Config adds `"type": "http"`, which Claude Code needs.
+  
+  Also: a listener that fails to start (port in use) is released and shows why, and changing settings retries it; Settings flags an out-of-range port; unknown paths return 404 before authentication and a bad token returns 401 with `WWW-Authenticate` (compared in constant time); and the server negotiates MCP 2025-06-18 and checks `MCP-Protocol-Version`.
+- b04f208: The embedded MCP server now comes from PixerateCore (editor 0.81.0), shared with other Pixerate apps, instead of Swash's own copy. Agents see the same tools and documents. The default port is now 4478, so it no longer clashes with `pixerate-mcp-bridge` on 4477. If you already turned the server on without choosing a port, Swash keeps 4477 so your copied MCP config still works. `list_documents` now also gives a read-only document's reason.
+
 ## 1.33.0
 
 ### Minor Changes
