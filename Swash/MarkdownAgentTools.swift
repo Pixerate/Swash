@@ -31,49 +31,34 @@ struct MarkdownRevisionEntry: Equatable, Sendable {
     }
 }
 
-/// The document the tools read and edit.
+/// The document the tools read and edit. Each agent (`ToolActor`, nil for an anonymous caller)
+/// has its own selection, and every edit bumps `revision` so positions an agent read earlier can
+/// be mapped through edits made since, or refused when they overlap one.
 @MainActor
 protocol MarkdownToolTarget: AnyObject {
     /// The raw Markdown.
     var markdown: String { get }
-    /// Monotonically increasing revision counter, incremented on every document edit.
-    var revision: Int { get }
-    /// The edit history, in ascending revision order, used to map or reject stale-offset writes.
-    var revisionHistory: [MarkdownRevisionEntry] { get }
-    /// The default selection, in raw-Markdown UTF-16 offsets.
-    var selection: NSRange { get }
     /// Why the document can't be edited, or nil when it can.
     var readOnlyReason: String? { get }
     /// The document's Markdown flavour. Slack mrkdwn has its own inline syntax (`*bold*`,
     /// `_italic_`, `~strike~`, `<url|text>`), which the tools read and write.
     var flavor: MarkdownFlavor { get }
-    /// Replaces the whole Markdown as one undoable edit, then selects `selection`.
-    func apply(markdown: String, selection: NSRange, actionName: String)
-    /// Moves the selection.
-    func select(_ range: NSRange)
-    /// The selection for `agent` (or the default selection when `agent` is nil).
+    /// Monotonically increasing revision counter, incremented on every document edit.
+    var revision: Int { get }
+    /// The recent edit history, in ascending revision order, used to map or reject stale-offset writes.
+    var revisionHistory: [MarkdownRevisionEntry] { get }
+    /// `agent`'s selection, in raw-Markdown UTF-16 offsets.
     func selection(for agent: ToolActor?) -> NSRange
-    /// Moves the selection for `agent`.
+    /// Moves `agent`'s selection.
     func select(_ range: NSRange, for agent: ToolActor?)
-    /// Replaces the Markdown with `markdown` as one undoable edit, records `edits` for cursor and
-    /// revision mapping, and updates `agent`'s selection to `agentSelection`.
+    /// Replaces the Markdown with `markdown` as one undoable edit. `edits` (ascending,
+    /// non-overlapping, in the old text) say what changed, so other agents' selections and the
+    /// user's move with the text; `agentSelection` is `agent`'s selection afterwards.
     func apply(markdown: String, edits: [(range: NSRange, newLength: Int)], agentSelection: NSRange, for agent: ToolActor?, actionName: String)
     /// The revision `agent` last observed on this document (via `get_text`, `find_text`, or a write tool).
     func observedRevision(for agent: ToolActor?) -> Int?
     /// Records that `agent` observed `revision` on this document.
     func noteObservedRevision(_ revision: Int, for agent: ToolActor?)
-}
-
-extension MarkdownToolTarget {
-    var revision: Int { 0 }
-    var revisionHistory: [MarkdownRevisionEntry] { [] }
-    func selection(for agent: ToolActor?) -> NSRange { selection }
-    func select(_ range: NSRange, for agent: ToolActor?) { select(range) }
-    func apply(markdown: String, edits: [(range: NSRange, newLength: Int)], agentSelection: NSRange, for agent: ToolActor?, actionName: String) {
-        apply(markdown: markdown, selection: agentSelection, actionName: actionName)
-    }
-    func observedRevision(for agent: ToolActor?) -> Int? { nil }
-    func noteObservedRevision(_ revision: Int, for agent: ToolActor?) {}
 }
 
 /// A tool failure, reported to the agent as an `isError` result with this message.
@@ -893,5 +878,311 @@ final class MarkdownToolProvider {
             }
         )
     }()
+}
+
+/// One document's tools: what they read and edit, and where each agent is in it.
+///
+/// Every agent (`ToolActor.id`) has its own selection, which starts at the user's cursor the
+/// first time it is asked for and from then on moves only with the agent's own calls and with
+/// the text: other agents' edits and the user's typing map it (`noteUserEdit`), so an agent's
+/// edit never moves the user's caret and the user's typing never moves an agent's. `carets`
+/// mirrors the selections for the editor overlay, with each agent's colour and name tag.
+@MainActor
+final class AgentDocumentSession: MarkdownToolTarget {
+    /// Distinct colours for agents' carets and name tags (`PRESENCE_COLORS` in @pixerate/editor).
+    static let presencePalette = ["#7c3aed", "#db2777", "#0891b2", "#ea580c", "#16a34a"]
+    /// How long an idle agent's caret stays on screen after its last call, in ms (0 keeps it).
+    static let defaultCaretIdleMs: Double = 12_000
+    /// How long the text an agent changed stays tinted, in ms.
+    static let defaultChangedTintMs: Double = 1_500
+    /// Revisions kept for mapping stale positions; older ones make a write fail with a conflict.
+    static let maxRevisionHistory = 256
+
+    /// The live raw Markdown.
+    var readMarkdown: () -> String = { "" }
+    /// The user's live selection in raw-Markdown offsets, or nil without an editor.
+    var readSelection: () -> NSRange? = { nil }
+    /// Applies an agent's edit as one undo step: the new text, its edits (so the host can map the
+    /// user's selection) and the undo action name.
+    var applyEdit: (String, [(range: NSRange, newLength: Int)], String) -> Void = { _, _, _ in }
+    /// Called when the first agent gets a selection, so the host starts reporting user edits.
+    var onAgentsAppeared: (() -> Void)?
+
+    /// The agents' carets, selections and changed ranges, for the editor overlay.
+    let carets = AgentCaretStore()
+    var caretIdleMs = AgentDocumentSession.defaultCaretIdleMs
+    var changedTintMs = AgentDocumentSession.defaultChangedTintMs
+
+    private(set) var revision = 0
+    private(set) var revisionHistory: [MarkdownRevisionEntry] = []
+
+    /// How the document is listed to agents (`list_documents`).
+    var name: String {
+        get { target.name }
+        set { target.name = newValue }
+    }
+
+    /// The document's flavour, so Slack documents are read and formatted as Slack mrkdwn.
+    var flavor: MarkdownFlavor = .github {
+        didSet { target.info = Self.info(flavor) }
+    }
+
+    /// Why the document can't be edited; the write tools are hidden while it is set.
+    var readOnlyReason: String? {
+        didSet {
+            target.readOnlyReason = readOnlyReason
+            if readOnlyReason != oldValue { registry.notifyListChanged() }
+        }
+    }
+
+    let registry: ToolRegistry
+    /// What the MCP server routes this document's tool calls to.
+    let target: MCPToolTarget
+    private var tools: MarkdownToolProvider?
+
+    /// Each agent's selection (`""` for a caller without an actor).
+    private var selections: [String: NSRange] = [:]
+    private var observedRevisions: [String: Int] = [:]
+    private var colors: [String: String] = [:]
+    private var idleTimers: [String: Task<Void, Never>] = [:]
+    private var tintTimers: [String: Task<Void, Never>] = [:]
+    /// The text as of the last edit this session saw, to catch changes it wasn't told about.
+    private var lastKnownMarkdown: String?
+
+    init() {
+        let registry = ToolRegistry()
+        self.registry = registry
+        target = MCPToolTarget(name: "Untitled", registry: registry, info: Self.info(.github))
+        let tools = MarkdownToolProvider(target: self)
+        self.tools = tools
+        do {
+            try registry.register(tools.provider(id: "document", namespace: ""))
+            try registry.register(Self.genUIProvider())
+        } catch {
+            assertionFailure("Agent tools did not register: \(error)")
+        }
+    }
+
+    private static func info(_ flavor: MarkdownFlavor) -> JSONObject {
+        ["flavor": .string(flavor == .slack ? "slack" : "github")]
+    }
+
+    private static func genUIProvider() -> AgentToolProvider {
+        let listGenUIBlocks = AgentTool(
+            name: "list_genui_blocks",
+            title: "List supported GenUI blocks",
+            description: "Returns the fenced Markdown code-block languages and capabilities supported by Swash for @pixerate/genui-core embedded UI blocks and permission-gated sandboxed widgets.",
+            inputSchema: [
+                "type": "object",
+                "properties": [:],
+                "additionalProperties": false,
+            ],
+            annotations: ToolAnnotations(title: "List supported GenUI blocks", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false),
+            handler: { _, _ in
+                .value(.object([
+                    "builtInKinds": .array(GenUIBlockKind.allCases.filter { $0 != .widget }.map { .string($0.rawValue) }),
+                    "supportedLanguages": .array(GenUIBlockRegistry.supportedLanguages.map { .string($0) }),
+                    "sandboxedWidgets": [
+                        "languages": .array([.string("widget"), .string("genui-widget")]),
+                        "permissionGated": .bool(true),
+                        "fields": .array([.string("title"), .string("height"), .string("html"), .string("script")])
+                    ]
+                ]))
+            }
+        )
+        return AgentToolProvider(
+            id: "genui",
+            namespace: "",
+            title: "GenUI Blocks",
+            description: "Discover Markdown fenced code-block UI capabilities in Swash.",
+            tools: { [listGenUIBlocks] }
+        )
+    }
+
+    private static func key(_ agent: ToolActor?) -> String { agent?.id ?? "" }
+
+    /// Whether any agent has a selection of its own.
+    var hasAgents: Bool { !selections.isEmpty }
+
+    // MARK: Text and revisions
+
+    var markdown: String { syncExternalChanges() }
+
+    /// Reads the text, and treats a change this session wasn't told about (an edit made before any
+    /// agent appeared, a revert, a binding update) as one external edit.
+    @discardableResult
+    private func syncExternalChanges() -> String {
+        let current = readMarkdown()
+        if let previous = lastKnownMarkdown, previous != current {
+            mapThrough([MarkdownToolProvider.change(from: previous as NSString, to: current as NSString)],
+                       newLength: (current as NSString).length, excluding: nil)
+        }
+        lastKnownMarkdown = current
+        return current
+    }
+
+    /// The user (or the editor: undo, the writing partner) replaced `range` of the raw Markdown
+    /// with `newLength` characters, giving `newMarkdown`.
+    func noteUserEdit(range: NSRange, newLength: Int, newMarkdown: String) {
+        guard let previous = lastKnownMarkdown,
+              (previous as NSString).length - range.length + newLength == (newMarkdown as NSString).length else {
+            // Out of step (an edit was missed, or nothing was read yet): diff the whole text instead.
+            syncExternalChanges()
+            return
+        }
+        mapThrough([(range: range, newLength: newLength)], newLength: (newMarkdown as NSString).length, excluding: nil)
+        lastKnownMarkdown = newMarkdown
+    }
+
+    /// Records a revision and moves every selection (but `excluding`'s) and caret through `edits`.
+    private func mapThrough(_ edits: [(range: NSRange, newLength: Int)], newLength: Int, excluding: String?) {
+        guard !edits.isEmpty else { return }
+        revision += 1
+        revisionHistory.append(MarkdownRevisionEntry(revision: revision, edits: edits))
+        if revisionHistory.count > Self.maxRevisionHistory {
+            revisionHistory.removeFirst(revisionHistory.count - Self.maxRevisionHistory)
+        }
+        for (id, selection) in selections where id != excluding {
+            selections[id] = Self.clamp(MarkdownToolProvider.mapSelection(selection, through: edits), newLength)
+        }
+        guard !carets.carets.isEmpty else { return }
+        // The store maps one edit at a time in the current text: go from the last edit back, so
+        // each one's offsets are still those of the text before it.
+        for edit in edits.reversed() { carets.mapThroughEdit(range: edit.range, length: edit.newLength) }
+        // Its insertion rule differs from the tools' (ProseMirror's), so put heads back on the selections.
+        for caret in carets.carets {
+            guard let selection = selections[caret.id], caret.selection != selection else { continue }
+            carets.set(AgentCaretInfo(id: caret.id, name: caret.name, color: caret.color, treatment: caret.treatment),
+                       anchor: selection.location, head: NSMaxRange(selection))
+        }
+    }
+
+    private static func clamp(_ range: NSRange, _ length: Int) -> NSRange {
+        let start = min(max(0, range.location), length)
+        return NSRange(location: start, length: min(max(0, range.length), length - start))
+    }
+
+    // MARK: Selections
+
+    func selection(for agent: ToolActor?) -> NSRange {
+        syncExternalChanges()
+        let key = Self.key(agent)
+        if let existing = selections[key] { return existing }
+        // A new agent starts at the user's cursor, so "insert it here" works.
+        let initial = readSelection() ?? NSRange(location: 0, length: 0)
+        setSelection(initial, for: key)
+        return initial
+    }
+
+    func select(_ range: NSRange, for agent: ToolActor?) {
+        syncExternalChanges()
+        setSelection(range, for: Self.key(agent))
+        updatePresence(for: agent, selection: range, changed: [])
+    }
+
+    private func setSelection(_ range: NSRange, for key: String) {
+        let first = selections.isEmpty
+        selections[key] = range
+        if first { onAgentsAppeared?() }
+    }
+
+    func observedRevision(for agent: ToolActor?) -> Int? {
+        agent.flatMap { observedRevisions[$0.id] }
+    }
+
+    func noteObservedRevision(_ revision: Int, for agent: ToolActor?) {
+        guard let agent else { return }
+        observedRevisions[agent.id] = revision
+    }
+
+    // MARK: Edits
+
+    func apply(markdown: String, edits: [(range: NSRange, newLength: Int)], agentSelection: NSRange, for agent: ToolActor?, actionName: String) {
+        syncExternalChanges()
+        let key = Self.key(agent)
+        mapThrough(edits, newLength: (markdown as NSString).length, excluding: key)
+        setSelection(agentSelection, for: key)
+        var shift = 0
+        let changed: [NSRange] = edits.compactMap { edit in
+            defer { shift += edit.newLength - edit.range.length }
+            return edit.newLength > 0 ? NSRange(location: edit.range.location + shift, length: edit.newLength) : nil
+        }
+        applyEdit(markdown, edits, Self.undoName(actionName, agent: agent))
+        // The editor may normalise what it was given; take its text as the new baseline.
+        lastKnownMarkdown = readMarkdown()
+        updatePresence(for: agent, selection: agentSelection, changed: changed)
+    }
+
+    /// "Insert Text (Claude Code)": each call is its own undo step, named after the agent that made it.
+    static func undoName(_ actionName: String, agent: ToolActor?) -> String {
+        let label = displayName(agent)
+        return label == defaultAgentCaretName ? actionName : "\(actionName) (\(label))"
+    }
+
+    /// The name on an agent's caret: its client's name, or "Agent" for an anonymous client.
+    static func displayName(_ agent: ToolActor?) -> String {
+        let name = agent?.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty || name == "MCP Client" ? defaultAgentCaretName : name
+    }
+
+    // MARK: Presence
+
+    func caretInfo(for agent: ToolActor) -> AgentCaretInfo {
+        let color: String
+        if let existing = colors[agent.id] {
+            color = existing
+        } else {
+            color = Self.presencePalette[colors.count % Self.presencePalette.count]
+            colors[agent.id] = color
+        }
+        return AgentCaretInfo(id: agent.id, name: Self.displayName(agent), color: color)
+    }
+
+    private func updatePresence(for agent: ToolActor?, selection: NSRange, changed: [NSRange]) {
+        guard let agent else { return }
+        let id = agent.id
+        carets.set(caretInfo(for: agent), anchor: selection.location, head: NSMaxRange(selection))
+        if !changed.isEmpty {
+            carets.markChanges(id, changed)
+            tintTimers[id]?.cancel()
+            if changedTintMs > 0 {
+                let delay = changedTintMs
+                tintTimers[id] = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(delay))
+                    guard !Task.isCancelled else { return }
+                    self?.carets.markChanges(id, [])
+                }
+            }
+        }
+        idleTimers[id]?.cancel()
+        if caretIdleMs > 0 {
+            let delay = caretIdleMs
+            idleTimers[id] = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard !Task.isCancelled else { return }
+                self?.carets.clear(id)
+            }
+        }
+    }
+
+    /// Forgets one agent: its selection, revision and caret.
+    func removeAgent(_ id: String) {
+        idleTimers.removeValue(forKey: id)?.cancel()
+        tintTimers.removeValue(forKey: id)?.cancel()
+        selections[id] = nil
+        observedRevisions[id] = nil
+        carets.clear(id)
+    }
+
+    /// Forgets every agent (the window closed or now shows another file).
+    func removeAllAgents() {
+        idleTimers.values.forEach { $0.cancel() }
+        tintTimers.values.forEach { $0.cancel() }
+        idleTimers = [:]
+        tintTimers = [:]
+        selections = [:]
+        observedRevisions = [:]
+        carets.clear()
+    }
 }
 #endif

@@ -2,15 +2,24 @@
 //  ConflictResolution.swift
 //  Swash
 //
-//  iCloud version conflicts: when another Mac saved the same document, offer to choose which
+//  iCloud version conflicts: when another device saved the same document, offer to choose which
 //  version to keep instead of leaving the conflict unresolved.
 //
 
-#if os(macOS)
 import SwiftUI
+#if os(macOS)
 import AppKit
+#endif
 
 enum DocumentConflicts {
+    struct VersionChoice: Identifiable {
+        let id: Int
+        let version: NSFileVersion?
+        let title: String
+        let detail: String
+        let preview: String
+    }
+
     static func unresolved(at url: URL) -> [NSFileVersion] {
         NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
     }
@@ -36,8 +45,33 @@ enum DocumentConflicts {
         let flattened = text.split(whereSeparator: \.isNewline).joined(separator: " ")
         return String(flattened.prefix(160))
     }
+
+    static func choices(at url: URL) -> [VersionChoice] {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        #if os(macOS)
+        let defaultDevice = "this Mac"
+        #else
+        let defaultDevice = "this device"
+        #endif
+        func describe(_ version: NSFileVersion?) -> String {
+            let date = version?.modificationDate.map { formatter.string(from: $0) } ?? "Unknown date"
+            let device = version?.localizedNameOfSavingComputer ?? defaultDevice
+            return "\(date) — \(device)"
+        }
+        let current = NSFileVersion.currentVersionOfItem(at: url)
+        var rows = [VersionChoice(id: 0, version: current, title: "This Version", detail: describe(current),
+                                  preview: current.map { preview(of: $0) } ?? "")]
+        for (index, conflict) in unresolved(at: url).enumerated() {
+            rows.append(VersionChoice(id: index + 1, version: conflict, title: "Other Version",
+                                      detail: describe(conflict), preview: preview(of: conflict)))
+        }
+        return rows
+    }
 }
 
+#if os(macOS)
 struct ConflictBanner: View {
     let count: Int
     let onResolve: () -> Void
@@ -69,35 +103,10 @@ struct ConflictResolutionSheet: View {
     let onKeep: (NSFileVersion?) -> Void
     let onCancel: () -> Void
 
-    private struct Row: Identifiable {
-        let id: Int
-        let version: NSFileVersion?
-        let title: String
-        let detail: String
-        let preview: String
-    }
-
     @State private var selection = 0
 
-    private var rows: [Row] {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        func describe(_ version: NSFileVersion?) -> String {
-            let date = version?.modificationDate.map { formatter.string(from: $0) } ?? "Unknown date"
-            let device = version?.localizedNameOfSavingComputer ?? "this Mac"
-            return "\(date) — \(device)"
-        }
-        let current = NSFileVersion.currentVersionOfItem(at: url)
-        var rows = [Row(id: 0, version: current, title: "This Version", detail: describe(current), preview: current.map { DocumentConflicts.preview(of: $0) } ?? "")]
-        for (index, conflict) in DocumentConflicts.unresolved(at: url).enumerated() {
-            rows.append(Row(id: index + 1, version: conflict, title: "Other Version", detail: describe(conflict), preview: DocumentConflicts.preview(of: conflict)))
-        }
-        return rows
-    }
-
     var body: some View {
-        let rows = self.rows
+        let rows = DocumentConflicts.choices(at: url)
         VStack(alignment: .leading, spacing: 14) {
             Text("Which version of “\(url.lastPathComponent)” do you want to keep?")
                 .font(.headline)
@@ -134,4 +143,107 @@ struct ConflictResolutionSheet: View {
         .frame(width: 480)
     }
 }
+#elseif os(iOS)
+struct ConflictBanner: View {
+    let count: Int
+    let onResolve: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.icloud")
+                .foregroundStyle(.orange)
+            Text(count == 1 ? "This document was also changed on another device."
+                            : "This document was also changed on \(count) other devices.")
+                .font(.footnote)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+            Button("Resolve…", action: onResolve)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .accessibilityIdentifier("ResolveConflictsButton")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 6)
+    }
+}
+
+/// Lists the current version and each conflicting one; the chosen version is kept.
+struct ConflictResolutionSheet: View {
+    let url: URL
+    let onKeep: (NSFileVersion?) -> Void
+    let onCancel: () -> Void
+
+    @State private var selection = 0
+
+    var body: some View {
+        let rows = DocumentConflicts.choices(at: url)
+        NavigationStack {
+            Form {
+                Section {
+                    ForEach(rows) { row in
+                        Button {
+                            selection = row.id
+                        } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(row.title)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text(row.detail)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    if !row.preview.isEmpty {
+                                        Text(row.preview)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
+                                }
+                                Spacer(minLength: 0)
+                                if selection == row.id {
+                                    Image(systemName: "checkmark")
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(selection == row.id ? .isSelected : [])
+                    }
+                } header: {
+                    Text("Which version of “\(url.lastPathComponent)” do you want to keep?")
+                        .textCase(nil)
+                } footer: {
+                    Text("The other versions are discarded. Keeping another version replaces this document’s text, which you can undo.")
+                }
+            }
+            .navigationTitle("Resolve Conflict")
+            .navigationBarTitleDisplayMode(.inline)
+            .sheetRootNavigation()
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onCancel)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Keep") {
+                        onKeep(rows.first { $0.id == selection }?.version)
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
 #endif
+
+#Preview("Conflict Banner") {
+    ConflictBanner(count: 1, onResolve: {})
+}
+
+#Preview("Conflict Resolution Sheet") {
+    ConflictResolutionSheet(url: URL(fileURLWithPath: "/tmp/Notes.md"), onKeep: { _ in }, onCancel: {})
+}

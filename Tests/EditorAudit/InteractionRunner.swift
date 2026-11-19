@@ -709,6 +709,9 @@ struct InteractionRunner {
              let savedMode = defaults.string(forKey: WritingPartnerDefaults.mode)
              let savedStats = defaults.data(forKey: WritingPartnerDefaults.stats)
              let savedChatStats = defaults.data(forKey: WritingPartnerDefaults.chatStats)
+             // The first-run introduction (#112) holds the partner until it's answered
+             let savedIntroShown = defaults.object(forKey: WritingPartnerDefaults.introShown)
+             WritingPartnerDefaults.setIntroShown(true, defaults)
              defaults.removeObject(forKey: WritingPartnerDefaults.stats)
              defaults.removeObject(forKey: WritingPartnerDefaults.chatStats)
              func typeEach(_ text: String, into tv: NSTextView) {
@@ -1088,11 +1091,71 @@ struct InteractionRunner {
                      expect: "text=We use Pixerate from their on Uchiage. lastFeedback=sug-offer-their:undone")
              }
 
+             // Inline MCP Agent Presence & Bidirectional Cursor Remapping (#151)
+             do {
+                 defaults.set(WritingPartnerMode.off.rawValue, forKey: WritingPartnerDefaults.mode)
+                 let md = "# Heading\n\nHello **bold** world"
+                 let box = TextBox(md)
+                 let controller = SwashEditorController()
+                 let binding = Binding<String>(get: { box.text }, set: { box.text = $0 })
+                 let editor = SwashTextView(text: binding, selectedRange: .constant(nil), selectionRect: .constant(nil),
+                                            isStyled: true, flavor: .github, controller: controller)
+                 let host = NSHostingView(rootView: editor.frame(width: 600, height: 600))
+                 host.frame = NSRect(x: 0, y: 0, width: 600, height: 600)
+                 let win = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+                 win.contentView = host
+                 windows.append(win)
+                 host.layoutSubtreeIfNeeded()
+                 pump(0.3)
+                 let tv = findTextView(in: host)!
+                 let coord = tv.delegate as! SwashTextView.Coordinator
+                 win.makeFirstResponder(tv)
+
+                 // Place user caret right before "world" (raw offset 26)
+                 let worldRaw = (md as NSString).range(of: "world").location
+                 tv.setSelectedRange(coord.storageRange(forRaw: NSRange(location: worldRaw, length: 0), in: tv))
+                 pump(0.05)
+
+                 // Agent inserts "dear " at raw offset 11 (before "Hello") and shows presence
+                 let updated = (md as NSString).replacingCharacters(in: NSRange(location: 11, length: 0), with: "dear ")
+                 _ = controller.applyAgentEdit(
+                     newText: updated,
+                     edits: [(range: NSRange(location: 11, length: 0), replacementLength: 5)],
+                     actionName: "Insert Text"
+                 )
+                 let store = AgentCaretStore()
+                 controller.agentCarets = store
+                 store.set(AgentCaretInfo(id: "mcp:agent", name: "Agent"), anchor: 16, head: 16)
+                 store.markChanges("mcp:agent", [NSRange(location: 11, length: 5)])
+                 pump(0.1)
+
+                 let userRawAfterAgentInsert = coord.rawRange(forStorage: tv.selectedRange(), in: tv)
+                 let overlay = WritingPartnerOverlay.existing(in: tv)
+                 let hasOverlayPresence = overlay?.hasExternalCarets == true
+                 let overlayStage = !(store.caret("mcp:agent")?.changed.isEmpty ?? true)
+                 let emptyCaretRect = WritingPartnerOverlay.caretRect(at: 0, in: tv) != nil
+
+                 // User types "!" at their remapped cursor (before "world") -> triggers onUserRawEdit
+                 var userEditCaptured: (range: NSRange, len: Int)?
+                 controller.onUserRawEdit = { r, l, _ in
+                     userEditCaptured = (r, l)
+                 }
+                 tv.insertText("!", replacementRange: tv.selectedRange())
+                 pump(0.1)
+                 controller.agentCarets = nil
+                 let detached = overlay?.hasExternalCarets == false
+
+                 log("agent-presence-and-remapping", md,
+                     "userCaret=\(userRawAfterAgentInsert.location) expected=\(worldRaw + 5) presence=\(hasOverlayPresence) stageLanded=\(overlayStage) caretRect=\(emptyCaretRect) userEdit=\(userEditCaptured?.len ?? -1) detached=\(detached)",
+                     expect: "userCaret=\(worldRaw + 5) expected=\(worldRaw + 5) presence=true stageLanded=true caretRect=true userEdit=1 detached=true")
+             }
+
              defaults.removeObject(forKey: WritingPartnerDefaults.spelling)
              defaults.removeObject(forKey: WritingPartnerDefaults.doubledWords)
              if let savedMode { defaults.set(savedMode, forKey: WritingPartnerDefaults.mode) } else { defaults.removeObject(forKey: WritingPartnerDefaults.mode) }
              if let savedStats { defaults.set(savedStats, forKey: WritingPartnerDefaults.stats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.stats) }
              if let savedChatStats { defaults.set(savedChatStats, forKey: WritingPartnerDefaults.chatStats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.chatStats) }
+             if let savedIntroShown { defaults.set(savedIntroShown, forKey: WritingPartnerDefaults.introShown) } else { defaults.removeObject(forKey: WritingPartnerDefaults.introShown) }
         }
 
         // Multi-agent external carets rendered with distinct colours and name tags in WritingPartnerOverlay (#152)

@@ -73,10 +73,10 @@ final class BlockMenuTarget: NSObject {
 final class SwashEditorController {
     weak var textView: NSTextView?
     weak var coordinator: SwashTextView.Coordinator?
-    /// Connected MCP agents' carets, selections and changed ranges on this document.
-    var agentCarets: AgentCaretStore?
-    /// Called whenever the raw Markdown in the editor changes outside of an agent tool call.
-    var onExternalTextChange: ((String) -> Void)?
+    /// Agents' carets, selections and changed ranges, drawn over the text (#151, #152).
+    var agentCarets: AgentCaretStore? {
+        didSet { attachAgentCarets() }
+    }
     private var cachedFormatting: MarkdownFormatting?
     private var cachedFlavor: MarkdownFlavor?
 
@@ -177,49 +177,73 @@ final class SwashEditorController {
         return coordinator.rawText(of: textView)
     }
 
-    /// An agent tool's edit (#49): like `apply`, but never merged into the user's typing, so each
-    /// tool call is its own undo step. When `selection` is nil, the user's selection in the text view
-    /// is mapped through the edit rather than moved to the agent's cursor.
-    @discardableResult
-    func applyAgentEdit(newText: String, selection: NSRange? = nil, actionName: String) -> Bool {
-        textView?.breakUndoCoalescing()
-        let userSelection: NSRange?
-        if let selection {
-            userSelection = selection
-        } else if let current = currentRawSelection, let oldText = currentRawText {
-            userSelection = Self.mapSelection(current, from: oldText as NSString, to: newText as NSString)
-        } else {
-            userSelection = nil
+    /// Called when the user edits the document (not during an agent edit), with the replaced
+    /// raw-Markdown range, the replacement's UTF-16 length and the new raw Markdown.
+    var onUserRawEdit: ((_ replacedRawRange: NSRange, _ replacementLength: Int, _ newRaw: String) -> Void)?
+
+    /// Maps `position` through a sequence of ascending, non-overlapping raw edits.
+    static func mapRawPosition(_ position: Int, through edits: [(range: NSRange, replacementLength: Int)]) -> Int {
+        var delta = 0
+        for edit in edits {
+            if position < edit.range.location || (position == edit.range.location && edit.range.length > 0) { break }
+            if position < NSMaxRange(edit.range) { return edit.range.location + delta + edit.replacementLength }
+            delta += edit.replacementLength - edit.range.length
         }
-        let applied = apply(newText: newText, selection: userSelection, actionName: actionName)
-        textView?.breakUndoCoalescing()
-        return applied
+        return position + delta
     }
 
-    private static func mapSelection(_ selection: NSRange, from old: NSString, to new: NSString) -> NSRange {
+    /// Maps `selection` through `edits`, clamping to `newLength`.
+    static func mapRawSelection(_ selection: NSRange, through edits: [(range: NSRange, replacementLength: Int)], newLength: Int) -> NSRange {
+        let start = mapRawPosition(selection.location, through: edits)
+        let end = max(start, mapRawPosition(NSMaxRange(selection), through: edits))
+        let clampedStart = min(max(0, start), newLength)
+        return NSRange(location: clampedStart, length: min(max(0, end - start), newLength - clampedStart))
+    }
+
+    /// Computes the single changed raw-Markdown span between `old` and `new` (common UTF-16 prefix and suffix removed).
+    static func rawEditDelta(from old: NSString, to new: NSString) -> (range: NSRange, replacementLength: Int) {
         let minLength = min(old.length, new.length)
         var prefix = 0
         while prefix < minLength && old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
+        if prefix > 0 && CFStringIsSurrogateHighCharacter(old.character(at: prefix - 1)) { prefix -= 1 }
         var suffix = 0
-        while suffix < minLength - prefix && old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
-        let editRange = NSRange(location: prefix, length: old.length - prefix - suffix)
-        let newLength = new.length - prefix - suffix
-        let delta = newLength - editRange.length
-        func mapPos(_ pos: Int) -> Int {
-            if pos < editRange.location || (pos == editRange.location && editRange.length > 0) { return pos }
-            if pos < NSMaxRange(editRange) { return editRange.location + newLength }
-            return pos + delta
-        }
-        let start = mapPos(selection.location)
-        let end = max(start, mapPos(NSMaxRange(selection)))
-        return NSRange(location: start, length: end - start)
+        while suffix < minLength - prefix &&
+              old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
+        if suffix > 0 && CFStringIsSurrogateLowCharacter(old.character(at: old.length - suffix)) { suffix -= 1 }
+        return (NSRange(location: prefix, length: old.length - prefix - suffix), new.length - prefix - suffix)
     }
 
-    /// Ensures the overlay is attached to `agentCarets` so agent cursors and selections render live.
-    @MainActor
-    func attachAgentCaretsIfNeeded() {
-        guard let textView = textView, let coordinator = coordinator, let carets = agentCarets else { return }
-        WritingPartnerOverlay.overlay(for: textView).attachExternal(carets: carets, coordinator: coordinator)
+    /// An agent tool's edit (#49, #151): like `apply`, but never merged into the user's typing, so
+    /// each tool call is its own undo step, and the user's selection is mapped through the agent's
+    /// raw edits (`edits`, or the changed span when empty) rather than moved to the agent's.
+    @discardableResult
+    func applyAgentEdit(
+        newText: String,
+        edits: [(range: NSRange, replacementLength: Int)] = [],
+        actionName: String
+    ) -> Bool {
+        guard let textView = textView, let coordinator = coordinator, textView.window != nil else { return false }
+        let userSelectionBefore = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        let oldRaw = coordinator.rawText(of: textView) as NSString
+        let newRaw = newText as NSString
+        let effectiveEdits = edits.isEmpty ? [Self.rawEditDelta(from: oldRaw, to: newRaw)] : edits
+        let mappedUserSelection = Self.mapRawSelection(userSelectionBefore, through: effectiveEdits, newLength: newRaw.length)
+        textView.breakUndoCoalescing()
+        coordinator.isApplyingAgentEdit = true
+        defer { coordinator.isApplyingAgentEdit = false }
+        coordinator.applyEdit(in: textView, newRawText: newText, rawSelection: mappedUserSelection, actionName: actionName)
+        textView.breakUndoCoalescing()
+        return true
+    }
+
+    /// Draws `agentCarets` in the attached editor's overlay, or stops drawing them when nil.
+    func attachAgentCarets() {
+        guard let textView = textView else { return }
+        if let agentCarets {
+            WritingPartnerOverlay.overlay(for: textView).attachExternal(carets: agentCarets, coordinator: coordinator)
+        } else {
+            WritingPartnerOverlay.existing(in: textView)?.detachExternal()
+        }
     }
 
     /// Selects `range` (raw-Markdown offsets) and scrolls it into view, without taking focus.
@@ -248,6 +272,22 @@ final class SwashEditorController {
     var hasSuggestion: Bool {
         guard let coordinator = coordinator else { return false }
         return !coordinator.writingPartner.suggestions.isEmpty
+    }
+
+    /// Whether the writing partner is paused for this document (#112).
+    var isPartnerPaused: Bool {
+        coordinator?.writingPartner.isPaused ?? false
+    }
+
+    /// Pauses or resumes the writing partner for this document (#112).
+    func setPartnerPaused(_ paused: Bool) {
+        coordinator?.writingPartner.setPaused(paused, in: textView)
+    }
+
+    /// Toggles the per-document writing-partner pause (#112).
+    @discardableResult
+    func togglePartnerPaused() -> Bool {
+        coordinator?.writingPartner.togglePaused(in: textView) ?? false
     }
 }
 
@@ -472,6 +512,12 @@ class SwashNSTextView: NSTextView {
             let menu = convert(frame.offsetBy(dx: origin.x, dy: origin.y), from: clipView)
             if menu.contains(point) { return .arrow }
         }
+        if let overlay = WritingPartnerOverlay.existing(in: self) {
+            let notes: [NSView?] = [overlay.introductionView, overlay.undoReminderView, overlay.suggestionPrompt]
+            for case let note? in notes where !note.isHidden {
+                if overlay.convert(note.frame, to: self).contains(point) { return .arrow }
+            }
+        }
         let textMinX = textContainerOrigin.x
         let textMaxX = textMinX + (textContainer?.size.width ?? bounds.width)
         if point.x < textMinX || point.x > textMaxX || point.y < textContainerOrigin.y { return .arrow }
@@ -646,23 +692,59 @@ class SwashNSTextView: NSTextView {
 
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
         let base = super.accessibilityCustomActions() ?? []
-        guard let coordinator = delegate as? SwashTextView.Coordinator,
-              !coordinator.writingPartner.suggestions.isEmpty else { return base.isEmpty ? nil : base }
-        let accept = NSAccessibilityCustomAction(name: "Accept Suggestion") { [weak self, weak coordinator] in
-            guard let self, let coordinator else { return false }
-            return coordinator.writingPartner.acceptSuggestion(in: self, coordinator: coordinator)
+        guard let coordinator = delegate as? SwashTextView.Coordinator else { return base.isEmpty ? nil : base }
+        var actions: [NSAccessibilityCustomAction] = []
+        if coordinator.writingPartner.hasActiveIntroduction {
+            actions.append(NSAccessibilityCustomAction(name: "Turn on Automatically") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                coordinator.writingPartner.chooseIntroductionMode(.automatic, in: self, coordinator: coordinator)
+                return true
+            })
+            actions.append(NSAccessibilityCustomAction(name: "Turn on Suggest") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                coordinator.writingPartner.chooseIntroductionMode(.suggest, in: self, coordinator: coordinator)
+                return true
+            })
+            actions.append(NSAccessibilityCustomAction(name: "Not now") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                coordinator.writingPartner.dismissIntroduction(in: self)
+                return true
+            })
         }
-        let dismiss = NSAccessibilityCustomAction(name: "Dismiss Suggestion") { [weak self, weak coordinator] in
-            guard let self, let coordinator else { return false }
-            return coordinator.writingPartner.dismissSuggestion(in: self, coordinator: coordinator)
+        if coordinator.writingPartner.hasActiveUndoReminder {
+            actions.append(NSAccessibilityCustomAction(name: "Pause Writing Partner") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                coordinator.writingPartner.setPaused(true, in: self)
+                return true
+            })
+            actions.append(NSAccessibilityCustomAction(name: "Dismiss Reminder") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                coordinator.writingPartner.dismissUndoReminder(in: self)
+                return true
+            })
         }
-        return [accept, dismiss] + base
+        if !coordinator.writingPartner.suggestions.isEmpty {
+            actions.append(NSAccessibilityCustomAction(name: "Accept Suggestion") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                return coordinator.writingPartner.acceptSuggestion(in: self, coordinator: coordinator)
+            })
+            actions.append(NSAccessibilityCustomAction(name: "Dismiss Suggestion") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                return coordinator.writingPartner.dismissSuggestion(in: self, coordinator: coordinator)
+            })
+        }
+        let all = actions + base
+        return all.isEmpty ? nil : all
     }
 
     override func accessibilityPerformPress() -> Bool {
-        if let coordinator = delegate as? SwashTextView.Coordinator,
-           coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
-            return true
+        if let coordinator = delegate as? SwashTextView.Coordinator {
+            // The introduction's choices are its own buttons and custom actions: pressing the text
+            // view mustn't turn the partner on
+            if !coordinator.writingPartner.hasActiveIntroduction,
+               coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
+                return true
+            }
         }
         return super.accessibilityPerformPress()
     }
@@ -675,6 +757,11 @@ class SwashNSTextView: NSTextView {
     @objc func dismissSuggestion(_ sender: Any?) {
         guard let coordinator = delegate as? SwashTextView.Coordinator else { return }
         _ = coordinator.writingPartner.dismissSuggestion(in: self, coordinator: coordinator)
+    }
+
+    @objc func toggleWritingPartnerPause(_ sender: Any?) {
+        guard let coordinator = delegate as? SwashTextView.Coordinator else { return }
+        _ = coordinator.writingPartner.togglePaused(in: self)
     }
 
     override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
@@ -713,25 +800,52 @@ class SwashNSTextView: NSTextView {
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags == .option, (event.keyCode == 36 || event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\n"),
-           let coordinator = delegate as? SwashTextView.Coordinator,
-           coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
-            return
+           let coordinator = delegate as? SwashTextView.Coordinator {
+            if coordinator.writingPartner.hasActiveIntroduction {
+                coordinator.writingPartner.chooseIntroductionMode(.automatic, in: self, coordinator: coordinator)
+                return
+            }
+            if coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
+                return
+            }
         }
         if flags.isEmpty, event.keyCode == 53,
-           let coordinator = delegate as? SwashTextView.Coordinator,
-           coordinator.writingPartner.dismissSuggestion(in: self, coordinator: coordinator) {
-            return
+           let coordinator = delegate as? SwashTextView.Coordinator {
+            if coordinator.writingPartner.hasActiveIntroduction {
+                coordinator.writingPartner.dismissIntroduction(in: self)
+                return
+            }
+            if coordinator.writingPartner.hasActiveUndoReminder {
+                coordinator.writingPartner.dismissUndoReminder(in: self)
+                return
+            }
+            if coordinator.writingPartner.dismissSuggestion(in: self, coordinator: coordinator) {
+                return
+            }
         }
         super.keyDown(with: event)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if window?.firstResponder === self,
-           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .option,
-           (event.keyCode == 36 || event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\n"),
-           let coordinator = delegate as? SwashTextView.Coordinator,
-           coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
+           flags == [.command, .option],
+           event.charactersIgnoringModifiers?.lowercased() == "p",
+           let coordinator = delegate as? SwashTextView.Coordinator {
+            _ = coordinator.writingPartner.togglePaused(in: self)
             return true
+        }
+        if window?.firstResponder === self,
+           flags == .option,
+           (event.keyCode == 36 || event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\n"),
+           let coordinator = delegate as? SwashTextView.Coordinator {
+            if coordinator.writingPartner.hasActiveIntroduction {
+                coordinator.writingPartner.chooseIntroductionMode(.automatic, in: self, coordinator: coordinator)
+                return true
+            }
+            if coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
+                return true
+            }
         }
         if window?.firstResponder === self, let handler = onFormatCommand, let command = FormatCommand.command(for: event) {
             handler(command)
@@ -1050,6 +1164,8 @@ struct SwashTextView: NSViewRepresentable {
     var writingOptions = WritingOptions()
     /// Font, text size and theme from Settings; a change restyles the whole document.
     var typography = EditorTypography()
+    var isPartnerPaused: Bool = false
+    var onPartnerPauseChange: ((Bool) -> Void)? = nil
     
     init(
         text: Binding<String>,
@@ -1066,7 +1182,9 @@ struct SwashTextView: NSViewRepresentable {
         onFormatCommand: ((FormatCommand) -> Void)? = nil,
         onCaretMove: ((Int) -> Void)? = nil,
         writingOptions: WritingOptions = WritingOptions(),
-        typography: EditorTypography = EditorTypography()
+        typography: EditorTypography = EditorTypography(),
+        isPartnerPaused: Bool = false,
+        onPartnerPauseChange: ((Bool) -> Void)? = nil
     ) {
         self._text = text
         self._selectedRange = selectedRange
@@ -1083,6 +1201,8 @@ struct SwashTextView: NSViewRepresentable {
         self.onCaretMove = onCaretMove
         self.writingOptions = writingOptions
         self.typography = typography
+        self.isPartnerPaused = isPartnerPaused
+        self.onPartnerPauseChange = onPartnerPauseChange
     }
     
     func makeNSView(context: Context) -> NSScrollView {
@@ -1166,7 +1286,7 @@ struct SwashTextView: NSViewRepresentable {
         context.coordinator.currentTextView = textView
         controller?.textView = textView
         controller?.coordinator = context.coordinator
-        MainActor.assumeIsolated { controller?.attachAgentCaretsIfNeeded() }
+        if controller?.agentCarets != nil { controller?.attachAgentCarets() }
         
         // The binding usually just echoes what the editor published from its last edit: skip
         // rebuilding and normalising the whole document in that case
@@ -1247,6 +1367,10 @@ struct SwashTextView: NSViewRepresentable {
 
         
         context.coordinator.applyWritingOptions(writingOptions, in: textView)
+        context.coordinator.writingPartner.onPauseChange = onPartnerPauseChange
+        if context.coordinator.writingPartner.isPaused != isPartnerPaused {
+            context.coordinator.writingPartner.setPaused(isPartnerPaused, in: textView)
+        }
         context.coordinator.isUpdatingFromSwiftUI = false
 
         let linkHandler = context.environment.noteLinkHandler
@@ -1508,6 +1632,8 @@ struct SwashTextView: NSViewRepresentable {
         /// registering it with the undo manager and restoring `rawSelection` afterwards.
         /// Set while `applyEdit` changes the text, so its own change isn't treated as typing.
         private var isApplyingEdit = false
+        /// Set while `SwashEditorController.applyAgentEdit` is running, so agent edits don't feed back into `onUserRawEdit`.
+        var isApplyingAgentEdit = false
         
         func applyEdit(in textView: NSTextView, newRawText: String, rawSelection: NSRange?, actionName: String) {
             guard let storage = textView.textStorage else { return }
@@ -1639,11 +1765,13 @@ struct SwashTextView: NSViewRepresentable {
                 return
             }
             if !isUpdatingFromSwiftUI {
+                let previousRaw = (lastPublishedText ?? parent.text) as NSString
+                let updatedRaw: String
                 if parent.isStyled, let textStorage = textView.textStorage {
                     let raw = buildRawMarkdown(from: textStorage)
+                    updatedRaw = raw
                     lastPublishedText = raw
                     parent.text = raw
-                    parent.controller?.onExternalTextChange?(raw)
                     editGeneration += 1
                     let generation = editGeneration
                     DispatchQueue.main.async { [weak self, weak textView] in
@@ -1653,12 +1781,19 @@ struct SwashTextView: NSViewRepresentable {
                         self.highlightMarkdown(in: textView)
                     }
                 } else {
+                    updatedRaw = textView.string
                     lastPublishedText = textView.string
                     parent.text = textView.string
-                    parent.controller?.onExternalTextChange?(textView.string)
                     // Typed text takes the monospaced typing attributes; restyling the whole
                     // storage per keystroke would invalidate the entire layout
                     schedulePlainCodeBlockRefresh(in: textView)
+                }
+                if !isApplyingAgentEdit, let onUserRawEdit = parent.controller?.onUserRawEdit {
+                    let newRaw = updatedRaw as NSString
+                    if previousRaw != newRaw {
+                        let delta = SwashEditorController.rawEditDelta(from: previousRaw, to: newRaw)
+                        onUserRawEdit(delta.range, delta.replacementLength, updatedRaw)
+                    }
                 }
                 if !isApplyingEdit {
                     writingPartner.didChange(in: textView, coordinator: self)
@@ -1987,6 +2122,20 @@ struct SwashTextView: NSViewRepresentable {
         
         // Key commands: writing-partner suggestions, table-cell navigation, then Notion-style structural editing
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if writingPartner.hasActiveIntroduction {
+                // Only ⌥Return, a deliberate chord, turns it on: Tab indents lists and mustn't opt in
+                if commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
+                    writingPartner.chooseIntroductionMode(.automatic, in: textView, coordinator: self)
+                    return true
+                } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                    writingPartner.dismissIntroduction(in: textView)
+                    return true
+                }
+            }
+            if writingPartner.hasActiveUndoReminder, commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                writingPartner.dismissUndoReminder(in: textView)
+                return true
+            }
             if writingPartner.hasActiveSuggestion {
                 if commandSelector == #selector(NSResponder.insertTab(_:)) {
                     writingPartner.acceptActiveSuggestion()
@@ -2299,6 +2448,9 @@ struct SwashTextView: NSViewRepresentable {
             if !writingPartner.suggestions.isEmpty {
                 writingPartner.refreshSuggestions(in: textView, coordinator: self)
             }
+            if let overlay = WritingPartnerOverlay.existing(in: textView), overlay.hasExternalCarets {
+                overlay.render()
+            }
             if parent.writingOptions.typewriter {
                 centerCaret(in: textView)
             } else if let origin = savedScrollOrigin, let clipView = textView.enclosingScrollView?.contentView {
@@ -2459,7 +2611,6 @@ struct SwashTextView: NSViewRepresentable {
             let raw = spliced ?? buildRawMarkdown(from: storage)
             lastPublishedText = raw
             parent.text = raw
-            parent.controller?.onExternalTextChange?(raw)
         }
 
         /// Replaces one top-level block's recorded source and moves the blocks after it.
@@ -2578,6 +2729,9 @@ struct SwashTextView: NSViewRepresentable {
             applyFocus(in: textView)
             if !writingPartner.suggestions.isEmpty {
                 writingPartner.refreshSuggestions(in: textView, coordinator: self)
+            }
+            if let overlay = WritingPartnerOverlay.existing(in: textView), overlay.hasExternalCarets {
+                overlay.render()
             }
             lastStyledText = textView.string
             lastIsStyled = false

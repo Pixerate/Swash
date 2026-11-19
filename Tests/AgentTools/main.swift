@@ -586,6 +586,97 @@ func run() async {
         expectEqual(int(r8["revision"]) ?? -1, 8, "revision is 8")
         expectEqual(h.document.markdown, "Prefix: One 2 **Three**", "transformed across user edit")
     }
+
+    // MARK: AgentDocumentSession: per-agent selections, presence and the user's edits (#151, #152)
+    do {
+        let session = AgentDocumentSession()
+        session.caretIdleMs = 0
+        session.changedTintMs = 0
+        var docText = "Hello world"
+        var userSelection = NSRange(location: 5, length: 0)
+        var undoNames: [String] = []
+        var appeared = 0
+        session.readMarkdown = { docText }
+        session.readSelection = { userSelection }
+        session.applyEdit = { newText, _, actionName in
+            docText = newText
+            undoNames.append(actionName)
+        }
+        session.onAgentsAppeared = { appeared += 1 }
+        let claude = ToolActor(id: "mcp:claude", name: "Claude")
+        let cursor = ToolActor(id: "mcp:cursor", name: "Cursor")
+        let anonymous = ToolActor(id: "mcp", name: "MCP Client")
+
+        // A new agent starts at the user's cursor, then keeps its own selection
+        check(!(await session.registry.callTool("insert_text", ["text": ","], actor: claude)).isError, "session insert_text")
+        expectEqual(docText, "Hello, world", "insert_text without `at` goes at the user's cursor first")
+        expectEqual(appeared, 1, "the host hears when the first agent appears")
+        expectEqual(undoNames.last, "Insert Text (Claude)", "the undo step is named after the agent")
+        userSelection = NSRange(location: 0, length: 0)
+        expectEqual(session.selection(for: claude), NSRange(location: 6, length: 0), "once it has acted, the agent keeps its own selection")
+        expectEqual(session.carets.caret("mcp:claude")?.head, 6, "the agent's caret is at its selection")
+        expectEqual(session.carets.caret("mcp:claude")?.changed, [NSRange(location: 5, length: 1)], "the changed text is tinted")
+        expectEqual(session.carets.caret("mcp:claude")?.name, "Claude", "the caret is named after the client")
+
+        // A second agent gets its own caret and colour; its edits move the first agent's selection
+        _ = await session.registry.callTool("set_selection", ["from": 7, "to": 12], actor: cursor)
+        let colours = Set(session.carets.carets.map(\.color))
+        expectEqual(colours.count, 2, "each agent has its own colour")
+        _ = await session.registry.callTool("insert_text", ["text": "big ", "at": 0], actor: cursor)
+        expectEqual(docText, "big Hello, world", "second agent inserts at 0")
+        expectEqual(session.selection(for: claude), NSRange(location: 10, length: 0), "another agent's edit before it shifts the selection")
+        expectEqual(session.carets.caret("mcp:claude")?.head, 10, "and its caret")
+        expectEqual(session.selection(for: cursor), NSRange(location: 11, length: 5), "the editing agent's selection maps too")
+
+        // replace_text with several matches maps carets through each edit (last first)
+        _ = await session.registry.callTool("replace_text", ["find": "o", "replace": "OO"], actor: cursor)
+        expectEqual(docText, "big HellOO, wOOrld", "replace_text replaced both")
+        expectEqual(session.selection(for: claude), NSRange(location: 11, length: 0), "a selection after one of several matches moves by that match only")
+        expectEqual(session.carets.caret("mcp:claude")?.head, 11, "and so does its caret")
+        expectEqual(session.carets.caret("mcp:cursor")?.changed.count, 2, "both replacements are tinted")
+
+        // The user's typing moves agents' selections and carets, and bumps the revision
+        let revision = session.revision
+        docText = "Oh! " + docText
+        session.noteUserEdit(range: NSRange(location: 0, length: 0), newLength: 4, newMarkdown: docText)
+        expectEqual(session.revision, revision + 1, "a user edit is a revision")
+        expectEqual(session.selection(for: claude), NSRange(location: 15, length: 0), "user typing before an agent's selection shifts it")
+        expectEqual(session.carets.caret("mcp:claude")?.head, 15, "and its caret")
+
+        // An edit the session wasn't told about is found by diffing on the next read
+        docText = docText.replacingOccurrences(of: "Oh! ", with: "")
+        expectEqual(session.selection(for: claude), NSRange(location: 11, length: 0), "an unreported edit is mapped on the next read")
+        expectEqual(session.revision, revision + 2, "and recorded as a revision")
+
+        // "MCP Client" (no clientInfo) is shown as "Agent" and its undo step keeps the plain name
+        _ = await session.registry.callTool("insert_text", ["text": "!", "at": 0], actor: anonymous)
+        expectEqual(session.carets.caret("mcp")?.name, defaultAgentCaretName, "an unnamed client is shown as Agent")
+        expectEqual(undoNames.last, "Insert Text", "an unnamed client's undo step has the plain name")
+
+        // Removing agents cancels their carets and selections
+        session.removeAgent("mcp:cursor")
+        check(session.carets.caret("mcp:cursor") == nil, "removeAgent clears the caret")
+        session.removeAllAgents()
+        check(session.carets.carets.isEmpty && !session.hasAgents, "removeAllAgents clears every agent")
+        userSelection = NSRange(location: 2, length: 0)
+        expectEqual(session.selection(for: claude), NSRange(location: 2, length: 0), "a forgotten agent starts at the user's cursor again")
+    }
+
+    // Idle carets and tints expire on their own
+    do {
+        let session = AgentDocumentSession()
+        session.caretIdleMs = 50
+        session.changedTintMs = 20
+        var docText = "abc"
+        session.readMarkdown = { docText }
+        session.applyEdit = { newText, _, _ in docText = newText }
+        _ = await session.registry.callTool("insert_text", ["text": "x", "at": 0], actor: ToolActor(id: "a", name: "A"))
+        check(!(session.carets.caret("a")?.changed.isEmpty ?? true), "the change is tinted")
+        try? await Task.sleep(for: .milliseconds(40))
+        check(session.carets.caret("a")?.changed.isEmpty ?? false, "the tint clears after changedTintMs")
+        try? await Task.sleep(for: .milliseconds(60))
+        check(session.carets.caret("a") == nil, "the idle caret clears after caretIdleMs")
+    }
 }
 
 await run()

@@ -14,6 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let servicesProvider = ServicesProvider()
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        WritingPartnerDefaults.migrateExistingInstall()
         NSApp.servicesProvider = servicesProvider
         // `-appearance light|dark` on the command line fixes the app's appearance for one launch
         // (the screenshot scripts; GOTCHAS #40). `-AppleInterfaceStyle Dark` stopped working in macOS 27.
