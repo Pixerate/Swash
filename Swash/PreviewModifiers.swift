@@ -1,0 +1,111 @@
+//
+//  PreviewModifiers.swift
+//  Swash
+//
+//  Created by Jack James on 19/11/2026.
+//
+
+import SwiftUI
+
+// MARK: - Swash Sample Documents
+
+enum SwashSampleDocument {
+    static let empty = SwashDocument(text: "")
+    
+    static let standard = SwashDocument(text: """
+        # Welcome to Swash
+        
+        Swash is a native, lightweight Markdown editor and previewer built for Apple platforms.
+        
+        ## Features
+        
+        - **Live editing** with styled text and split preview.
+        - Interactive tables and GitHub Flavored Markdown (GFM).
+        - Math rendering with $\\LaTeX$ formulas: $E = mc^2$.
+        - Embedded Mermaid diagrams and interactive widgets.
+        
+        > "Simplicity is prerequisite for reliability." — Edsger W. Dijkstra
+        
+        ### Code Example
+        
+        ```swift
+        import SwiftUI
+
+        struct GreetingView: View {
+            var body: some View {
+                Text("Hello, Swash!")
+            }
+        }
+        ```
+        """)
+
+    static let tablesAndMath = SwashDocument(text: """
+        # Tables & Math
+        
+        | Feature | Status | Notes |
+        | :--- | :---: | ---: |
+        | GFM Tables | Supported | Full column alignment |
+        | Inline Math | Supported | $f(x) = \\int_{-\\infty}^x e^{-t^2} dt$ |
+        | Task Lists | Supported | [x] Completed task |
+        
+        $$\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
+        """)
+}
+
+// MARK: - Preview Modifiers
+
+/// Wraps previewed views in a standard document container with sample state.
+struct SwashDocumentPreviewModifier: PreviewModifier {
+    let sample: SwashDocument
+    
+    init(sample: SwashDocument = SwashSampleDocument.standard) {
+        self.sample = sample
+    }
+    
+    func body(content: Content, context: Void) -> some View {
+        content
+            .environment(\.font, .system(.body, design: .default))
+    }
+}
+
+/// Constrains preview content to realistic editor dimensions.
+struct EditorPreviewContainerModifier: PreviewModifier {
+    var minWidth: CGFloat = 700
+    var minHeight: CGFloat = 500
+    
+    func body(content: Content, context: Void) -> some View {
+        content
+            .frame(minWidth: minWidth, minHeight: minHeight)
+    }
+}
+
+/// Wraps settings or inspector components in an appropriate Form layout.
+struct SectionPreviewContainerModifier: PreviewModifier {
+    func body(content: Content, context: Void) -> some View {
+        Form {
+            content
+        }
+        .formStyle(.grouped)
+        .frame(width: 480)
+        .padding()
+    }
+}
+
+// MARK: - PreviewTrait Extensions
+
+extension PreviewTrait where T == Preview.ViewTraits {
+    /// Applies a standard sample document environment.
+    static var swashSampleDocument: PreviewTrait<Preview.ViewTraits> {
+        PreviewTrait.modifier(SwashDocumentPreviewModifier())
+    }
+    
+    /// Applies standard editor frame sizing.
+    static var editorContainer: PreviewTrait<Preview.ViewTraits> {
+        PreviewTrait.modifier(EditorPreviewContainerModifier())
+    }
+    
+    /// Applies form container styling for settings sections.
+    static var sectionContainer: PreviewTrait<Preview.ViewTraits> {
+        PreviewTrait.modifier(SectionPreviewContainerModifier())
+    }
+}

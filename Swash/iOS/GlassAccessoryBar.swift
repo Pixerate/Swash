@@ -255,4 +255,15 @@ struct FormatPanel: View {
         }
     }
 }
+
+// MARK: - Previews
+
+#Preview("Format Panel") {
+    FormatPanel(
+        entries: FormatManifestLayout.keyboardBarEntries,
+        apply: { _ in },
+        close: {}
+    )
+    .frame(height: 220)
+}
 #endif

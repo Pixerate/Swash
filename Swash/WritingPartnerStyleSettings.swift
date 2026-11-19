@@ -171,4 +171,10 @@ final class WritingPartnerStylePreviewView: NSView {
         renderer.draw(plans, font: font)
     }
 }
+
+// MARK: - Previews
+
+#Preview("Writing Partner Style Section", traits: .sectionContainer) {
+    WritingPartnerStyleSection()
+}
 #endif

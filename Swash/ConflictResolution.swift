@@ -134,4 +134,16 @@ struct ConflictResolutionSheet: View {
         .frame(width: 480)
     }
 }
+
+// MARK: - Previews
+
+#Preview("Conflict Banner - Single Conflict") {
+    ConflictBanner(count: 1, onResolve: {})
+        .padding()
+}
+
+#Preview("Conflict Banner - Multiple Conflicts") {
+    ConflictBanner(count: 3, onResolve: {})
+        .padding()
+}
 #endif

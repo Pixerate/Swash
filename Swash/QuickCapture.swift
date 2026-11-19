@@ -454,4 +454,37 @@ struct SwashMenuBarMenu: View {
         Button("Quit Swash") { NSApp.terminate(nil) }
     }
 }
+
+// MARK: - Previews
+
+#Preview("Quick Note Tidy Prompt") {
+    QuickNoteTidyPromptView(
+        proposal: QuickNoteTidyProposal(
+            originalText: "Fix teh bug in parsing",
+            tidiedText: "Fix the bug in parsing",
+            suggestions: [],
+            why: "Spelling and grammar correction",
+            diff: [
+                QuickNoteTidyDiffSegment(kind: .unchanged, text: "Fix "),
+                QuickNoteTidyDiffSegment(kind: .removed, text: "teh"),
+                QuickNoteTidyDiffSegment(kind: .inserted, text: "the"),
+                QuickNoteTidyDiffSegment(kind: .unchanged, text: " bug in parsing")
+            ]
+        ),
+        onAccept: {},
+        onDismiss: {}
+    )
+    .padding()
+    .frame(width: 480)
+}
+
+#Preview("Quick Capture Panel") {
+    QuickCaptureView(
+        targetTitle: "My Notes.md",
+        session: QuickNoteTidySession(),
+        onCreate: { _ in },
+        onAppend: { _ in },
+        onCancel: {}
+    )
+}
 #endif

@@ -1226,3 +1226,39 @@ final class TableTextAttachment: NSTextAttachment, RawMarkdownAttachment {
     }
 }
 #endif
+
+// MARK: - Previews
+
+#Preview("Interactive Table - Live Editing") {
+    @Previewable @State var tableData = MarkdownTableData(
+        headers: ["Product", "Category", "Price"],
+        alignments: [.left, .center, .right],
+        rows: [
+            ["Laptop", "Electronics", "$999"],
+            ["Coffee Mug", "Home", "$15"],
+            ["Notebook", "Stationery", "$8"]
+        ]
+    )
+    InteractiveTableView(
+        tableData: tableData,
+        flavor: .github,
+        isEditable: true,
+        onChange: { updated in
+            tableData = updated
+        }
+    )
+    .padding()
+}
+
+#Preview("Interactive Table - Dark Mode") {
+    InteractiveTableView(
+        tableData: MarkdownTableData(
+            headers: ["Feature", "Status"],
+            alignments: [.left, .center],
+            rows: [["Dynamic Previews", "Adopted"]]
+        ),
+        flavor: .github
+    )
+    .padding()
+    .preferredColorScheme(.dark)
+}

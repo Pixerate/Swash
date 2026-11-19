@@ -585,7 +585,36 @@ private extension View {
     }
 }
 
-#Preview {
+#Preview("Settings Window") {
     SettingsView()
+}
+
+#Preview("Settings Window - Dark") {
+    SettingsView()
+        .preferredColorScheme(.dark)
+}
+
+#Preview("General Settings", traits: .sectionContainer) {
+    GeneralSettingsView()
+}
+
+#Preview("Appearance Settings", traits: .sectionContainer) {
+    AppearanceSettingsView()
+}
+
+#Preview("Updates Settings", traits: .sectionContainer) {
+    UpdatesSettingsView()
+}
+
+#Preview("Writing Partner Settings", traits: .sectionContainer) {
+    WritingPartnerSettingsView()
+}
+
+#Preview("Agent Settings", traits: .sectionContainer) {
+    AgentSettingsView()
+}
+
+#Preview("Account Settings", traits: .sectionContainer) {
+    AccountSettingsView()
 }
 #endif

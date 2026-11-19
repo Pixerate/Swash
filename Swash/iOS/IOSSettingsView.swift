@@ -48,4 +48,9 @@ struct IOSSettingsView: View {
 #Preview("iOS Settings") {
     IOSSettingsView()
 }
+
+#Preview("iOS Settings - Dark Mode") {
+    IOSSettingsView()
+        .preferredColorScheme(.dark)
+}
 #endif
