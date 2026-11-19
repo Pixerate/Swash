@@ -21,6 +21,7 @@ final class SparkleUpdater: ObservableObject {
     }
     
     private init() {
+        WritingPartnerDefaults.migrateExistingInstall()
         self.updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
         self.automaticallyChecksForUpdates = updaterController.updater.automaticallyChecksForUpdates
         

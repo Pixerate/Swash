@@ -197,6 +197,14 @@ final class WritingPartnerSession {
     private(set) var suggestions: [Suggestion] = []
     /// Most recent VoiceOver announcement for a suggestion.
     private(set) var lastAnnouncement: String?
+    /// Whether the first-run introduction note is currently visible (#112).
+    private(set) var hasActiveIntroduction = false
+    /// Whether the quiet reminder on the first undone fix is currently visible (#112).
+    private(set) var hasActiveUndoReminder = false
+    /// Whether the writing partner is paused for this document (#112).
+    private(set) var isPaused = false
+    /// Called when `isPaused` changes so the document window can update its status bar and menu item.
+    var onPauseChange: ((Bool) -> Void)?
 
     // MARK: - Bandleader & Pause Tier (#101, #120)
     private var testingBandleader: (any WritingBandleader)?
@@ -269,6 +277,94 @@ final class WritingPartnerSession {
     /// The active suggestion item, if any.
     var activeSuggestionItem: JazzTextSuggestion? { activeSuggestion?.suggestion }
 
+    // MARK: - First-Run Introduction, Undo Reminder & Per-Document Pause (#112)
+
+    /// Chooses a mode (`Automatically` or `Suggest`) from the first-run introduction and hides it.
+    func chooseIntroductionMode(_ chosenMode: WritingPartnerMode, in textView: NSTextView? = nil, coordinator: SwashTextView.Coordinator? = nil) {
+        WritingPartnerDefaults.setIntroShown(true, defaults)
+        defaults.set(chosenMode.rawValue, forKey: WritingPartnerDefaults.mode)
+        hideIntroduction(in: textView)
+    }
+
+    /// Dismisses the first-run introduction ("Not now" / Escape), remembering `.off` in `UserDefaults`.
+    @discardableResult
+    func dismissIntroduction(in textView: NSTextView? = nil) -> Bool {
+        guard hasActiveIntroduction else { return false }
+        WritingPartnerDefaults.setIntroShown(true, defaults)
+        defaults.set(WritingPartnerMode.off.rawValue, forKey: WritingPartnerDefaults.mode)
+        pendingBoundaries = []
+        cancelFix()
+        clearSuggestions(in: textView)
+        hideIntroduction(in: textView)
+        if let tv = textView ?? self.textView {
+            tv.inlinePredictionType = .default
+            if let saved = savedAutocorrect {
+                tv.isAutomaticSpellingCorrectionEnabled = saved
+                savedAutocorrect = nil
+            }
+        }
+        return true
+    }
+
+    private func hideIntroduction(in textView: NSTextView? = nil) {
+        guard hasActiveIntroduction else { return }
+        hasActiveIntroduction = false
+        if let tv = textView ?? self.textView {
+            MainActor.assumeIsolated {
+                WritingPartnerOverlay.overlay(for: tv).hideIntroduction()
+            }
+        }
+    }
+
+    /// Dismisses the quiet reminder shown after the first undone fix.
+    @discardableResult
+    func dismissUndoReminder(in textView: NSTextView? = nil) -> Bool {
+        guard hasActiveUndoReminder else { return false }
+        hasActiveUndoReminder = false
+        if let tv = textView ?? self.textView {
+            MainActor.assumeIsolated {
+                WritingPartnerOverlay.overlay(for: tv).hideUndoReminder()
+            }
+        }
+        return true
+    }
+
+    /// Pauses or resumes the writing partner for this document only, without changing `UserDefaults`.
+    func setPaused(_ paused: Bool, in textView: NSTextView? = nil) {
+        guard paused != isPaused else { return }
+        isPaused = paused
+        if paused {
+            pendingBoundaries = []
+            cancelFix()
+            clearSuggestions(in: textView)
+            if hasActiveSuggestion {
+                activeSuggestion = nil
+                if let tv = textView ?? self.textView {
+                    MainActor.assumeIsolated {
+                        WritingPartnerOverlay.overlay(for: tv).hideSuggestionPrompt()
+                    }
+                }
+            }
+            hideIntroduction(in: textView)
+            dismissUndoReminder(in: textView)
+            if let tv = textView ?? self.textView {
+                tv.inlinePredictionType = .default
+                if let saved = savedAutocorrect {
+                    tv.isAutomaticSpellingCorrectionEnabled = saved
+                    savedAutocorrect = nil
+                }
+            }
+        }
+        onPauseChange?(paused)
+    }
+
+    /// Toggles the per-document pause state and returns the new `isPaused` value.
+    @discardableResult
+    func togglePaused(in textView: NSTextView? = nil) -> Bool {
+        setPaused(!isPaused, in: textView)
+        return isPaused
+    }
+
     /// Accepts the active structural suggestion, applying it as one undo step through the partner's cursor.
     func acceptActiveSuggestion() {
         guard let active = activeSuggestion, let textView, let coordinator else { return }
@@ -325,6 +421,11 @@ final class WritingPartnerSession {
     /// The person is about to type `string` over `range` (storage offsets). Call only for their own
     /// typing: not for Swash's edits, restyling, SwiftUI updates or Writing Tools.
     func willType(_ string: String?, in range: NSRange, textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        self.textView = textView
+        self.coordinator = coordinator
+        if hasActiveUndoReminder {
+            dismissUndoReminder(in: textView)
+        }
         if hasActiveSuggestion {
             let overlay = WritingPartnerOverlay.overlay(for: textView)
             overlay.hideSuggestionPrompt()
@@ -334,6 +435,40 @@ final class WritingPartnerSession {
             pendingBoundaries = []
             cancelFix()
             clearSuggestions(in: textView)
+            return
+        }
+        // First run (#112): the first time a document is edited, introduce the partner once in place
+        // and play a sample fix before touching the person's words.
+        if hasActiveIntroduction {
+            return
+        }
+        if !isPaused, !WritingPartnerDefaults.introShown(defaults) {
+            WritingPartnerDefaults.setIntroShown(true, defaults)
+            hasActiveIntroduction = true
+            let announcement = "\(PartnerIntroductionView.noteText). \(PartnerIntroductionView.privacyText)"
+            lastAnnouncement = announcement
+            MainActor.assumeIsolated {
+                let targetRect = WritingPartnerOverlay.caretRect(at: range.location, in: textView)
+                    ?? NSRect(x: textView.textContainerOrigin.x, y: textView.textContainerOrigin.y, width: 2, height: 20)
+                let overlay = WritingPartnerOverlay.overlay(for: textView)
+                overlay.showIntroduction(
+                    at: targetRect,
+                    onChooseMode: { [weak self, weak textView, weak coordinator] chosenMode in
+                        self?.chooseIntroductionMode(chosenMode, in: textView, coordinator: coordinator)
+                    },
+                    onDismiss: { [weak self, weak textView] in
+                        self?.dismissIntroduction(in: textView)
+                    }
+                )
+                NSAccessibility.post(
+                    element: textView,
+                    notification: .announcementRequested,
+                    userInfo: [
+                        .announcement: announcement,
+                        .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+                    ]
+                )
+            }
             return
         }
         let raw = coordinator.rawRange(forStorage: range, in: textView)
@@ -401,7 +536,7 @@ final class WritingPartnerSession {
             applied = []
         }
         let mode = WritingPartnerDefaults.mode(defaults)
-        let isOn = mode != .off
+        let isOn = mode != .off && !isPaused && !hasActiveIntroduction
         if !isOn {
             cancelFix()
             clearSuggestions(in: textView)
@@ -464,7 +599,7 @@ final class WritingPartnerSession {
     /// published and styled the change, and one at a time: while the partner's cursor is playing a
     /// fix, new boundaries wait for it.
     func didChange(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
-        if WritingPartnerDefaults.mode(defaults) != .off && hasPauseProvider {
+        if WritingPartnerDefaults.mode(defaults) != .off && !isPaused && !hasActiveIntroduction && hasPauseProvider {
             let rawText = coordinator.rawText(of: textView)
             let rawSelection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
             if let current = BandleaderContextExtractor.extract(from: rawText, caret: rawSelection.location, flavor: coordinator.parent.flavor) {
@@ -495,7 +630,7 @@ final class WritingPartnerSession {
         let boundaries = pendingBoundaries
         pendingBoundaries = []
         let mode = WritingPartnerDefaults.mode(defaults)
-        guard mode != .off, !textView.hasMarkedText(),
+        guard mode != .off, !isPaused, !hasActiveIntroduction, !textView.hasMarkedText(),
               textView.window != nil, textView.isEditable else { return }
         let raw = coordinator.rawText(of: textView)
         let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
@@ -730,7 +865,7 @@ final class WritingPartnerSession {
             fixInFlight = fix
             // The word it replaces is still where it was: the person may have changed it meanwhile
             let text = target.realText as NSString
-            guard WritingPartnerDefaults.mode(defaults) != .off, let textView = target.textView,
+            guard WritingPartnerDefaults.mode(defaults) != .off, !isPaused, let textView = target.textView,
                   !textView.hasMarkedText(), NSMaxRange(edit.range) <= text.length,
                   text.substring(with: edit.range) == edit.original else {
                 retry(fix)
@@ -872,7 +1007,7 @@ final class WritingPartnerSession {
     private func retry(_ fix: Fix) {
         fixInFlight = nil
         guard !fix.isCancelled, !fix.isRetry, !fix.boundaries.isEmpty,
-              WritingPartnerDefaults.mode(defaults) == .automatic,
+              WritingPartnerDefaults.mode(defaults) == .automatic, !isPaused,
               let textView, let coordinator, !textView.hasMarkedText() else {
             finish()
             return
@@ -984,7 +1119,7 @@ final class WritingPartnerSession {
     @MainActor
     private func evaluatePause(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
         pauseTask = nil
-        guard WritingPartnerDefaults.mode(defaults) != .off else { return }
+        guard WritingPartnerDefaults.mode(defaults) != .off, !isPaused, !hasActiveIntroduction else { return }
         let provider = WritingPartnerDefaults.provider(defaults)
         let override = testingBandleader ?? WritingBandleaderFactory.overrideBandleader
         guard override != nil || provider != .none else { return }
@@ -1040,7 +1175,7 @@ final class WritingPartnerSession {
         coordinator: SwashTextView.Coordinator
     ) {
         let mode = WritingPartnerDefaults.mode(defaults)
-        guard mode != .off else { return }
+        guard mode != .off, !isPaused, !hasActiveIntroduction else { return }
         let spellingOn = WritingPartnerDefaults.spelling(defaults)
         let rawText = coordinator.rawText(of: textView)
 
@@ -1196,6 +1331,43 @@ final class WritingPartnerSession {
                 finalText: step.original,
                 checkId: step.bandleaderCheckId
             ))
+        }
+        // First time a fix is undone (#112): show a quiet reminder explaining how to pause for this
+        // document or turn the partner off in Settings › Writing.
+        if !WritingPartnerDefaults.undoReminderShown(defaults) {
+            WritingPartnerDefaults.setUndoReminderShown(true, defaults)
+            hasActiveUndoReminder = true
+            let announcement = PartnerUndoReminderView.messageText
+            lastAnnouncement = announcement
+            if let textView {
+                let rawLength = (coordinator?.rawText(of: textView) as NSString?)?.length ?? 0
+                let rawCaret = NSRange(location: min(step.caretBefore, rawLength), length: 0)
+                let storageCaret = coordinator?.storageRange(forRaw: rawCaret, in: textView).location ?? 0
+                MainActor.assumeIsolated {
+                    let targetRect = WritingPartnerOverlay.caretRect(at: storageCaret, in: textView)
+                        ?? NSRect(x: textView.textContainerOrigin.x, y: textView.textContainerOrigin.y, width: 2, height: 20)
+                    let overlay = WritingPartnerOverlay.overlay(for: textView)
+                    overlay.showUndoReminder(
+                        at: targetRect,
+                        onPause: { [weak self, weak textView] in
+                            guard let self else { return }
+                            self.dismissUndoReminder(in: textView)
+                            self.setPaused(true, in: textView)
+                        },
+                        onDismiss: { [weak self, weak textView] in
+                            self?.dismissUndoReminder(in: textView)
+                        }
+                    )
+                    NSAccessibility.post(
+                        element: textView,
+                        notification: .announcementRequested,
+                        userInfo: [
+                            .announcement: announcement,
+                            .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+                        ]
+                    )
+                }
+            }
         }
         // Undo selects the restored word; put the caret back where the person was typing, after
         // the editor has restyled the change

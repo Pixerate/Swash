@@ -44,6 +44,7 @@ Quick Note tidy-up uses the Pixerate tier above, with the same rules. It sends t
 
 ## Turning it off
 
+- **Edit › Pause Writing Partner (⌥⌘P)** pauses the partner for the current document.
 - **Settings › Writing › Writing partner › Off** stops everything above.
 - **Signing out** stops everything sent to Pixerate. The on-device and as-you-type tiers keep working.
 
