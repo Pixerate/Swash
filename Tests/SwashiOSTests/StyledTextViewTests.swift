@@ -515,4 +515,112 @@ final class StyledTextViewTests: XCTestCase {
         e.forceFullRestyle()
         XCTAssertEqual(incremental, e.fingerprint(), firstDifference(incremental, e.fingerprint()))
     }
+
+    // MARK: - Pointer and keyboard navigation for code badges and block menu
+
+    func testCodeBadgeButtonsHavePointerInteractionAndMenu() throws {
+        let e = try editor("```swift\nlet x = 1\n```")
+        e.textView.layoutSubviews()
+        e.pump()
+        XCTAssertEqual(e.textView.codeBadgeButtons.count, 1)
+        let button = e.textView.codeBadgeButtons[0]
+        XCTAssertFalse(button.isHidden)
+        XCTAssertTrue(button.isPointerInteractionEnabled)
+        XCTAssertNotNil(button.menu)
+        XCTAssertTrue(button.accessibilityLabel?.contains("Swift") == true)
+        XCTAssertEqual(button.accessibilityHint, "Double-tap or click to choose code language")
+    }
+
+    func testEditMenuOffersCodeLanguageForFencedCodeBlock() throws {
+        let e = try editor("```swift\nlet x = 1\n```")
+        e.caret(after: "let x")
+        let textRange = try XCTUnwrap(e.textView.selectedTextRange)
+        let menu = e.textView.editMenu(for: textRange, suggestedActions: [])
+        let langMenu = menu?.children.compactMap { $0 as? UIMenu }.first(where: { $0.title == "Code Language" })
+        XCTAssertNotNil(langMenu, "editMenu should include a 'Code Language' submenu when caret is inside a code block")
+
+        let allActions: [UIAction] = (langMenu?.children ?? []).flatMap { item -> [UIAction] in
+            if let action = item as? UIAction { return [action] }
+            if let sub = item as? UIMenu { return sub.children.compactMap { $0 as? UIAction } }
+            return []
+        }
+        let pythonAction = allActions.first(where: { $0.title == "Python" })
+        XCTAssertNotNil(pythonAction)
+
+        e.textView.coordinator?.setCodeLanguage("python", atStorageLocation: 0, in: e.textView)
+        e.pump()
+        XCTAssertTrue(e.text.hasPrefix("```python\n"))
+    }
+
+    func testBlockMenuViewControllerKeyboardNavigation() throws {
+        var chosenKind: MarkdownEditingCommands.BlockInsert?
+        let menu = BlockMenuViewController { kind in
+            chosenKind = kind
+        }
+        XCTAssertEqual(menu.selectedIndex, 0)
+
+        menu.beginAppearanceTransition(true, animated: false)
+        menu.endAppearanceTransition()
+        XCTAssertEqual(menu.selectedIndex, 0)
+
+        // Down arrow advances selection
+        menu.selectNext()
+        XCTAssertEqual(menu.selectedIndex, 1)
+
+        // Up arrow moves back
+        menu.selectPrevious()
+        XCTAssertEqual(menu.selectedIndex, 0)
+
+        // Up arrow wraps to end
+        menu.selectPrevious()
+        XCTAssertEqual(menu.selectedIndex, menu.kinds.count - 1)
+
+        // Down arrow wraps to start
+        menu.selectNext()
+        XCTAssertEqual(menu.selectedIndex, 0)
+
+        // Return triggers selection
+        menu.chooseSelected()
+        XCTAssertEqual(chosenKind, menu.kinds[0])
+
+        // Table cell has hoverStyle configured
+        let cell = menu.tableView(menu.tableView, cellForRowAt: IndexPath(row: 0, section: 0))
+        XCTAssertNotNil(cell.hoverStyle)
+    }
+
+    func testStyledUITextViewKeyCommandsInBlockMenu() throws {
+        let e = try editor("Text\n\n")
+        e.host.traitOverrides.horizontalSizeClass = .regular
+        e.window.layoutIfNeeded()
+
+        var chosenKind: MarkdownEditingCommands.BlockInsert?
+        e.textView.presentBlockMenu { kind in
+            chosenKind = kind
+        }
+
+        let keyCommands = try XCTUnwrap(e.textView.keyCommands)
+        let inputs = keyCommands.map(\.input)
+        XCTAssertTrue(inputs.contains(UIKeyCommand.inputDownArrow))
+        XCTAssertTrue(inputs.contains(UIKeyCommand.inputUpArrow))
+        XCTAssertTrue(inputs.contains("\r"))
+        XCTAssertTrue(inputs.contains(UIKeyCommand.inputEscape))
+
+        if let menu = e.textView.blockMenuPopover as? BlockMenuViewController {
+            XCTAssertEqual(menu.selectedIndex, 0)
+            e.textView.handleBlockMenuDown(UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(StyledUITextView.handleBlockMenuDown(_:))))
+            XCTAssertEqual(menu.selectedIndex, 1)
+
+            e.textView.handleBlockMenuUp(UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(StyledUITextView.handleBlockMenuUp(_:))))
+            XCTAssertEqual(menu.selectedIndex, 0)
+
+            e.textView.handleBlockMenuReturn(UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(StyledUITextView.handleBlockMenuReturn(_:))))
+            XCTAssertEqual(chosenKind, menu.kinds[0])
+        }
+
+        // Dismiss closes popover
+        e.textView.presentBlockMenu { _ in }
+        XCTAssertNotNil(e.textView.blockMenuPopover)
+        e.textView.handleBlockMenuEscape(UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(StyledUITextView.handleBlockMenuEscape(_:))))
+        XCTAssertNil(e.textView.blockMenuPopover)
+    }
 }
