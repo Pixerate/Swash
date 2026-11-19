@@ -336,6 +336,7 @@ final class WritingPartnerSession {
         if paused {
             pendingBoundaries = []
             cancelFix()
+            resetBandleaderSession()
             clearSuggestions(in: textView)
             if hasActiveSuggestion {
                 activeSuggestion = nil

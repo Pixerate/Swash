@@ -1263,7 +1263,10 @@ struct SwashTextView: NSViewRepresentable {
         let currentBaseURL = baseURL ?? textView.window?.representedURL ?? (textView.window.flatMap { NSDocumentController.shared.document(for: $0)?.fileURL })
         let baseChanged = (context.coordinator.lastBaseURL != currentBaseURL)
 
-        if baseChanged && currentBaseURL != nil && context.coordinator.lastBaseURL != nil {
+        // A different document in this editor: drop the on-device session so one document's
+        // paragraphs never reach another's prompts (SWA-30). Saving an untitled document
+        // (nil -> URL) is the same document and keeps it.
+        if baseChanged && context.coordinator.lastBaseURL != nil {
             context.coordinator.writingPartner.resetBandleaderSession()
         }
         
