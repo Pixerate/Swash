@@ -2,6 +2,8 @@
 
 Swash's writing partner works in tiers. This page lists, for each one, what leaves your Mac, when, and what is kept. The request format is public: [Pixerate/schemas](https://github.com/Pixerate/schemas), the `jazz` text-lead types.
 
+On a new install the partner is on (Automatically), but it does nothing until you answer the introduction it shows the first time you edit a document: Automatically, Suggest, or Not now (which turns it off). If you're signed in, the introduction says that the paragraph you pause on is sent to Pixerate. Upgrading keeps the setting you had, and a partner that was off stays off.
+
 ## As you type: nothing leaves your Mac
 
 The fixes made while you type all run on your Mac, with or without an account. These are capital I, apostrophes, sentence capitals, full stops and question marks, `OK`, commas before "but", and spelling. The rules come from Pixerate's open editor package (`TextMechanics`). Spelling uses macOS's own spell checker, in place of its autocorrect.
@@ -15,7 +17,7 @@ With Apple Intelligence available, the on-device tier reads the paragraph you ju
 Swash sends a request to Pixerate only when **all** of these are true:
 
 - you're signed in to a Pixerate account (Settings › Account);
-- the writing partner is on (Settings › Writing);
+- the writing partner is on (Settings › Writing; on by default for new installs, once you've answered its introduction) and not paused for the document;
 - you've paused after finishing a sentence or leaving a paragraph;
 - your team has Fuel or a plan that covers it.
 
@@ -44,7 +46,7 @@ Quick Note tidy-up uses the Pixerate tier above, with the same rules. It sends t
 
 ## Turning it off
 
-- **Edit › Pause Writing Partner (⌥⌘P)** pauses the partner for the current document.
+- **Edit › Pause Writing Partner (⌥⌘P)** pauses the partner for the current document, until you resume it or close the window.
 - **Settings › Writing › Writing partner › Off** stops everything above.
 - **Signing out** stops everything sent to Pixerate. The on-device and as-you-type tiers keep working.
 

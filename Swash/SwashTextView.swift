@@ -449,9 +449,10 @@ class SwashNSTextView: NSTextView {
             if menu.contains(point) { return .arrow }
         }
         if let overlay = WritingPartnerOverlay.existing(in: self) {
-            if !overlay.introductionView.isHidden, overlay.introductionView.frame.contains(point) { return .arrow }
-            if !overlay.undoReminderView.isHidden, overlay.undoReminderView.frame.contains(point) { return .arrow }
-            if !overlay.suggestionPrompt.isHidden, overlay.suggestionPrompt.frame.contains(point) { return .arrow }
+            let notes: [NSView?] = [overlay.introductionView, overlay.undoReminderView, overlay.suggestionPrompt]
+            for case let note? in notes where !note.isHidden {
+                if overlay.convert(note.frame, to: self).contains(point) { return .arrow }
+            }
         }
         let textMinX = textContainerOrigin.x
         let textMaxX = textMinX + (textContainer?.size.width ?? bounds.width)
@@ -674,11 +675,10 @@ class SwashNSTextView: NSTextView {
 
     override func accessibilityPerformPress() -> Bool {
         if let coordinator = delegate as? SwashTextView.Coordinator {
-            if coordinator.writingPartner.hasActiveIntroduction {
-                coordinator.writingPartner.chooseIntroductionMode(.automatic, in: self, coordinator: coordinator)
-                return true
-            }
-            if coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
+            // The introduction's choices are its own buttons and custom actions: pressing the text
+            // view mustn't turn the partner on
+            if !coordinator.writingPartner.hasActiveIntroduction,
+               coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
                 return true
             }
         }
@@ -2045,8 +2045,8 @@ struct SwashTextView: NSViewRepresentable {
         // Key commands: writing-partner suggestions, table-cell navigation, then Notion-style structural editing
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if writingPartner.hasActiveIntroduction {
-                if commandSelector == #selector(NSResponder.insertTab(_:)) ||
-                   commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
+                // Only ⌥Return, a deliberate chord, turns it on: Tab indents lists and mustn't opt in
+                if commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
                     writingPartner.chooseIntroductionMode(.automatic, in: textView, coordinator: self)
                     return true
                 } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {

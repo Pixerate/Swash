@@ -437,15 +437,18 @@ final class WritingPartnerSession {
             clearSuggestions(in: textView)
             return
         }
-        // First run (#112): the first time a document is edited, introduce the partner once in place
-        // and play a sample fix before touching the person's words.
+        // First run (#112): the first time a document is edited, introduce the partner in place and
+        // play a sample fix before touching the person's words. It counts as shown only once they
+        // answer it (Automatically, Suggest or Not now): until then the partner does nothing, so
+        // closing the window without answering never leaves it on unchosen. Someone whose partner is
+        // Off (an explicit choice, or an upgrade that kept it off) isn't asked again.
         if hasActiveIntroduction {
             return
         }
-        if !isPaused, !WritingPartnerDefaults.introShown(defaults) {
-            WritingPartnerDefaults.setIntroShown(true, defaults)
+        if !isPaused, !WritingPartnerDefaults.introShown(defaults), WritingPartnerDefaults.mode(defaults) != .off {
             hasActiveIntroduction = true
-            let announcement = "\(PartnerIntroductionView.noteText). \(PartnerIntroductionView.privacyText)"
+            let privacy = PartnerIntroductionView.privacyText(signedIn: WritingPartnerDefaults.provider(defaults) == .pixerate)
+            let announcement = "\(PartnerIntroductionView.noteText). \(privacy)"
             lastAnnouncement = announcement
             MainActor.assumeIsolated {
                 let targetRect = WritingPartnerOverlay.caretRect(at: range.location, in: textView)

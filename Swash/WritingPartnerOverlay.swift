@@ -926,7 +926,15 @@ final class WritingPartnerStylePreviewView: NSView {
 @MainActor
 final class PartnerIntroductionView: NSView {
     static let noteText = "Swash can tidy up behind you as you type"
-    static let privacyText = "Punctuation and spelling rules run on your Mac and never leave this device."
+    nonisolated static let privacyText = "Punctuation and spelling rules run on your Mac and never leave this device."
+    /// Signed in, the pause tier sends the paragraph to Pixerate (docs/writing-partner-privacy.md),
+    /// so the introduction says so before the person chooses.
+    nonisolated static let signedInPrivacyText = "Fixes as you type run on your Mac. Because you're signed in, the paragraph you pause on is also sent to Pixerate for suggestions."
+
+    nonisolated static func privacyText(signedIn: Bool) -> String {
+        signedIn ? signedInPrivacyText : privacyText
+    }
+
     static let preferredSize = NSSize(width: 420, height: 146)
 
     let titleLabel = NSTextField(labelWithString: PartnerIntroductionView.noteText)
@@ -992,9 +1000,9 @@ final class PartnerIntroductionView: NSView {
         automaticallyButton.bezelStyle = .rounded
         automaticallyButton.target = self
         automaticallyButton.action = #selector(automaticallyClicked)
-        automaticallyButton.keyEquivalent = "\r"
+        // No Return key equivalent: Return while writing must start a new line, never opt in
         automaticallyButton.contentTintColor = WritingPartnerOverlay.tint
-        automaticallyButton.toolTip = "Turn on the writing partner in Automatically mode (Return)"
+        automaticallyButton.toolTip = "Turn on the writing partner in Automatically mode (⌥Return)"
         automaticallyButton.setAccessibilityElement(true)
         automaticallyButton.setAccessibilityRole(.button)
         automaticallyButton.setAccessibilityLabel("Turn on Automatically")
@@ -1033,6 +1041,9 @@ final class PartnerIntroductionView: NSView {
         self.onChooseMode = onChooseMode
         self.onDismiss = onDismiss
         sampleView.style = WritingPartnerDefaults.style()
+        let privacy = Self.privacyText(signedIn: WritingPartnerDefaults.provider() == .pixerate)
+        privacyLabel.stringValue = privacy
+        setAccessibilityLabel("\(Self.noteText). \(privacy) Choose Automatically, Suggest, or Not now.")
         needsLayout = true
     }
 

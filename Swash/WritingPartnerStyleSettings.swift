@@ -49,4 +49,22 @@ private struct WritingPartnerStylePreview: NSViewRepresentable {
 
     func updateNSView(_ view: WritingPartnerStylePreviewView, context: Context) { view.style = style }
 }
+
+#Preview("Partner style") {
+    Form { WritingPartnerStyleSection() }
+        .formStyle(.grouped)
+        .frame(width: 480)
+}
+
+#Preview("First-run introduction (#112)") {
+    let view = PartnerIntroductionView(frame: NSRect(origin: .zero, size: PartnerIntroductionView.preferredSize))
+    view.configure(onChooseMode: { _ in }, onDismiss: {})
+    return view
+}
+
+#Preview("First-undo reminder (#112)") {
+    let view = PartnerUndoReminderView(frame: NSRect(origin: .zero, size: PartnerUndoReminderView.preferredSize))
+    view.configure(onPause: {}, onDismiss: {})
+    return view
+}
 #endif
