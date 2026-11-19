@@ -17,6 +17,40 @@ import Foundation
 import PixerateCore
 import PixerateMarkdown
 
+/// An inline agent presence update emitted when an MCP tool moves the agent's selection or modifies ranges.
+public struct AgentPresenceUpdate: Equatable, Sendable {
+    /// The agent's current raw-Markdown selection or insertion point.
+    public var selection: NSRange
+    /// Post-edit raw-Markdown ranges modified by a write tool (empty for selection-only `set_selection`).
+    public var modifiedRanges: [NSRange]
+    /// The calling tool actor, if provided.
+    public var actor: ToolActor?
+    /// Resolved display label for the agent name pill (defaults to `"Agent"`).
+    public var label: String
+    /// Resolved hex colour for the agent caret and highlights (defaults to `"#8b5cf6"`).
+    public var colorHex: String
+
+    public init(
+        selection: NSRange,
+        modifiedRanges: [NSRange] = [],
+        actor: ToolActor? = nil,
+        label: String? = nil,
+        colorHex: String? = nil
+    ) {
+        self.selection = selection
+        self.modifiedRanges = modifiedRanges
+        self.actor = actor
+        let rawName = (label ?? actor?.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if rawName.isEmpty || rawName == "MCP Client" {
+            self.label = defaultAgentCaretName
+        } else {
+            self.label = rawName
+        }
+        let rawColor = (colorHex ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        self.colorHex = rawColor.isEmpty ? defaultAgentCaretColor : rawColor
+    }
+}
+
 /// The document the tools read and edit.
 @MainActor
 protocol MarkdownToolTarget: AnyObject {
@@ -29,10 +63,20 @@ protocol MarkdownToolTarget: AnyObject {
     /// The document's Markdown flavour. Slack mrkdwn has its own inline syntax (`*bold*`,
     /// `_italic_`, `~strike~`, `<url|text>`), which the tools read and write.
     var flavor: MarkdownFlavor { get }
-    /// Replaces the whole Markdown as one undoable edit, then selects `selection`.
-    func apply(markdown: String, selection: NSRange, actionName: String)
+    /// Replaces the whole Markdown as one undoable edit, then updates the agent selection and presence.
+    func apply(markdown: String, selection: NSRange, actionName: String, edits: [MarkdownToolProvider.RawEdit], modifiedRanges: [NSRange], actor: ToolActor?)
     /// Moves the selection.
-    func select(_ range: NSRange)
+    func select(_ range: NSRange, actor: ToolActor?)
+}
+
+extension MarkdownToolTarget {
+    func apply(markdown: String, selection: NSRange, actionName: String) {
+        apply(markdown: markdown, selection: selection, actionName: actionName, edits: [], modifiedRanges: [], actor: nil)
+    }
+
+    func select(_ range: NSRange) {
+        select(range, actor: nil)
+    }
 }
 
 /// A tool failure, reported to the agent as an `isError` result with this message.
@@ -44,7 +88,7 @@ struct MarkdownToolError: LocalizedError {
 
 /// Builds the tool provider for one document.
 @MainActor
-final class MarkdownToolProvider {
+public final class MarkdownToolProvider {
     /// The skill that documents the tools.
     static let skill = "pixerate-rich-text"
     /// Characters of context `find_text` returns around a match.
@@ -101,6 +145,13 @@ final class MarkdownToolProvider {
         }
     }
 
+    /// A handler that also receives the `ToolCallContext` (e.g. `actor`) on the main actor.
+    private static func handlerWithContext(_ body: @escaping @MainActor (JSONObject, ToolCallContext) throws -> JSONObject) -> AgentToolHandler {
+        { args, context in
+            .value(.object(try body(args, context)))
+        }
+    }
+
     private static func int(_ args: JSONObject, _ key: String) -> Int? {
         args[key]?.numberValue.map { Int($0) }
     }
@@ -142,10 +193,21 @@ final class MarkdownToolProvider {
         return range
     }
 
+    /// A single raw-Markdown edit: `range` in the pre-edit text replaced by `newLength` UTF-16 units.
+    public struct RawEdit: Equatable, Sendable {
+        public var range: NSRange
+        public var newLength: Int
+
+        public init(range: NSRange, newLength: Int) {
+            self.range = range
+            self.newLength = newLength
+        }
+    }
+
     /// `position` after replacing each of `edits` (ascending, non-overlapping) with text of
     /// `newLength`. Positions inside a replaced range move to the end of its replacement, and
     /// positions at an insertion move after it (as ProseMirror maps a selection).
-    static func map(_ position: Int, through edits: [(range: NSRange, newLength: Int)]) -> Int {
+    static func map(_ position: Int, through edits: [RawEdit]) -> Int {
         var delta = 0
         for edit in edits {
             if position < edit.range.location || (position == edit.range.location && edit.range.length > 0) { break }
@@ -155,22 +217,37 @@ final class MarkdownToolProvider {
         return position + delta
     }
 
+    static func map(_ position: Int, through edits: [(range: NSRange, newLength: Int)]) -> Int {
+        map(position, through: edits.map { RawEdit(range: $0.range, newLength: $0.newLength) })
+    }
+
     /// The single changed span between two texts (common prefix and suffix removed), as an edit.
-    static func change(from old: NSString, to new: NSString) -> (range: NSRange, newLength: Int) {
+    static func change(from old: NSString, to new: NSString) -> RawEdit {
         let minLength = min(old.length, new.length)
         var prefix = 0
         while prefix < minLength && old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
         var suffix = 0
         while suffix < minLength - prefix && old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
-        return (NSRange(location: prefix, length: old.length - prefix - suffix), new.length - prefix - suffix)
+        return RawEdit(range: NSRange(location: prefix, length: old.length - prefix - suffix), newLength: new.length - prefix - suffix)
+    }
+
+    /// `selection` moved through `edits`, clamped to `newLength` when provided.
+    public static func mapSelection(_ selection: NSRange, through edits: [RawEdit], newLength: Int? = nil) -> NSRange {
+        let start = map(selection.location, through: edits)
+        let end = max(start, map(NSMaxRange(selection), through: edits))
+        let mapped = NSRange(location: start, length: end - start)
+        return newLength.map { clamp(mapped, $0) } ?? mapped
+    }
+
+    /// Single-edit convenience for `mapSelection(_:through:newLength:)`.
+    public static func mapSelection(_ selection: NSRange, replacedRange: NSRange, replacementLength: Int, newLength: Int? = nil) -> NSRange {
+        mapSelection(selection, through: [RawEdit(range: replacedRange, newLength: replacementLength)], newLength: newLength)
     }
 
     /// `selection` moved through an edit from `old` to `new`.
     static func mapSelection(_ selection: NSRange, from old: NSString, to new: NSString) -> NSRange {
         let edit = [change(from: old, to: new)]
-        let start = map(selection.location, through: edit)
-        let end = max(start, map(NSMaxRange(selection), through: edit))
-        return NSRange(location: start, length: end - start)
+        return mapSelection(selection, through: edit, newLength: new.length)
     }
 
     // MARK: - Search
@@ -354,22 +431,17 @@ final class MarkdownToolProvider {
     // MARK: - Write tools
 
     /// Replaces `range` with `text`; returns the inserted range and the selection after.
-    private func write(_ target: MarkdownToolTarget, _ range: NSRange, _ text: String, actionName: String, selectInserted: Bool) -> (range: NSRange, selection: NSRange, text: NSString) {
+    private func write(_ target: MarkdownToolTarget, _ range: NSRange, _ text: String, actionName: String, selectInserted: Bool, actor: ToolActor? = nil) -> (range: NSRange, selection: NSRange, text: NSString) {
         let old = target.markdown as NSString
         let new = old.replacingCharacters(in: range, with: text) as NSString
         let length = (text as NSString).length
         let inserted = NSRange(location: range.location, length: length)
+        let edits = [RawEdit(range: range, newLength: length)]
         let selection = selectInserted
             ? NSRange(location: NSMaxRange(inserted), length: 0)
-            : Self.mapSelection(target.selection, through: [(range, length)])
-        target.apply(markdown: new as String, selection: selection, actionName: actionName)
+            : Self.mapSelection(target.selection, through: edits, newLength: new.length)
+        target.apply(markdown: new as String, selection: selection, actionName: actionName, edits: edits, modifiedRanges: [inserted], actor: actor)
         return (inserted, selection, new)
-    }
-
-    private static func mapSelection(_ selection: NSRange, through edits: [(range: NSRange, newLength: Int)]) -> NSRange {
-        let start = map(selection.location, through: edits)
-        let end = max(start, map(NSMaxRange(selection), through: edits))
-        return NSRange(location: start, length: end - start)
     }
 
     private lazy var insertText = AgentTool(
@@ -387,7 +459,7 @@ final class MarkdownToolProvider {
             "additionalProperties": false,
         ],
         annotations: ToolAnnotations(title: "Insert text", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false),
-        handler: Self.handler { [unowned self] args in
+        handler: Self.handlerWithContext { [unowned self] args, context in
             let target = try self.editable()
             let text = args["text"]?.stringValue ?? ""
             let size = (target.markdown as NSString).length
@@ -398,7 +470,7 @@ final class MarkdownToolProvider {
             } else {
                 range = Self.clamp(target.selection, size)
             }
-            let result = self.write(target, range, text, actionName: "Insert Text", selectInserted: Self.int(args, "at") == nil)
+            let result = self.write(target, range, text, actionName: "Insert Text", selectInserted: Self.int(args, "at") == nil, actor: context.actor)
             return ["inserted": .number(Double((text as NSString).length)), "range": Self.range(result.range), "selection": Self.selectionInfo(result.text, result.selection)]
         }
     )
@@ -417,7 +489,7 @@ final class MarkdownToolProvider {
                 "Replaces every occurrence by default, or only the n-th with `occurrence`. Fails when nothing matches.",
             inputSchema: ["type": "object", "properties": .object(properties), "required": ["find", "replace"], "additionalProperties": false],
             annotations: ToolAnnotations(title: "Find and replace", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false),
-            handler: Self.handler { [unowned self] args in
+            handler: Self.handlerWithContext { [unowned self] args, context in
                 let target = try self.editable()
                 let find = args["find"]?.stringValue ?? ""
                 let replace = (args["replace"]?.stringValue ?? "").replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
@@ -436,14 +508,15 @@ final class MarkdownToolProvider {
                 let length = (replace as NSString).length
                 let new = NSMutableString(string: old)
                 for r in chosen.reversed() { new.replaceCharacters(in: r, with: replace) }
-                let edits = chosen.map { (range: $0, newLength: length) }
+                let edits = chosen.map { RawEdit(range: $0, newLength: length) }
                 var shift = 0
-                let ranges: [JSONValue] = chosen.map { r in
+                let modifiedRanges: [NSRange] = chosen.map { r in
                     defer { shift += length - r.length }
-                    return Self.range(NSRange(location: r.location + shift, length: length))
+                    return NSRange(location: r.location + shift, length: length)
                 }
-                let selection = Self.mapSelection(target.selection, through: edits)
-                target.apply(markdown: new as String, selection: selection, actionName: "Replace")
+                let ranges = modifiedRanges.map(Self.range)
+                let selection = Self.mapSelection(target.selection, through: edits, newLength: new.length)
+                target.apply(markdown: new as String, selection: selection, actionName: "Replace", edits: edits, modifiedRanges: modifiedRanges, actor: context.actor)
                 return ["replaced": .number(Double(chosen.count)), "total": .number(Double(matches.count)), "ranges": .array(ranges), "selection": Self.selectionInfo(new, selection)]
             }
         )
@@ -465,11 +538,11 @@ final class MarkdownToolProvider {
             "additionalProperties": false,
         ],
         annotations: ToolAnnotations(title: "Replace a range", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false),
-        handler: Self.handler { [unowned self] args in
+        handler: Self.handlerWithContext { [unowned self] args, context in
             let target = try self.editable()
             let from = Self.int(args, "from") ?? 0, to = Self.int(args, "to") ?? 0
             try Self.checkRange(from, to, size: (target.markdown as NSString).length)
-            let result = self.write(target, NSRange(location: from, length: to - from), args["text"]?.stringValue ?? "", actionName: "Replace", selectInserted: false)
+            let result = self.write(target, NSRange(location: from, length: to - from), args["text"]?.stringValue ?? "", actionName: "Replace", selectInserted: false, actor: context.actor)
             return [
                 "replaced": ["from": .number(Double(from)), "to": .number(Double(to))],
                 "range": Self.range(result.range),
@@ -490,10 +563,10 @@ final class MarkdownToolProvider {
             "additionalProperties": false,
         ],
         annotations: ToolAnnotations(title: "Replace selection", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false),
-        handler: Self.handler { [unowned self] args in
+        handler: Self.handlerWithContext { [unowned self] args, context in
             let target = try self.editable()
             let selection = Self.clamp(target.selection, (target.markdown as NSString).length)
-            let result = self.write(target, selection, args["text"]?.stringValue ?? "", actionName: "Replace", selectInserted: true)
+            let result = self.write(target, selection, args["text"]?.stringValue ?? "", actionName: "Replace", selectInserted: true, actor: context.actor)
             return ["replaced": Self.range(selection), "range": Self.range(result.range), "selection": Self.selectionInfo(result.text, result.selection)]
         }
     )
@@ -512,14 +585,14 @@ final class MarkdownToolProvider {
             "additionalProperties": false,
         ],
         annotations: ToolAnnotations(title: "Set the selection", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false),
-        handler: Self.handler { [unowned self] args in
+        handler: Self.handlerWithContext { [unowned self] args, context in
             let target = try self.editable()
             let from = Self.int(args, "from") ?? 0
             let to = Self.int(args, "to") ?? from
             let ns = target.markdown as NSString
             try Self.checkRange(from, to, size: ns.length)
             let range = NSRange(location: from, length: to - from)
-            target.select(range)
+            target.select(range, actor: context.actor)
             return ["selection": Self.selectionInfo(ns, range)]
         }
     )
@@ -577,7 +650,7 @@ final class MarkdownToolProvider {
                 "Returns the `range` and the formatting now on it (`partly` where only some of the text has it). For headings and lists use set_block_type.",
             inputSchema: ["type": "object", "properties": .object(properties), "additionalProperties": false],
             annotations: ToolAnnotations(title: "Format text", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false),
-            handler: Self.handler { [unowned self] args in
+            handler: Self.handlerWithContext { [unowned self] args, context in
                 let target = try self.editable()
                 guard names.contains(where: { args[$0] != nil }) else {
                     throw MarkdownToolError("Pass at least one formatting property: \(names.joined(separator: ", ")).")
@@ -615,7 +688,18 @@ final class MarkdownToolProvider {
                     }
                 }
                 if text != original {
-                    target.apply(markdown: text, selection: Self.mapSelection(target.selection, from: original as NSString, to: text as NSString), actionName: "Format")
+                    let oldNS = original as NSString
+                    let newNS = text as NSString
+                    let delta = Self.change(from: oldNS, to: newNS)
+                    let modified = NSRange(location: delta.range.location, length: delta.newLength)
+                    target.apply(
+                        markdown: text,
+                        selection: Self.mapSelection(target.selection, through: [delta], newLength: newNS.length),
+                        actionName: "Format",
+                        edits: [delta],
+                        modifiedRanges: [modified],
+                        actor: context.actor
+                    )
                 }
                 let ns = text as NSString
                 return ["range": Self.range(range), "text": .string(ns.substring(with: range)), "formatting": .object(Self.formattingInfo(text, range, flavor: target.flavor))]
@@ -668,7 +752,7 @@ final class MarkdownToolProvider {
                 "Returns the resulting `blocks` with their type, positions, source, level and the list or quote they are in.",
             inputSchema: ["type": "object", "properties": .object(properties), "required": ["type"], "additionalProperties": false],
             annotations: ToolAnnotations(title: "Set the block type", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false),
-            handler: Self.handler { [unowned self] args in
+            handler: Self.handlerWithContext { [unowned self] args, context in
                 let target = try self.editable()
                 let type = args["type"]?.stringValue ?? ""
                 let level = Self.int(args, "level")
@@ -706,11 +790,193 @@ final class MarkdownToolProvider {
                     }
                 }
                 if text != original {
-                    target.apply(markdown: text, selection: Self.mapSelection(target.selection, from: original as NSString, to: text as NSString), actionName: "Block Type")
+                    let oldNS = original as NSString
+                    let newNS = text as NSString
+                    let delta = Self.change(from: oldNS, to: newNS)
+                    let modified = NSRange(location: delta.range.location, length: delta.newLength)
+                    target.apply(
+                        markdown: text,
+                        selection: Self.mapSelection(target.selection, through: [delta], newLength: newNS.length),
+                        actionName: "Block Type",
+                        edits: [delta],
+                        modifiedRanges: [modified],
+                        actor: context.actor
+                    )
                 }
                 return ["type": .string(type), "range": Self.range(range), "blocks": .array(Self.blocks(in: text, overlapping: range, flavor: flavor))]
             }
         )
     }()
+}
+/// One document's tools: what they read and edit.
+@MainActor
+public final class AgentDocumentSession: MarkdownToolTarget {
+    /// The live raw Markdown.
+    public var readMarkdown: () -> String = { "" }
+    /// Optional override for reading selection; nil by default so the agent's selection is decoupled from the user's cursor.
+    public var readSelection: () -> NSRange? = { nil }
+    /// Applies a whole-text edit as one undo step and passes the agent's new selection.
+    public var applyEdit: (String, NSRange, String) -> Void = { _, _, _ in }
+    /// Applies a whole-text edit as one undo step along with the raw edit deltas so the host can remap the user's selection.
+    public var applyEditWithEdits: ((String, NSRange, String, [MarkdownToolProvider.RawEdit]) -> Void)?
+    /// Optional callback when `select` is called.
+    public var selectRange: (NSRange) -> Void = { _ in }
+    /// Observer notified whenever an agent tool moves the agent's selection or modifies document ranges.
+    public var onPresenceChange: ((AgentPresenceUpdate) -> Void)?
+
+    /// Whether an agent has placed a selection or performed an edit in this session.
+    public private(set) var hasActivePresence: Bool = false
+    /// The post-edit raw-Markdown ranges modified by the most recent write tool call (empty after selection-only `set_selection`).
+    public private(set) var lastModifiedRanges: [NSRange] = []
+    /// The most recent actor that interacted with this session.
+    public private(set) var lastActor: ToolActor?
+
+    /// How the document is listed to agents (`list_documents`).
+    public var name: String {
+        get { target.name }
+        set { target.name = newValue }
+    }
+
+    /// The document's flavour, so Slack documents are read and formatted as Slack mrkdwn.
+    var flavor: MarkdownFlavor = .github {
+        didSet { target.info = Self.info(flavor) }
+    }
+
+    /// Why the document can't be edited; the write tools are hidden while it is set.
+    public var readOnlyReason: String? {
+        didSet {
+            target.readOnlyReason = readOnlyReason
+            if readOnlyReason != oldValue { registry.notifyListChanged() }
+        }
+    }
+
+    public let registry: ToolRegistry
+    /// What the MCP server routes this document's tool calls to.
+    public let target: MCPToolTarget
+    /// The agent's own tracked selection, starting at document offset 0 independent of the user's cursor.
+    private var lastSelection = NSRange(location: 0, length: 0)
+    private var tools: MarkdownToolProvider?
+
+    public init() {
+        let registry = ToolRegistry()
+        self.registry = registry
+        target = MCPToolTarget(name: "Untitled", registry: registry, info: Self.info(.github))
+        let tools = MarkdownToolProvider(target: self)
+        self.tools = tools
+        do {
+            try registry.register(tools.provider(id: "document", namespace: ""))
+            try registry.register(Self.genUIProvider())
+        } catch {
+            assertionFailure("Agent tools did not register: \(error)")
+        }
+    }
+
+    private static func info(_ flavor: MarkdownFlavor) -> JSONObject {
+        ["flavor": .string(flavor == .slack ? "slack" : "github")]
+    }
+
+    private static func genUIProvider() -> AgentToolProvider {
+        let listGenUIBlocks = AgentTool(
+            name: "list_genui_blocks",
+            title: "List supported GenUI blocks",
+            description: "Returns the fenced Markdown code-block languages and capabilities supported by Swash for @pixerate/genui-core embedded UI blocks and permission-gated sandboxed widgets.",
+            inputSchema: [
+                "type": "object",
+                "properties": [:],
+                "additionalProperties": false,
+            ],
+            annotations: ToolAnnotations(title: "List supported GenUI blocks", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false),
+            handler: { _, _ in
+                .value(.object([
+                    "builtInKinds": .array(GenUIBlockKind.allCases.filter { $0 != .widget }.map { .string($0.rawValue) }),
+                    "supportedLanguages": .array(GenUIBlockRegistry.supportedLanguages.map { .string($0) }),
+                    "sandboxedWidgets": [
+                        "languages": .array([.string("widget"), .string("genui-widget")]),
+                        "permissionGated": .bool(true),
+                        "fields": .array([.string("title"), .string("height"), .string("html"), .string("script")])
+                    ]
+                ]))
+            }
+        )
+        return AgentToolProvider(
+            id: "genui",
+            namespace: "",
+            title: "GenUI Blocks",
+            description: "Discover Markdown fenced code-block UI capabilities in Swash.",
+            tools: { [listGenUIBlocks] }
+        )
+    }
+
+    public var markdown: String { readMarkdown() }
+
+    public var selection: NSRange { readSelection() ?? lastSelection }
+
+    public func apply(
+        markdown: String,
+        selection: NSRange,
+        actionName: String,
+        edits: [MarkdownToolProvider.RawEdit] = [],
+        modifiedRanges: [NSRange] = [],
+        actor: ToolActor? = nil
+    ) {
+        let resolvedEdits: [MarkdownToolProvider.RawEdit]
+        if edits.isEmpty {
+            let oldNS = self.markdown as NSString
+            let newNS = markdown as NSString
+            resolvedEdits = oldNS == newNS ? [] : [MarkdownToolProvider.change(from: oldNS, to: newNS)]
+        } else {
+            resolvedEdits = edits
+        }
+        let resolvedModified: [NSRange]
+        if modifiedRanges.isEmpty, let first = resolvedEdits.first, resolvedEdits.count == 1 {
+            resolvedModified = [NSRange(location: first.range.location, length: first.newLength)]
+        } else {
+            resolvedModified = modifiedRanges
+        }
+        lastSelection = selection
+        hasActivePresence = true
+        lastModifiedRanges = resolvedModified
+        if let actor { lastActor = actor }
+        if let applyEditWithEdits {
+            applyEditWithEdits(markdown, selection, actionName, resolvedEdits)
+        } else {
+            applyEdit(markdown, selection, actionName)
+        }
+        onPresenceChange?(AgentPresenceUpdate(
+            selection: selection,
+            modifiedRanges: resolvedModified,
+            actor: actor ?? lastActor
+        ))
+    }
+
+    public func select(_ range: NSRange, actor: ToolActor? = nil) {
+        lastSelection = range
+        hasActivePresence = true
+        lastModifiedRanges = []
+        if let actor { lastActor = actor }
+        selectRange(range)
+        onPresenceChange?(AgentPresenceUpdate(
+            selection: range,
+            modifiedRanges: [],
+            actor: actor ?? lastActor
+        ))
+    }
+
+    /// Remaps the agent's tracked selection and any active modified ranges when the user edits the document.
+    public func remapSelectionForUserEdit(replacedRange: NSRange, replacementLength: Int, newTextLength: Int) {
+        let edit = MarkdownToolProvider.RawEdit(range: replacedRange, newLength: replacementLength)
+        lastSelection = MarkdownToolProvider.mapSelection(lastSelection, through: [edit], newLength: newTextLength)
+        if !lastModifiedRanges.isEmpty {
+            lastModifiedRanges = lastModifiedRanges.map {
+                MarkdownToolProvider.mapSelection($0, through: [edit], newLength: newTextLength)
+            }
+        }
+    }
+
+    /// Clears active agent presence state.
+    public func clearPresence() {
+        hasActivePresence = false
+        lastModifiedRanges = []
+    }
 }
 #endif

@@ -20,13 +20,13 @@ final class FakeDocument: MarkdownToolTarget {
         self.flavor = flavor
     }
 
-    func apply(markdown: String, selection: NSRange, actionName: String) {
-        edits.append((markdown, actionName))
+    func apply(markdown: String, selection: NSRange, actionName: String, edits: [MarkdownToolProvider.RawEdit], modifiedRanges: [NSRange], actor: ToolActor?) {
+        self.edits.append((markdown, actionName))
         self.markdown = markdown
         self.selection = selection
     }
 
-    func select(_ range: NSRange) { selection = range }
+    func select(_ range: NSRange, actor: ToolActor?) { selection = range }
 }
 
 var failures = 0
@@ -440,6 +440,111 @@ func run() async {
         let docs = router.listTargetsResult().structuredContent?["documents"]?.arrayValue ?? []
         expectEqual(docs.compactMap { $0["id"]?.stringValue }, ["notes", "slack"], "list_documents puts the active document first")
         check(docs.last?["flavor"]?.stringValue == "slack" && docs.last?["readOnly"] == .bool(true), "list_documents reports flavor and readOnly")
+    }
+
+    // MARK: Agent presence and decoupled selection (SWA-35 / #151)
+    do {
+        let session = AgentDocumentSession()
+        var docText = "Hello world"
+        var userSelectionMutations = 0
+        var presenceUpdates: [AgentPresenceUpdate] = []
+        var capturedEdits: [[MarkdownToolProvider.RawEdit]] = []
+
+        session.readMarkdown = { docText }
+        session.selectRange = { _ in userSelectionMutations += 1 }
+        session.applyEditWithEdits = { newText, _, _, edits in
+            docText = newText
+            capturedEdits.append(edits)
+        }
+        session.onPresenceChange = { update in
+            presenceUpdates.append(update)
+        }
+
+        // Initial selection is (0, 0) independent of user cursor
+        expectEqual(session.selection, NSRange(location: 0, length: 0), "initial agent selection is at offset 0")
+        expectEqual(session.hasActivePresence, false, "no active presence before tool call")
+
+        // insert_text without `at` inserts at agent's initial offset 0
+        let res1 = await session.registry.callTool("insert_text", ["text": "Hi "], actor: ToolActor(id: "claude", name: "Claude"))
+        check(!res1.isError, "session insert_text succeeds")
+        expectEqual(docText, "Hi Hello world", "inserted at initial offset 0")
+        expectEqual(session.selection, NSRange(location: 3, length: 0), "agent selection at end of inserted text")
+        expectEqual(session.hasActivePresence, true, "agent presence is active after insert_text")
+        expectEqual(session.lastModifiedRanges, [NSRange(location: 0, length: 3)], "lastModifiedRanges records inserted range")
+        expectEqual(presenceUpdates.last?.selection, NSRange(location: 3, length: 0), "presence update selection")
+        expectEqual(presenceUpdates.last?.modifiedRanges, [NSRange(location: 0, length: 3)], "presence update modifiedRanges")
+        expectEqual(presenceUpdates.last?.label, "Claude", "actor name passed to presence update")
+        expectEqual(presenceUpdates.last?.colorHex, defaultAgentCaretColor, "default violet color")
+        expectEqual(capturedEdits.last, [MarkdownToolProvider.RawEdit(range: NSRange(location: 0, length: 0), newLength: 3)], "captured raw edit delta")
+
+        // set_selection updates agent selection and clears modifiedRanges
+        let res2 = await session.registry.callTool("set_selection", ["from": 3, "to": 8])
+        check(!res2.isError, "set_selection succeeds")
+        expectEqual(session.selection, NSRange(location: 3, length: 5), "agent selection updated to 3..8")
+        expectEqual(session.lastModifiedRanges, [], "set_selection clears modifiedRanges")
+        expectEqual(presenceUpdates.last?.selection, NSRange(location: 3, length: 5), "presence update after set_selection")
+        expectEqual(presenceUpdates.last?.modifiedRanges, [], "presence update modifiedRanges empty on set_selection")
+        expectEqual(presenceUpdates.last?.label, "Claude", "sticky actor label")
+
+        // replace_selection replaces agent's selection (3..8 "Hello") with "Hey"
+        let res3 = await session.registry.callTool("replace_selection", ["text": "Hey"])
+        check(!res3.isError, "replace_selection succeeds")
+        expectEqual(docText, "Hi Hey world", "replace_selection updated text")
+        expectEqual(session.selection, NSRange(location: 6, length: 0), "caret after replace_selection")
+        expectEqual(session.lastModifiedRanges, [NSRange(location: 3, length: 3)], "modified range after replace_selection")
+
+        // replace_range replaces "world" (7..12) with "everyone" while agent caret is at 6
+        let res4 = await session.registry.callTool("replace_range", ["from": 7, "to": 12, "text": "everyone"], actor: ToolActor(id: "mcp", name: "MCP Client"))
+        check(!res4.isError, "replace_range succeeds")
+        expectEqual(docText, "Hi Hey everyone", "replace_range updated text")
+        expectEqual(session.selection, NSRange(location: 6, length: 0), "agent caret before replaced range stays at 6")
+        expectEqual(session.lastModifiedRanges, [NSRange(location: 7, length: 8)], "modified range after replace_range")
+        expectEqual(presenceUpdates.last?.label, defaultAgentCaretName, "MCP Client actor normalizes to 'Agent' label")
+
+        // replace_text with multiple occurrences records all modified ranges
+        let res5 = await session.registry.callTool("replace_text", ["find": "e", "replace": "E"])
+        check(!res5.isError, "replace_text succeeds")
+        expectEqual(docText, "Hi HEy EvEryonE", "replace_text updated all occurrences")
+        expectEqual(session.lastModifiedRanges.count, 4, "replace_text records 4 modified ranges")
+
+        // Bidirectional offset remapping:
+        // 1. Pure insertion at exact cursor position advances cursor
+        expectEqual(
+            MarkdownToolProvider.mapSelection(NSRange(location: 5, length: 0), replacedRange: NSRange(location: 5, length: 0), replacementLength: 4, newLength: 20),
+            NSRange(location: 9, length: 0),
+            "pure insertion at cursor shifts cursor forward"
+        )
+        // 2. Replacement starting at cursor keeps selection start anchored or moves inside range to end
+        expectEqual(
+            MarkdownToolProvider.mapSelection(NSRange(location: 5, length: 3), replacedRange: NSRange(location: 5, length: 3), replacementLength: 6, newLength: 20),
+            NSRange(location: 5, length: 6),
+            "replacement of exact selected range maps selection to new replacement span"
+        )
+        // 3. Edit before cursor shifts cursor by delta
+        expectEqual(
+            MarkdownToolProvider.mapSelection(NSRange(location: 10, length: 2), replacedRange: NSRange(location: 2, length: 3), replacementLength: 5, newLength: 20),
+            NSRange(location: 12, length: 2),
+            "edit before selection shifts selection by +2"
+        )
+        // 4. Edit after cursor leaves cursor untouched
+        expectEqual(
+            MarkdownToolProvider.mapSelection(NSRange(location: 4, length: 2), replacedRange: NSRange(location: 10, length: 3), replacementLength: 1, newLength: 20),
+            NSRange(location: 4, length: 2),
+            "edit after selection leaves selection unchanged"
+        )
+
+        // User edit remaps agent session selection and active modified ranges
+        session.select(NSRange(location: 7, length: 8)) // "EvEryonE"
+        _ = await session.registry.callTool("replace_range", ["from": 7, "to": 15, "text": "friends"])
+        // docText is "Hi HEy friends" (length 14), agent caret is at 7 (since select was 7..15, mapped through replace 7..15 -> 7..14)
+        expectEqual(session.selection, NSRange(location: 7, length: 7), "agent selection spans replaced range")
+        expectEqual(session.lastModifiedRanges, [NSRange(location: 7, length: 7)], "modified range spans 'friends'")
+
+        // Simulate user typing "Oh! " (length 4) at offset 0
+        docText = "Oh! " + docText
+        session.remapSelectionForUserEdit(replacedRange: NSRange(location: 0, length: 0), replacementLength: 4, newTextLength: (docText as NSString).length)
+        expectEqual(session.selection, NSRange(location: 11, length: 7), "user edit before agent selection shifts it by +4")
+        expectEqual(session.lastModifiedRanges, [NSRange(location: 11, length: 7)], "user edit before modified range shifts it by +4")
     }
 }
 

@@ -1087,6 +1087,66 @@ struct InteractionRunner {
                      expect: "text=We use Pixerate from their on Uchiage. lastFeedback=sug-offer-their:undone")
              }
 
+             // Inline MCP Agent Presence & Bidirectional Cursor Remapping (#151)
+             do {
+                 defaults.set(WritingPartnerMode.off.rawValue, forKey: WritingPartnerDefaults.mode)
+                 let md = "# Heading\n\nHello **bold** world"
+                 let box = TextBox(md)
+                 let controller = SwashEditorController()
+                 let binding = Binding<String>(get: { box.text }, set: { box.text = $0 })
+                 let editor = SwashTextView(text: binding, selectedRange: .constant(nil), selectionRect: .constant(nil),
+                                            isStyled: true, flavor: .github, controller: controller)
+                 let host = NSHostingView(rootView: editor.frame(width: 600, height: 600))
+                 host.frame = NSRect(x: 0, y: 0, width: 600, height: 600)
+                 let win = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+                 win.contentView = host
+                 windows.append(win)
+                 host.layoutSubtreeIfNeeded()
+                 pump(0.3)
+                 let tv = findTextView(in: host)!
+                 let coord = tv.delegate as! SwashTextView.Coordinator
+                 win.makeFirstResponder(tv)
+
+                 // Place user caret right before "world" (raw offset 26)
+                 let worldRaw = (md as NSString).range(of: "world").location
+                 tv.setSelectedRange(coord.storageRange(forRaw: NSRange(location: worldRaw, length: 0), in: tv))
+                 pump(0.05)
+
+                 // Agent inserts "dear " at raw offset 11 (before "Hello") and shows presence
+                 let updated = (md as NSString).replacingCharacters(in: NSRange(location: 11, length: 0), with: "dear ")
+                 _ = controller.applyAgentEdit(
+                     newText: updated,
+                     selection: NSRange(location: 16, length: 0),
+                     edits: [(range: NSRange(location: 11, length: 0), replacementLength: 5)],
+                     actionName: "Insert Text"
+                 )
+                 controller.showAgentPresence(
+                     rawSelection: NSRange(location: 16, length: 0),
+                     modifiedRawRanges: [NSRange(location: 11, length: 5)],
+                     label: "Agent",
+                     colorHex: "#8b5cf6"
+                 )
+                 pump(0.1)
+
+                 let userRawAfterAgentInsert = coord.rawRange(forStorage: tv.selectedRange(), in: tv)
+                 let overlay = WritingPartnerOverlay.existing(in: tv)
+                 let hasOverlayPresence = overlay?.agentPresence != nil
+                 let overlayStage = overlay?.agentPresence?.stage == .landed
+                 let emptyCaretRect = WritingPartnerOverlay.caretRect(at: 0, in: tv) != nil
+
+                 // User types "!" at their remapped cursor (before "world") -> triggers onUserRawEdit
+                 var userEditCaptured: (range: NSRange, len: Int)?
+                 controller.onUserRawEdit = { r, l, _ in
+                     userEditCaptured = (r, l)
+                 }
+                 tv.insertText("!", replacementRange: tv.selectedRange())
+                 pump(0.1)
+
+                 log("agent-presence-and-remapping", md,
+                     "userCaret=\(userRawAfterAgentInsert.location) expected=\(worldRaw + 5) presence=\(hasOverlayPresence) stageLanded=\(overlayStage) caretRect=\(emptyCaretRect) userEdit=\(userEditCaptured?.len ?? -1)",
+                     expect: "userCaret=\(worldRaw + 5) expected=\(worldRaw + 5) presence=true stageLanded=true caretRect=true userEdit=1")
+             }
+
              defaults.removeObject(forKey: WritingPartnerDefaults.spelling)
              defaults.removeObject(forKey: WritingPartnerDefaults.doubledWords)
              if let savedMode { defaults.set(savedMode, forKey: WritingPartnerDefaults.mode) } else { defaults.removeObject(forKey: WritingPartnerDefaults.mode) }
