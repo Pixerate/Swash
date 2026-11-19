@@ -24,7 +24,6 @@ swiftc $EXTRAS \
   Swash/FolderAccessManager.swift \
   Swash/MarkdownParser.swift \
   $PIXERATE_MARKDOWN $PIXERATE_CORE \
-  Swash/PixerateMarkdownExtensions.swift \
   Swash/SlackMarkdown.swift \
   Swash/MarkdownEditorStyler.swift \
   Swash/CodeHighlightTheme.swift \
