@@ -155,24 +155,27 @@ struct StatisticsMenu: View {
 // MARK: - Previews
 
 #Preview("Document Outline - Populated") {
-    let state = DocumentOutlineState()
-    state.outline = MarkdownOutline(text: """
-        # Swash Editor
-        ## Getting Started
-        ### Installation
-        ## Features
-        ### Dynamic Previews
-        ### GenUI Blocks
-        ## Troubleshooting
-        """)
-    state.currentIndex = 1
-    return DocumentOutlineView(state: state)
+    @Previewable @State var state: DocumentOutlineState = {
+        let state = DocumentOutlineState()
+        state.outline = MarkdownOutline(text: """
+            # Swash Editor
+            ## Getting Started
+            ### Installation
+            ## Features
+            ### Dynamic Previews
+            ### GenUI Blocks
+            ## Troubleshooting
+            """)
+        state.currentIndex = 1
+        return state
+    }()
+    DocumentOutlineView(state: state)
         .frame(width: 240, height: 400)
 }
 
 #Preview("Document Outline - Empty") {
-    let state = DocumentOutlineState()
-    return DocumentOutlineView(state: state)
+    @Previewable @State var state = DocumentOutlineState()
+    DocumentOutlineView(state: state)
         .frame(width: 240, height: 300)
 }
 

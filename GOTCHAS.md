@@ -376,3 +376,7 @@
 - **Issue**: `scripts/run_agent_tools_tests.sh`, `Tests/EditorAudit/run_audit.sh` and the other runners fail with "no such module 'PixerateCore'" (or `PixerateMarkdown`) when the checkout lives under a path with a space (e.g. `~/Development/Claude Worktrees/…`).
 - **Solution**: `$PIXERATE_CORE` / `$PIXERATE_MARKDOWN` are swiftc flags expanded unquoted so they split into words, which also splits `-I <path>` at the space. Run the scripts from a symlink without spaces (`ln -s "<checkout>" /tmp/swash && cd /tmp/swash`): the scripts use `$PWD`, which keeps the symlink's path.
 
+## 92. `#Preview` Bodies Compile in Release Builds
+- **Issue**: Wrapping preview-only helpers (sample documents, `PreviewModifier`s in `Swash/PreviewModifiers.swift`) in `#if DEBUG` breaks the Release build with "cannot find 'SwashSampleDocument' in scope": the `#Preview` macro expansion is not stripped from Release, so every symbol a preview references must exist in all configurations.
+- **Solution**: Keep shared preview helpers unconditional and small, or wrap both the helper and every `#Preview` that uses it in `#if DEBUG`. Build the Release configuration (as `PR Build` does) after touching previews.
+

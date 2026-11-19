@@ -7,6 +7,9 @@
 
 import SwiftUI
 
+// Shared helpers for #Preview blocks. Not wrapped in #if DEBUG: #Preview bodies
+// are type-checked in Release builds too, so they must resolve there (GOTCHAS #92).
+
 // MARK: - Swash Sample Documents
 
 enum SwashSampleDocument {
@@ -54,31 +57,6 @@ enum SwashSampleDocument {
 
 // MARK: - Preview Modifiers
 
-/// Wraps previewed views in a standard document container with sample state.
-struct SwashDocumentPreviewModifier: PreviewModifier {
-    let sample: SwashDocument
-    
-    init(sample: SwashDocument = SwashSampleDocument.standard) {
-        self.sample = sample
-    }
-    
-    func body(content: Content, context: Void) -> some View {
-        content
-            .environment(\.font, .system(.body, design: .default))
-    }
-}
-
-/// Constrains preview content to realistic editor dimensions.
-struct EditorPreviewContainerModifier: PreviewModifier {
-    var minWidth: CGFloat = 700
-    var minHeight: CGFloat = 500
-    
-    func body(content: Content, context: Void) -> some View {
-        content
-            .frame(minWidth: minWidth, minHeight: minHeight)
-    }
-}
-
 /// Wraps settings or inspector components in an appropriate Form layout.
 struct SectionPreviewContainerModifier: PreviewModifier {
     func body(content: Content, context: Void) -> some View {
@@ -94,16 +72,6 @@ struct SectionPreviewContainerModifier: PreviewModifier {
 // MARK: - PreviewTrait Extensions
 
 extension PreviewTrait where T == Preview.ViewTraits {
-    /// Applies a standard sample document environment.
-    static var swashSampleDocument: PreviewTrait<Preview.ViewTraits> {
-        PreviewTrait.modifier(SwashDocumentPreviewModifier())
-    }
-    
-    /// Applies standard editor frame sizing.
-    static var editorContainer: PreviewTrait<Preview.ViewTraits> {
-        PreviewTrait.modifier(EditorPreviewContainerModifier())
-    }
-    
     /// Applies form container styling for settings sections.
     static var sectionContainer: PreviewTrait<Preview.ViewTraits> {
         PreviewTrait.modifier(SectionPreviewContainerModifier())
