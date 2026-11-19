@@ -49,7 +49,7 @@ jobs:
       - name: CommonMark and GFM spec tests
         run: scripts/run_commonmark_spec.sh
 
-      - name: Paste conversion tests (Swash's engine additions)
+      - name: Paste conversion tests (Confluence and Jira images)
         run: scripts/run_paste_tests.sh
 
       - name: Slack mrkdwn parsing and formatting tests
