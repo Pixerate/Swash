@@ -102,6 +102,8 @@ struct ContentView: View {
     /// Full screen without the toolbar, outline or status bar, with the text in a readable column.
     @State private var distractionFree = false
     @State private var enteredFullScreenForWriting = false
+    /// Whether the writing partner is paused for the current document (#112).
+    @State private var isPartnerPaused = false
 
     @AppStorage(EditorTypography.Keys.font) private var typographyFont: TypographyFont = .system
     @AppStorage(EditorTypography.Keys.textSize) private var typographyTextSize: Double = Double(EditorTypography.defaultTextSize)
@@ -281,6 +283,7 @@ struct ContentView: View {
             selectionRect = nil
             cellSelectionRect = nil
             cellActiveFormats = []
+            isPartnerPaused = false
         }
         .onChange(of: viewMode) { oldMode, newMode in
             handleViewModeChange(from: oldMode, to: newMode)
@@ -335,7 +338,9 @@ struct ContentView: View {
                         onFormatCommand: { handleFormatCommand($0) },
                         onCaretMove: { updateCurrentHeading(caret: $0) },
                         writingOptions: writingOptions,
-                        typography: typography
+                        typography: typography,
+                        isPartnerPaused: isPartnerPaused,
+                        onPartnerPauseChange: { isPartnerPaused = $0 }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay(bubbleMenuOverlay)
@@ -352,7 +357,9 @@ struct ContentView: View {
                         onFormatCommand: { handleFormatCommand($0) },
                         onCaretMove: { updateCurrentHeading(caret: $0) },
                         writingOptions: writingOptions,
-                        typography: typography
+                        typography: typography,
+                        isPartnerPaused: isPartnerPaused,
+                        onPartnerPauseChange: { isPartnerPaused = $0 }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay(bubbleMenuOverlay)
@@ -370,7 +377,9 @@ struct ContentView: View {
                             onFormatCommand: { handleFormatCommand($0) },
                             onCaretMove: { updateCurrentHeading(caret: $0) },
                             writingOptions: writingOptions,
-                        typography: typography
+                            typography: typography,
+                            isPartnerPaused: isPartnerPaused,
+                            onPartnerPauseChange: { isPartnerPaused = $0 }
                         )
                         .frame(minWidth: 250, maxWidth: .infinity, maxHeight: .infinity)
                         .overlay(bubbleMenuOverlay)
@@ -476,6 +485,7 @@ struct ContentView: View {
         ExportAndWritingCommandsModifier(
             exportActions: exportActions,
             distractionFree: DistractionFreeToggle(isOn: distractionFree, toggle: toggleDistractionFree),
+            partnerPaused: $isPartnerPaused,
             window: window,
             onExitFullScreen: {
                 // Leaving full screen (Esc, the green button) ends distraction-free writing too
@@ -689,6 +699,28 @@ struct ContentView: View {
                 Text(document.flavor.displayName)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.secondary)
+
+                if isPartnerPaused {
+                    Text("•")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary.opacity(0.5))
+
+                    Button {
+                        isPartnerPaused = false
+                        editor.setPartnerPaused(false)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "pause.circle.fill")
+                                .font(.system(size: 10))
+                            Text("Writing Partner Paused")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Resume the writing partner for this document (⌥⌘P)")
+                    .accessibilityIdentifier("WritingPartnerPausedStatusButton")
+                }
             }
             
             Spacer()
@@ -1802,6 +1834,9 @@ struct ContentView: View {
             if !editor.acceptSuggestion() { NSSound.beep() }
         case .dismissSuggestion:
             if !editor.dismissSuggestion() { NSSound.beep() }
+        case .togglePartnerPause:
+            isPartnerPaused.toggle()
+            editor.setPartnerPaused(isPartnerPaused)
         }
     }
     
@@ -1894,6 +1929,7 @@ struct ContentView: View {
 private struct ExportAndWritingCommandsModifier: ViewModifier {
     let exportActions: DocumentExportActions
     let distractionFree: DistractionFreeToggle
+    let partnerPaused: Binding<Bool>
     let window: NSWindow?
     let onExitFullScreen: () -> Void
 
@@ -1901,6 +1937,7 @@ private struct ExportAndWritingCommandsModifier: ViewModifier {
         content
             .focusedSceneValue(\.documentExportActions, exportActions)
             .focusedSceneValue(\.distractionFreeToggle, distractionFree)
+            .focusedSceneValue(\.partnerPaused, partnerPaused)
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { notification in
                 guard let window, (notification.object as? NSWindow) === window else { return }
                 onExitFullScreen()

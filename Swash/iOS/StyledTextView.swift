@@ -18,8 +18,11 @@ struct StyledTextView: UIViewRepresentable {
     let controller: IOSEditorController
     var flavor: MarkdownFlavor
     var baseURL: URL?
+    var formattingEnabled: Bool = true
     /// Space under the navigation bar and banner (see `UIScrollView.setTopBarInset`).
     var topInset: CGFloat = 0
+    /// Focus mode, typewriter scrolling and distraction-free readable column.
+    var writingOptions = WritingOptions()
     /// Font, size (already adjusted for Dynamic Type), line width and theme (GOTCHAS #43).
     var typography = EditorTypography()
 
@@ -48,8 +51,10 @@ struct StyledTextView: UIViewRepresentable {
         textView.typingAttributes = context.coordinator.baseAttributes
         controller.attach(textView)
         textView.flavor = flavor
-        textView.installFormattingBar(enabled: true)
+        textView.baseURL = baseURL
+        textView.installFormattingBar(enabled: formattingEnabled)
         context.coordinator.textView = textView
+        context.coordinator.applyWritingOptions(writingOptions, in: textView)
         context.coordinator.scheduleFullRestyle()
         textView.setTopBarInset(topInset)
         return textView
@@ -59,6 +64,8 @@ struct StyledTextView: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.parent = self
         textView.flavor = flavor
+        textView.baseURL = baseURL
+        textView.installFormattingBar(enabled: formattingEnabled)
         controller.attach(textView)
         textView.setTopBarInset(topInset)
         coordinator.isUpdatingFromSwiftUI = true
@@ -79,6 +86,7 @@ struct StyledTextView: UIViewRepresentable {
             coordinator.lastTypography = typography
             coordinator.applyTypography(in: textView)
         }
+        coordinator.applyWritingOptions(writingOptions, in: textView)
     }
 
     /// Fill the space offered: a text view's own fitting size is its whole content height, which
@@ -102,6 +110,7 @@ struct StyledTextView: UIViewRepresentable {
         var lastFlavor: MarkdownFlavor?
         var lastBaseURL: URL?
         var lastTypography = EditorTypography()
+        var lastWritingOptions = WritingOptions()
 
         private var cachedOffsetMap: AttachmentOffsetMap?
         /// Raw-markdown selection to restore after the next styling pass.
@@ -298,6 +307,10 @@ struct StyledTextView: UIViewRepresentable {
                 textView.selectedRange = snapped
             }
             sanitizeTypingAttributes(textView)
+            if let styled = textView as? StyledUITextView {
+                applyFocus(in: styled)
+                centerCaret(in: styled)
+            }
         }
 
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
@@ -588,7 +601,10 @@ struct StyledTextView: UIViewRepresentable {
             lastSelection = restored
             isHighlighting = false
             textView.typingAttributes = baseAttributes
-            if textView.contentOffset != savedOffset, !textView.isFirstResponder || textView.isDragging || textView.isDecelerating {
+            applyFocus(in: textView)
+            if parent.writingOptions.typewriter {
+                centerCaret(in: textView)
+            } else if textView.contentOffset != savedOffset, !textView.isFirstResponder || textView.isDragging || textView.isDecelerating {
                 textView.contentOffset = savedOffset
             }
             textView.setNeedsOverlayLayout()
@@ -680,16 +696,83 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         /// The readable column centres the text in `readableColumnWidth` (scaled like the text);
-        /// full width keeps the standard margins.
+        /// typewriter scrolling adds half a screen above and below so the first and last lines can
+        /// be centred; full width keeps the standard margins.
         func updateColumnInsets(in textView: StyledUITextView) {
             let typography = parent.typography
+            let options = parent.writingOptions
             var side: CGFloat = 14
-            if typography.lineWidth == .readable {
-                let column = typography.readableColumnWidth * MarkdownEditorStyler.fontScale
+            if typography.lineWidth == .readable || options.readableColumn {
+                let column = (options.readableColumn ? options.columnWidth : typography.readableColumnWidth) * MarkdownEditorStyler.fontScale
                 side = max(14, ((textView.bounds.width - column) / 2).rounded())
             }
-            guard textView.textContainerInset.left != side else { return }
-            textView.textContainerInset = UIEdgeInsets(top: 20, left: side, bottom: 20, right: side)
+            let vertical: CGFloat = options.typewriter ? max(20, (textView.bounds.height / 2).rounded()) : 20
+            let insets = UIEdgeInsets(top: vertical, left: side, bottom: vertical, right: side)
+            guard textView.textContainerInset != insets else { return }
+            textView.textContainerInset = insets
+            centerCaret(in: textView)
+        }
+
+        // MARK: Writing modes
+
+        func applyWritingOptions(_ options: WritingOptions, in textView: StyledUITextView) {
+            guard options != lastWritingOptions else { return }
+            lastWritingOptions = options
+            updateColumnInsets(in: textView)
+            applyFocus(in: textView)
+            centerCaret(in: textView)
+        }
+
+        /// Dims everything outside the focused paragraph or sentence in `StyledLayoutManager`,
+        /// leaving the text storage's attributes unchanged.
+        func applyFocus(in textView: StyledUITextView) {
+            guard let layoutManager = textView.layoutManager as? StyledLayoutManager else { return }
+            let storage = textView.textStorage
+            let newFocused: NSRange?
+            if let unit = parent.writingOptions.focus, storage.length > 0 {
+                newFocused = FocusUnit.range(unit, around: textView.selectedRange, in: storage.string as NSString)
+            } else {
+                newFocused = nil
+            }
+            guard layoutManager.focusedCharacterRange != newFocused else { return }
+            let oldFocused = layoutManager.focusedCharacterRange
+            layoutManager.focusedCharacterRange = newFocused
+            let whole = NSRange(location: 0, length: storage.length)
+            if oldFocused == nil || newFocused == nil {
+                layoutManager.invalidateDisplay(forCharacterRange: whole)
+            } else {
+                if let old = oldFocused { layoutManager.invalidateDisplay(forCharacterRange: NSIntersectionRange(old, whole)) }
+                if let new = newFocused { layoutManager.invalidateDisplay(forCharacterRange: NSIntersectionRange(new, whole)) }
+            }
+            textView.setNeedsDisplay()
+        }
+
+        /// Scrolls so the caret's line sits in the middle of the visible area (not while the user is dragging).
+        func centerCaret(in textView: StyledUITextView) {
+            guard parent.writingOptions.typewriter, !textView.isDragging, !textView.isTracking,
+                  textView.bounds.height > 0 else { return }
+            let layoutManager = textView.layoutManager
+            let storage = textView.textStorage
+            layoutManager.ensureLayout(for: textView.textContainer)
+            let location = textView.selectedRange.location
+            var line: CGRect
+            if location >= storage.length, !layoutManager.extraLineFragmentRect.isEmpty {
+                line = layoutManager.extraLineFragmentRect
+            } else if layoutManager.numberOfGlyphs > 0 {
+                let glyph = layoutManager.glyphIndexForCharacter(at: min(location, storage.length - 1))
+                line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            } else {
+                return
+            }
+            line.origin.y += textView.textContainerInset.top
+            let insets = textView.adjustedContentInset
+            let visibleHeight = max(1, textView.bounds.height - insets.top - insets.bottom)
+            let minY = -insets.top
+            let maxY = max(minY, textView.contentSize.height - textView.bounds.height + insets.bottom)
+            let targetY = (line.midY - insets.top - visibleHeight / 2).rounded()
+            let y = min(max(minY, targetY), maxY)
+            guard abs(textView.contentOffset.y - y) > 0.5 else { return }
+            textView.setContentOffset(CGPoint(x: textView.contentOffset.x, y: y), animated: false)
         }
     }
 }
@@ -699,6 +782,7 @@ struct StyledTextView: UIViewRepresentable {
 final class StyledUITextView: MarkdownEditingTextView {
     weak var coordinator: StyledTextView.Coordinator?
     private var lastLayoutWidth: CGFloat = 0
+    private var lastLayoutHeight: CGFloat = 0
     private var placedTables: [ObjectIdentifier: TableTextAttachment] = [:]
     /// The checkbox tap's delegate. Not the text view itself: a scroll view is already the delegate
     /// of its own pan and text gestures, and overriding those callbacks would filter them too.
@@ -734,12 +818,17 @@ final class StyledUITextView: MarkdownEditingTextView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        if abs(bounds.width - lastLayoutWidth) > 1 {
-            needsOverlayLayout = true
+        let widthChanged = abs(bounds.width - lastLayoutWidth) > 1
+        let heightChanged = abs(bounds.height - lastLayoutHeight) > 1
+        if widthChanged || heightChanged {
             let isFirstLayout = lastLayoutWidth == 0
             lastLayoutWidth = bounds.width
+            lastLayoutHeight = bounds.height
             coordinator?.updateColumnInsets(in: self)
-            if !isFirstLayout { coordinator?.widthChanged(in: self) }
+            if widthChanged {
+                needsOverlayLayout = true
+                if !isFirstLayout { coordinator?.widthChanged(in: self) }
+            }
         }
         // Tables and badge buttons are content subviews: they scroll with the text, so they only
         // move after a restyle or a size change, not on every scroll frame
@@ -783,6 +872,7 @@ final class StyledUITextView: MarkdownEditingTextView {
     // MARK: Code language
 
     private var badgeButtons: [UIButton] = []
+    var codeBadgeButtons: [UIButton] { badgeButtons }
 
     /// An invisible button over each code block's language badge; tapping it opens the language menu.
     private func layoutCodeBadgeButtons() {
@@ -791,6 +881,7 @@ final class StyledUITextView: MarkdownEditingTextView {
         while badgeButtons.count < badges.count {
             let button = UIButton(type: .custom)
             button.showsMenuAsPrimaryAction = true
+            button.isPointerInteractionEnabled = true
             addSubview(button)
             badgeButtons.append(button)
         }
@@ -803,6 +894,7 @@ final class StyledUITextView: MarkdownEditingTextView {
             button.isHidden = false
             button.frame = badge.rect.offsetBy(dx: textContainerInset.left, dy: textContainerInset.top).insetBy(dx: -8, dy: -6)
             button.accessibilityLabel = "Code language: \(badge.info.title.capitalized)"
+            button.accessibilityHint = "Double-tap or click to choose code language"
             button.menu = languageMenu(current: badge.info.language, location: badge.location)
         }
     }
@@ -828,7 +920,51 @@ final class StyledUITextView: MarkdownEditingTextView {
     // MARK: "/" block menu
 
     private var blockMenuChoice: ((MarkdownEditingCommands.BlockInsert) -> Void)?
-    private weak var blockMenuPopover: UIViewController?
+    private(set) weak var blockMenuPopover: UIViewController?
+
+    // MARK: - Key commands
+
+    override var keyCommands: [UIKeyCommand]? {
+        // Only while the menu is actually showing: a popover dismissed by tapping outside it
+        // leaves `blockMenuChoice` set until the next "/".
+        guard blockMenuChoice != nil, blockMenuPopover != nil || inputAccessoryView is BlockMenuBar else {
+            return super.keyCommands
+        }
+        let esc = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(handleBlockMenuEscape(_:)))
+        esc.wantsPriorityOverSystemBehavior = true
+        if blockMenuPopover is BlockMenuViewController {
+            let down = UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(handleBlockMenuDown(_:)))
+            down.wantsPriorityOverSystemBehavior = true
+            let up = UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(handleBlockMenuUp(_:)))
+            up.wantsPriorityOverSystemBehavior = true
+            let ret = UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(handleBlockMenuReturn(_:)))
+            ret.wantsPriorityOverSystemBehavior = true
+            return (super.keyCommands ?? []) + [down, up, ret, esc]
+        }
+        return (super.keyCommands ?? []) + [esc]
+    }
+
+    @objc func handleBlockMenuDown(_ command: UIKeyCommand) {
+        if let menu = blockMenuPopover as? BlockMenuViewController {
+            menu.selectNext()
+        }
+    }
+
+    @objc func handleBlockMenuUp(_ command: UIKeyCommand) {
+        if let menu = blockMenuPopover as? BlockMenuViewController {
+            menu.selectPrevious()
+        }
+    }
+
+    @objc func handleBlockMenuReturn(_ command: UIKeyCommand) {
+        if let menu = blockMenuPopover as? BlockMenuViewController {
+            menu.chooseSelected()
+        }
+    }
+
+    @objc func handleBlockMenuEscape(_ command: UIKeyCommand) {
+        dismissBlockMenu()
+    }
 
     /// Offers the block types: a popover at the caret where there is room (iPad), otherwise a bar
     /// above the keyboard (iPhone).
@@ -966,9 +1102,10 @@ private final class TaskTapFilter: NSObject, UIGestureRecognizerDelegate {
     }
 }
 /// The "/" menu's block types in a popover (iPad).
-private final class BlockMenuViewController: UITableViewController, UIPopoverPresentationControllerDelegate {
-    private let choose: (MarkdownEditingCommands.BlockInsert) -> Void
-    private let kinds = MarkdownEditingCommands.BlockInsert.allCases
+final class BlockMenuViewController: UITableViewController, UIPopoverPresentationControllerDelegate {
+    let choose: (MarkdownEditingCommands.BlockInsert) -> Void
+    let kinds = MarkdownEditingCommands.BlockInsert.allCases
+    private(set) var selectedIndex: Int = 0
 
     init(choose: @escaping (MarkdownEditingCommands.BlockInsert) -> Void) {
         self.choose = choose
@@ -985,6 +1122,36 @@ private final class BlockMenuViewController: UITableViewController, UIPopoverPre
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "block")
     }
 
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        selectRow(at: selectedIndex, scrollPosition: .none)
+    }
+
+    func selectRow(at index: Int, scrollPosition: UITableView.ScrollPosition = .middle) {
+        guard !kinds.isEmpty else { return }
+        let clamped = max(0, min(kinds.count - 1, index))
+        selectedIndex = clamped
+        let indexPath = IndexPath(row: clamped, section: 0)
+        tableView.selectRow(at: indexPath, animated: false, scrollPosition: scrollPosition)
+    }
+
+    func selectNext() {
+        guard !kinds.isEmpty else { return }
+        let next = (selectedIndex + 1) % kinds.count
+        selectRow(at: next)
+    }
+
+    func selectPrevious() {
+        guard !kinds.isEmpty else { return }
+        let prev = (selectedIndex - 1 + kinds.count) % kinds.count
+        selectRow(at: prev)
+    }
+
+    func chooseSelected() {
+        guard kinds.indices.contains(selectedIndex) else { return }
+        choose(kinds[selectedIndex])
+    }
+
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         kinds.count
     }
@@ -995,10 +1162,12 @@ private final class BlockMenuViewController: UITableViewController, UIPopoverPre
         content.text = kinds[indexPath.row].title
         content.image = UIImage(systemName: kinds[indexPath.row].symbolName)
         cell.contentConfiguration = content
+        cell.hoverStyle = UIHoverStyle(effect: .highlight)
         return cell
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        selectedIndex = indexPath.row
         choose(kinds[indexPath.row])
     }
 
@@ -1018,10 +1187,13 @@ private final class BlockMenuBar: GlassAccessoryBar {
             configuration.imagePadding = 6
             configuration.cornerStyle = .capsule
             configuration.baseForegroundColor = .label
-            return UIButton(configuration: configuration, primaryAction: UIAction { _ in choose(kind) })
+            let button = UIButton(configuration: configuration, primaryAction: UIAction { _ in choose(kind) })
+            button.isPointerInteractionEnabled = true
+            return button
         }
         let closeButton = GlassAccessoryBar.trailingButton(symbol: "xmark", label: "Close Block Menu",
                                                            action: UIAction { _ in close() })
+        closeButton.isPointerInteractionEnabled = true
         super.init(items: chips, trailing: closeButton, groupedInCapsule: false)
     }
 

@@ -10,19 +10,23 @@
 
 #if os(iOS)
 import SwiftUI
+import MacAppKitExtras
 import UIKit
 import PixerateMarkdown
 
-// MARK: - Typography
+// MARK: - Typography and Writing Options
 
-/// Settings › Typography, read from the same defaults as the Mac. The editor and preview sizes are
-/// multiplied by the Dynamic Type scale of the body style, so the default settings at the default
-/// Dynamic Type size reproduce the original look exactly.
+/// Settings › Typography and Writing, read from the same defaults as the Mac. The editor and preview
+/// sizes are multiplied by the Dynamic Type scale of the body style, so the default settings at the
+/// default Dynamic Type size reproduce the original look exactly.
 struct IOSTypographySettings: DynamicProperty {
     @AppStorage(EditorTypography.Keys.font) private var font: TypographyFont = .system
     @AppStorage(EditorTypography.Keys.textSize) private var textSize: Double = Double(EditorTypography.defaultTextSize)
     @AppStorage(EditorTypography.Keys.lineWidth) private var lineWidth: TypographyLineWidth = .full
     @AppStorage(EditorTypography.Keys.theme) private var theme: EditorTheme = .system
+    @AppStorage(WritingDefaults.focusMode) private var focusMode = false
+    @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
+    @AppStorage(WritingDefaults.typewriterScrolling) private var typewriterScrolling = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     /// The saved settings, without Dynamic Type.
@@ -37,6 +41,17 @@ struct IOSTypographySettings: DynamicProperty {
         return typography
     }
 
+    /// Focus mode, typewriter scrolling and readable column for the styled editor.
+    func writingOptions(distractionFree: Bool = false) -> WritingOptions {
+        let scaled = self.scaled
+        return WritingOptions(
+            focus: focusMode ? focusUnit : nil,
+            typewriter: typewriterScrolling,
+            readableColumn: distractionFree || lineWidth == .readable,
+            columnWidth: scaled.readableColumnWidth
+        )
+    }
+
     /// How much Dynamic Type enlarges body text (1 at the default size, Large).
     static func dynamicTypeScale(_ size: DynamicTypeSize) -> CGFloat {
         let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(size))
@@ -44,15 +59,22 @@ struct IOSTypographySettings: DynamicProperty {
     }
 }
 
-/// The Typography and Colours sections of the iOS Settings sheet.
+/// The Typography, Writing and Colours sections of the iOS Settings sheet.
 struct IOSTypographySettingsSections: View {
     @AppStorage(EditorTypography.Keys.font) private var font: TypographyFont = .system
     @AppStorage(EditorTypography.Keys.textSize) private var textSize: Double = Double(EditorTypography.defaultTextSize)
     @AppStorage(EditorTypography.Keys.lineWidth) private var lineWidth: TypographyLineWidth = .full
     @AppStorage(EditorTypography.Keys.theme) private var theme: EditorTheme = .system
+    @AppStorage(WritingDefaults.focusMode) private var focusMode = false
+    @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
+    @AppStorage(WritingDefaults.typewriterScrolling) private var typewriterScrolling = false
 
     private var typography: EditorTypography {
         EditorTypography(font: font, textSize: EditorTypography.clampedSize(textSize), lineWidth: lineWidth, theme: theme)
+    }
+
+    private var isDefault: Bool {
+        typography == EditorTypography() && !focusMode && focusUnit == .paragraph && !typewriterScrolling
     }
 
     /// Text size relative to the default, as the reader sees it ("100%").
@@ -85,6 +107,20 @@ struct IOSTypographySettingsSections: View {
         }
 
         Section {
+            Toggle("Focus Mode", isOn: $focusMode)
+            Picker("Focus On", selection: $focusUnit) {
+                ForEach(FocusUnit.allCases) { unit in
+                    Text(unit.title).tag(unit)
+                }
+            }
+            Toggle("Typewriter Scrolling", isOn: $typewriterScrolling)
+        } header: {
+            Text("Writing")
+        } footer: {
+            Text("Focus Mode dims everything outside the current paragraph or sentence. Typewriter Scrolling keeps the line you’re typing centred on the screen.")
+        }
+
+        Section {
             Picker("Theme", selection: $theme) {
                 ForEach(EditorTheme.allCases) { theme in
                     Label {
@@ -110,8 +146,11 @@ struct IOSTypographySettingsSections: View {
                 textSize = Double(EditorTypography.defaultTextSize)
                 lineWidth = .full
                 theme = .system
+                focusMode = false
+                focusUnit = .paragraph
+                typewriterScrolling = false
             }
-            .disabled(typography == EditorTypography())
+            .disabled(isDefault)
         }
     }
 
@@ -396,13 +435,18 @@ final class IOSDocumentFeaturesModel {
     }
 }
 
-/// The Outline button (primary, compact width) and the Document Info and Export items (overflow).
+/// The Outline button (primary, compact width) and the Document Info, Writing and Export items (overflow).
 struct IOSDocumentToolbar: ToolbarContent {
     let model: IOSDocumentFeaturesModel
     let text: String
     let source: () -> DocumentExporter.Source
     let editor: IOSEditorController
     let regularWidth: Bool
+    var distractionFree: Binding<Bool>? = nil
+
+    @AppStorage(WritingDefaults.focusMode) private var focusMode = false
+    @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
+    @AppStorage(WritingDefaults.typewriterScrolling) private var typewriterScrolling = false
 
     var body: some ToolbarContent {
         if !regularWidth {
@@ -420,6 +464,32 @@ struct IOSDocumentToolbar: ToolbarContent {
                 model.showInfo(text: text, editor: editor)
             } label: {
                 Label("Document Info", systemImage: "info.circle")
+            }
+        }
+        ToolbarItem(placement: .secondaryAction) {
+            Menu {
+                Toggle("Focus Mode", systemImage: "viewfinder", isOn: $focusMode)
+                Picker("Focus On", selection: $focusUnit) {
+                    ForEach(FocusUnit.allCases) { unit in
+                        Text(unit.title).tag(unit)
+                    }
+                }
+                Toggle("Typewriter Scrolling", systemImage: "arrow.up.and.down.text.horizontal", isOn: $typewriterScrolling)
+                if let distractionFree {
+                    Divider()
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            distractionFree.wrappedValue.toggle()
+                        }
+                    } label: {
+                        Label(
+                            distractionFree.wrappedValue ? "Exit Distraction-Free Writing" : "Distraction-Free Writing",
+                            systemImage: distractionFree.wrappedValue ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
+                        )
+                    }
+                }
+            } label: {
+                Label("Writing", systemImage: "viewfinder")
             }
         }
         ToolbarItem(placement: .secondaryAction) {
@@ -511,26 +581,193 @@ struct IOSDocumentFeatures: ViewModifier {
 
 }
 
-/// The outline as the sidebar of the iPad split view. While it's shown it follows the text,
-/// a moment after typing stops.
+/// The sidebar of the iPad split view: the heading outline and, when the document lives in a
+/// folder on disk, the sibling Markdown files and full-text search for that folder.
 struct IOSOutlineSidebar: View {
     @Bindable var model: IOSDocumentFeaturesModel
     let text: String
     let editor: IOSEditorController
     let isVisible: Bool
+    var fileURL: URL? = nil
+
+    enum Mode: String, CaseIterable {
+        case outline = "Outline"
+        case folder = "Folder"
+    }
+
+    @State private var mode: Mode = .outline
 
     var body: some View {
-        IOSOutlineList(outline: model.outline, currentIndex: model.currentHeading) { model.choose($0, editor: editor) }
-            .listStyle(.sidebar)
-            .navigationTitle("Outline")
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Outline")
-            .task(id: isVisible ? text : nil) {
-                guard isVisible else { return }
-                try? await Task.sleep(for: .milliseconds(model.outline.headings.isEmpty ? 0 : 300))
-                guard !Task.isCancelled else { return }
-                model.refreshOutline(text: text, editor: editor)
+        Group {
+            if mode == .folder, let fileURL {
+                IOSFolderSidebarContent(fileURL: fileURL, currentText: text)
+            } else {
+                IOSOutlineList(outline: model.outline, currentIndex: model.currentHeading) { model.choose($0, editor: editor) }
+                    .listStyle(.sidebar)
             }
+        }
+        .navigationTitle(mode == .folder ? (fileURL?.deletingLastPathComponent().lastPathComponent ?? "Folder") : "Outline")
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if fileURL != nil {
+                Picker("Sidebar", selection: $mode) {
+                    ForEach(Mode.allCases, id: \.self) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(mode.rawValue)
+        .task(id: isVisible ? text : nil) {
+            guard isVisible else { return }
+            try? await Task.sleep(for: .milliseconds(model.outline.headings.isEmpty ? 0 : 300))
+            guard !Task.isCancelled else { return }
+            model.refreshOutline(text: text, editor: editor)
+        }
+    }
+}
+
+/// Lists and searches the Markdown files in `fileURL`'s containing folder on iPad.
+struct IOSFolderSidebarContent: View {
+    let fileURL: URL
+    let currentText: String
+
+    @ObservedObject private var folderAccessManager = FolderAccessManager.shared
+    @State private var scan = FolderScan()
+    @State private var hasAccess = false
+    @State private var query = ""
+    @State private var searchInText = false
+    @State private var searchResults: [FolderSearchMatch] = []
+
+    private var folderURL: URL {
+        fileURL.deletingLastPathComponent().standardizedFileURL
+    }
+
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        Group {
+            if !hasAccess {
+                ContentUnavailableView {
+                    Label("Allow Folder Access", systemImage: "folder.badge.questionmark")
+                } description: {
+                    Text("Allow access to “\(folderURL.lastPathComponent)” to browse and search sibling Markdown notes.")
+                } actions: {
+                    Button("Allow…") {
+                        FolderAccessManager.shared.promptForAccess(to: folderURL) { granted in
+                            if granted { reloadFolder() }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            } else if searchInText && !trimmedQuery.isEmpty {
+                searchList
+            } else {
+                fileList
+            }
+        }
+        .searchable(text: $query, prompt: searchInText ? "Search in Notes" : "Filter Files")
+        .toolbar {
+            if hasAccess {
+                ToolbarItem(placement: .primaryAction) {
+                    Toggle(isOn: $searchInText) {
+                        Label("Search in Notes", systemImage: "doc.text.magnifyingglass")
+                    }
+                }
+            }
+        }
+        .onAppear { reloadFolder() }
+        .onChange(of: fileURL) { _, _ in reloadFolder() }
+        .onChange(of: folderAccessManager.accessGrantedTrigger) { _, _ in reloadFolder() }
+        .onChange(of: query) { _, _ in runSearchIfNeeded() }
+        .onChange(of: searchInText) { _, _ in runSearchIfNeeded() }
+    }
+
+    private var fileList: some View {
+        let filtered = trimmedQuery.isEmpty ? scan.files : scan.files.filter {
+            FolderScanner.relativePath(of: $0, in: folderURL).localizedStandardContains(trimmedQuery)
+        }
+        return Group {
+            if filtered.isEmpty {
+                ContentUnavailableView(trimmedQuery.isEmpty ? "No Markdown Files" : "No Matching Files",
+                                       systemImage: "doc.text")
+            } else {
+                List {
+                    ForEach(filtered, id: \.self) { url in
+                        let isCurrent = url.standardizedFileURL == fileURL.standardizedFileURL
+                        Button {
+                            if !isCurrent { DocumentOpener.open(url) }
+                        } label: {
+                            Label(FolderScanner.relativePath(of: url, in: folderURL), systemImage: "doc.text")
+                                .fontWeight(isCurrent ? .semibold : .regular)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(isCurrent ? Color.accentColor.opacity(0.15) : nil)
+                        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+                    }
+                }
+                .listStyle(.sidebar)
+            }
+        }
+    }
+
+    private var searchList: some View {
+        Group {
+            if searchResults.isEmpty {
+                ContentUnavailableView.search(text: trimmedQuery)
+            } else {
+                List(searchResults) { match in
+                    Button {
+                        DocumentOpener.open(match.file)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(FolderScanner.relativePath(of: match.file, in: folderURL))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(match.snippet)
+                                .font(.subheadline)
+                                .lineLimit(2)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .listStyle(.sidebar)
+            }
+        }
+    }
+
+    private func reloadFolder() {
+        _ = FolderAccessManager.shared.ensureAccess(for: folderURL)
+        let readable = (try? FileManager.default.contentsOfDirectory(atPath: folderURL.path)) != nil
+        hasAccess = readable
+        guard readable else {
+            scan = FolderScan()
+            searchResults = []
+            return
+        }
+        scan = FolderScanner.scan(folderURL)
+        runSearchIfNeeded()
+    }
+
+    private func runSearchIfNeeded() {
+        guard hasAccess, searchInText, !trimmedQuery.isEmpty else {
+            searchResults = []
+            return
+        }
+        searchResults = FolderSearch.search(
+            trimmedQuery,
+            in: scan.files,
+            texts: [fileURL.standardizedFileURL: currentText]
+        )
     }
 }
 

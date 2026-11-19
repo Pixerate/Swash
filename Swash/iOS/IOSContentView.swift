@@ -20,9 +20,14 @@ struct IOSContentView: View {
     /// Whether the iPad split view shows the outline sidebar; the system sidebar button sets it.
     @SceneStorage("outlineColumnVisible") private var outlineVisible = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
     @State private var editor = IOSEditorController()
     @State private var scrollSync = ScrollSync()
     @State private var showingSettings = false
+    @State private var distractionFree = false
+    @State private var conflictCount = 0
+    @State private var showingConflictSheet = false
+    @State private var conflictError: String?
     @State private var linkPrompt: LinkPrompt?
     @State private var dismissedFolderBanner: URL?
     /// Global y of the top safe-area edge and of the editor, which extends under the bar.
@@ -60,6 +65,22 @@ struct IOSContentView: View {
         .sheet(isPresented: $showingSettings) {
             IOSSettingsView()
         }
+        .sheet(isPresented: $showingConflictSheet) {
+            if let url = fileURL {
+                ConflictResolutionSheet(url: url, onKeep: { version in
+                    showingConflictSheet = false
+                    resolveConflicts(keeping: version, at: url)
+                }, onCancel: { showingConflictSheet = false })
+            }
+        }
+        .alert("Couldn’t Resolve Conflict", isPresented: Binding(
+            get: { conflictError != nil },
+            set: { if !$0 { conflictError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(conflictError ?? "")
+        }
         .alert(linkPrompt?.isEditing == true ? "Edit Link" : "Add Link", isPresented: Binding(
             get: { linkPrompt != nil },
             set: { if !$0 { linkPrompt = nil } }
@@ -78,12 +99,24 @@ struct IOSContentView: View {
             Button("Cancel", role: .cancel) {}
         }
         .focusedSceneValue(\.formatCommandHandler, { handleFormatCommand($0) })
+        .focusedSceneValue(\.distractionFreeToggle, DistractionFreeToggle(isOn: distractionFree, toggle: {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                distractionFree.toggle()
+            }
+        }))
         .onAppear {
             editor.onFormatCommand = { handleFormatCommand($0) }
             editor.flavor = document.flavor
+            refreshConflicts()
         }
         .onChange(of: document.flavor) { _, flavor in
             editor.flavor = flavor
+        }
+        .onChange(of: fileURL) { _, _ in
+            refreshConflicts()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { refreshConflicts() }
         }
     }
 
@@ -93,10 +126,11 @@ struct IOSContentView: View {
     private var documentLayout: some View {
         if horizontalSizeClass == .regular {
             NavigationSplitView(columnVisibility: Binding(
-                get: { outlineVisible ? .all : .detailOnly },
-                set: { outlineVisible = $0 != .detailOnly }
+                get: { outlineVisible && !distractionFree ? .all : .detailOnly },
+                set: { if !distractionFree { outlineVisible = $0 != .detailOnly } }
             )) {
-                IOSOutlineSidebar(model: features, text: document.text, editor: editor, isVisible: outlineVisible)
+                IOSOutlineSidebar(model: features, text: document.text, editor: editor,
+                                  isVisible: outlineVisible && !distractionFree, fileURL: fileURL)
             } detail: {
                 documentScreen
             }
@@ -120,12 +154,36 @@ struct IOSContentView: View {
                 .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { editorTop = $0 }
                 .ignoresSafeArea(.container, edges: [.top, .bottom])
         }
+        .overlay(alignment: .topTrailing) {
+            if distractionFree {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        distractionFree = false
+                    }
+                } label: {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.glass)
+                .accessibilityLabel("Exit Distraction-Free Writing")
+                .accessibilityIdentifier("ExitDistractionFreeButton")
+                .padding(.trailing, 16)
+                .padding(.top, 8)
+            }
+        }
         .safeAreaBar(edge: .top) {
-            if let folderURL = unreadableFolderURL {
-                folderAccessBanner(for: folderURL)
+            if !distractionFree {
+                if conflictCount > 0 {
+                    ConflictBanner(count: conflictCount) { showingConflictSheet = true }
+                }
+                if let folderURL = unreadableFolderURL {
+                    folderAccessBanner(for: folderURL)
+                }
             }
         }
         .toolbar { toolbar }
+        .toolbar(distractionFree ? .hidden : .visible, for: .navigationBar)
         .toolbarRole(.editor)
     }
 
@@ -139,7 +197,9 @@ struct IOSContentView: View {
         case .preview:
             // Edit Text for every flavour: Slack mrkdwn is parsed onto the same model (SlackMarkdown)
             StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL,
-                           topInset: topInset, typography: typography.scaled)
+                           formattingEnabled: !distractionFree, topInset: topInset,
+                           writingOptions: typography.writingOptions(distractionFree: distractionFree),
+                           typography: typography.scaled)
                 .id(folderAccessManager.accessGrantedTrigger)
         case .split:
             HStack(spacing: 0) {
@@ -155,8 +215,10 @@ struct IOSContentView: View {
             text: $document.text,
             controller: editor,
             scrollSync: effectiveMode == .split ? scrollSync : nil,
+            formattingEnabled: !distractionFree,
             topInset: topInset,
             flavor: document.flavor,
+            baseURL: fileURL,
             textSize: typography.stored.textSize
         )
     }
@@ -170,13 +232,17 @@ struct IOSContentView: View {
             topInset: topInset,
             typography: typography.scaled
         )
+        .environment(\.openURL, OpenURLAction { url in
+            openRelativeNoteIfPossible(url) ? .handled : .systemAction
+        })
         .id(folderAccessManager.accessGrantedTrigger)
     }
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
-                           editor: editor, regularWidth: horizontalSizeClass == .regular)
+                           editor: editor, regularWidth: horizontalSizeClass == .regular,
+                           distractionFree: $distractionFree)
         ToolbarItem(placement: .primaryAction) {
             // A glyph button, not a segmented control: iOS 26 toolbars squeeze segmented
             // controls into one glass circle. Tap switches Source and Formatted; hold for every mode.
@@ -295,6 +361,37 @@ struct IOSContentView: View {
         .glassEffect(.regular, in: .rect(cornerRadius: 16))
         .padding(.horizontal, 12)
         .padding(.bottom, 6)
+    }
+
+    // MARK: - Conflicts & Folder Links
+
+    private func refreshConflicts() {
+        let count = fileURL.map { DocumentConflicts.unresolved(at: $0).count } ?? 0
+        if count != conflictCount { conflictCount = count }
+    }
+
+    private func resolveConflicts(keeping version: NSFileVersion?, at url: URL) {
+        do {
+            if let text = try DocumentConflicts.resolve(at: url, keeping: version) {
+                commit(MarkdownEdit(text: text, selection: NSRange(location: 0, length: 0)),
+                       actionName: "Keep Other Version")
+            }
+        } catch {
+            conflictError = error.localizedDescription
+        }
+        refreshConflicts()
+    }
+
+    /// Opens a relative or `file:` note link in the document's folder, if it points to one.
+    private func openRelativeNoteIfPossible(_ url: URL) -> Bool {
+        guard let fileURL else { return false }
+        let root = fileURL.deletingLastPathComponent().standardizedFileURL
+        _ = FolderAccessManager.shared.ensureAccess(for: root)
+        guard let resolved = NoteLinkResolver.resolve(url.absoluteString, from: fileURL, root: root) else {
+            return false
+        }
+        DocumentOpener.open(resolved)
+        return true
     }
 
     // MARK: - Formatting

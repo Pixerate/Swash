@@ -209,6 +209,22 @@ final class SwashEditorController {
         guard let coordinator = coordinator else { return false }
         return !coordinator.writingPartner.suggestions.isEmpty
     }
+
+    /// Whether the writing partner is paused for this document (#112).
+    var isPartnerPaused: Bool {
+        coordinator?.writingPartner.isPaused ?? false
+    }
+
+    /// Pauses or resumes the writing partner for this document (#112).
+    func setPartnerPaused(_ paused: Bool) {
+        coordinator?.writingPartner.setPaused(paused, in: textView)
+    }
+
+    /// Toggles the per-document writing-partner pause (#112).
+    @discardableResult
+    func togglePartnerPaused() -> Bool {
+        coordinator?.writingPartner.togglePaused(in: textView) ?? false
+    }
 }
 
 final class SwashLayoutManager: NSLayoutManager {
@@ -432,6 +448,12 @@ class SwashNSTextView: NSTextView {
             let menu = convert(frame.offsetBy(dx: origin.x, dy: origin.y), from: clipView)
             if menu.contains(point) { return .arrow }
         }
+        if let overlay = WritingPartnerOverlay.existing(in: self) {
+            let notes: [NSView?] = [overlay.introductionView, overlay.undoReminderView, overlay.suggestionPrompt]
+            for case let note? in notes where !note.isHidden {
+                if overlay.convert(note.frame, to: self).contains(point) { return .arrow }
+            }
+        }
         let textMinX = textContainerOrigin.x
         let textMaxX = textMinX + (textContainer?.size.width ?? bounds.width)
         if point.x < textMinX || point.x > textMaxX || point.y < textContainerOrigin.y { return .arrow }
@@ -606,23 +628,59 @@ class SwashNSTextView: NSTextView {
 
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
         let base = super.accessibilityCustomActions() ?? []
-        guard let coordinator = delegate as? SwashTextView.Coordinator,
-              !coordinator.writingPartner.suggestions.isEmpty else { return base.isEmpty ? nil : base }
-        let accept = NSAccessibilityCustomAction(name: "Accept Suggestion") { [weak self, weak coordinator] in
-            guard let self, let coordinator else { return false }
-            return coordinator.writingPartner.acceptSuggestion(in: self, coordinator: coordinator)
+        guard let coordinator = delegate as? SwashTextView.Coordinator else { return base.isEmpty ? nil : base }
+        var actions: [NSAccessibilityCustomAction] = []
+        if coordinator.writingPartner.hasActiveIntroduction {
+            actions.append(NSAccessibilityCustomAction(name: "Turn on Automatically") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                coordinator.writingPartner.chooseIntroductionMode(.automatic, in: self, coordinator: coordinator)
+                return true
+            })
+            actions.append(NSAccessibilityCustomAction(name: "Turn on Suggest") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                coordinator.writingPartner.chooseIntroductionMode(.suggest, in: self, coordinator: coordinator)
+                return true
+            })
+            actions.append(NSAccessibilityCustomAction(name: "Not now") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                coordinator.writingPartner.dismissIntroduction(in: self)
+                return true
+            })
         }
-        let dismiss = NSAccessibilityCustomAction(name: "Dismiss Suggestion") { [weak self, weak coordinator] in
-            guard let self, let coordinator else { return false }
-            return coordinator.writingPartner.dismissSuggestion(in: self, coordinator: coordinator)
+        if coordinator.writingPartner.hasActiveUndoReminder {
+            actions.append(NSAccessibilityCustomAction(name: "Pause Writing Partner") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                coordinator.writingPartner.setPaused(true, in: self)
+                return true
+            })
+            actions.append(NSAccessibilityCustomAction(name: "Dismiss Reminder") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                coordinator.writingPartner.dismissUndoReminder(in: self)
+                return true
+            })
         }
-        return [accept, dismiss] + base
+        if !coordinator.writingPartner.suggestions.isEmpty {
+            actions.append(NSAccessibilityCustomAction(name: "Accept Suggestion") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                return coordinator.writingPartner.acceptSuggestion(in: self, coordinator: coordinator)
+            })
+            actions.append(NSAccessibilityCustomAction(name: "Dismiss Suggestion") { [weak self, weak coordinator] in
+                guard let self, let coordinator else { return false }
+                return coordinator.writingPartner.dismissSuggestion(in: self, coordinator: coordinator)
+            })
+        }
+        let all = actions + base
+        return all.isEmpty ? nil : all
     }
 
     override func accessibilityPerformPress() -> Bool {
-        if let coordinator = delegate as? SwashTextView.Coordinator,
-           coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
-            return true
+        if let coordinator = delegate as? SwashTextView.Coordinator {
+            // The introduction's choices are its own buttons and custom actions: pressing the text
+            // view mustn't turn the partner on
+            if !coordinator.writingPartner.hasActiveIntroduction,
+               coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
+                return true
+            }
         }
         return super.accessibilityPerformPress()
     }
@@ -635,6 +693,11 @@ class SwashNSTextView: NSTextView {
     @objc func dismissSuggestion(_ sender: Any?) {
         guard let coordinator = delegate as? SwashTextView.Coordinator else { return }
         _ = coordinator.writingPartner.dismissSuggestion(in: self, coordinator: coordinator)
+    }
+
+    @objc func toggleWritingPartnerPause(_ sender: Any?) {
+        guard let coordinator = delegate as? SwashTextView.Coordinator else { return }
+        _ = coordinator.writingPartner.togglePaused(in: self)
     }
 
     override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
@@ -673,25 +736,52 @@ class SwashNSTextView: NSTextView {
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags == .option, (event.keyCode == 36 || event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\n"),
-           let coordinator = delegate as? SwashTextView.Coordinator,
-           coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
-            return
+           let coordinator = delegate as? SwashTextView.Coordinator {
+            if coordinator.writingPartner.hasActiveIntroduction {
+                coordinator.writingPartner.chooseIntroductionMode(.automatic, in: self, coordinator: coordinator)
+                return
+            }
+            if coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
+                return
+            }
         }
         if flags.isEmpty, event.keyCode == 53,
-           let coordinator = delegate as? SwashTextView.Coordinator,
-           coordinator.writingPartner.dismissSuggestion(in: self, coordinator: coordinator) {
-            return
+           let coordinator = delegate as? SwashTextView.Coordinator {
+            if coordinator.writingPartner.hasActiveIntroduction {
+                coordinator.writingPartner.dismissIntroduction(in: self)
+                return
+            }
+            if coordinator.writingPartner.hasActiveUndoReminder {
+                coordinator.writingPartner.dismissUndoReminder(in: self)
+                return
+            }
+            if coordinator.writingPartner.dismissSuggestion(in: self, coordinator: coordinator) {
+                return
+            }
         }
         super.keyDown(with: event)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if window?.firstResponder === self,
-           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .option,
-           (event.keyCode == 36 || event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\n"),
-           let coordinator = delegate as? SwashTextView.Coordinator,
-           coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
+           flags == [.command, .option],
+           event.charactersIgnoringModifiers?.lowercased() == "p",
+           let coordinator = delegate as? SwashTextView.Coordinator {
+            _ = coordinator.writingPartner.togglePaused(in: self)
             return true
+        }
+        if window?.firstResponder === self,
+           flags == .option,
+           (event.keyCode == 36 || event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\n"),
+           let coordinator = delegate as? SwashTextView.Coordinator {
+            if coordinator.writingPartner.hasActiveIntroduction {
+                coordinator.writingPartner.chooseIntroductionMode(.automatic, in: self, coordinator: coordinator)
+                return true
+            }
+            if coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
+                return true
+            }
         }
         if window?.firstResponder === self, let handler = onFormatCommand, let command = FormatCommand.command(for: event) {
             handler(command)
@@ -1010,6 +1100,8 @@ struct SwashTextView: NSViewRepresentable {
     var writingOptions = WritingOptions()
     /// Font, text size and theme from Settings; a change restyles the whole document.
     var typography = EditorTypography()
+    var isPartnerPaused: Bool = false
+    var onPartnerPauseChange: ((Bool) -> Void)? = nil
     
     init(
         text: Binding<String>,
@@ -1026,7 +1118,9 @@ struct SwashTextView: NSViewRepresentable {
         onFormatCommand: ((FormatCommand) -> Void)? = nil,
         onCaretMove: ((Int) -> Void)? = nil,
         writingOptions: WritingOptions = WritingOptions(),
-        typography: EditorTypography = EditorTypography()
+        typography: EditorTypography = EditorTypography(),
+        isPartnerPaused: Bool = false,
+        onPartnerPauseChange: ((Bool) -> Void)? = nil
     ) {
         self._text = text
         self._selectedRange = selectedRange
@@ -1043,6 +1137,8 @@ struct SwashTextView: NSViewRepresentable {
         self.onCaretMove = onCaretMove
         self.writingOptions = writingOptions
         self.typography = typography
+        self.isPartnerPaused = isPartnerPaused
+        self.onPartnerPauseChange = onPartnerPauseChange
     }
     
     func makeNSView(context: Context) -> NSScrollView {
@@ -1206,6 +1302,10 @@ struct SwashTextView: NSViewRepresentable {
 
         
         context.coordinator.applyWritingOptions(writingOptions, in: textView)
+        context.coordinator.writingPartner.onPauseChange = onPartnerPauseChange
+        if context.coordinator.writingPartner.isPaused != isPartnerPaused {
+            context.coordinator.writingPartner.setPaused(isPartnerPaused, in: textView)
+        }
         context.coordinator.isUpdatingFromSwiftUI = false
 
         let linkHandler = context.environment.noteLinkHandler
@@ -1944,6 +2044,20 @@ struct SwashTextView: NSViewRepresentable {
         
         // Key commands: writing-partner suggestions, table-cell navigation, then Notion-style structural editing
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if writingPartner.hasActiveIntroduction {
+                // Only ⌥Return, a deliberate chord, turns it on: Tab indents lists and mustn't opt in
+                if commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
+                    writingPartner.chooseIntroductionMode(.automatic, in: textView, coordinator: self)
+                    return true
+                } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                    writingPartner.dismissIntroduction(in: textView)
+                    return true
+                }
+            }
+            if writingPartner.hasActiveUndoReminder, commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                writingPartner.dismissUndoReminder(in: textView)
+                return true
+            }
             if writingPartner.hasActiveSuggestion {
                 if commandSelector == #selector(NSResponder.insertTab(_:)) {
                     writingPartner.acceptActiveSuggestion()
