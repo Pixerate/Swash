@@ -219,10 +219,14 @@ final class OnDeviceBandleaderAvailability: Sendable {
 // MARK: - OnDeviceWritingBandleader
 
 nonisolated final class OnDeviceWritingBandleader: WritingBandleader, @unchecked Sendable {
+    var provider: WritingPartnerProvider { .onDevice }
+
     typealias Generator = @MainActor @Sendable (JazzTextLeadRequest) async throws -> JazzTextLeadResponse?
 
     private let customGenerator: Generator?
     private let timeoutNanoseconds: UInt64
+    private let sessionLock = NSLock()
+    private var sessionBox: Any? = nil
 
     /// System instructions for bandleader guidance.
     static let instructions = """
@@ -243,6 +247,67 @@ nonisolated final class OnDeviceWritingBandleader: WritingBandleader, @unchecked
     ) {
         self.customGenerator = customGenerator
         self.timeoutNanoseconds = UInt64(max(0.1, timeoutSeconds) * 1_000_000_000)
+    }
+
+    /// Whether a cached session instance is currently stored.
+    var hasActiveSession: Bool {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        return sessionBox != nil
+    }
+
+    /// Resets the on-device session, clearing session memory and cached context.
+    func resetSession() {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        sessionBox = nil
+        sessionTurns = 0
+    }
+
+    /// How many exchanges a shared session keeps before it starts again. The on-device model's
+    /// context window is small (about 4,096 tokens) and every pause adds a paragraph with its
+    /// context, so a long-lived session would otherwise grow until it overflows (SWA-30).
+    static let maxTurnsPerSession = 6
+
+    private var sessionTurns = 0
+
+    /// The shared session for this document, or a new one. Returns `isShared == false` for a
+    /// one-off session when the shared one is still answering an earlier pause (a timed-out or
+    /// cancelled request that hasn't unwound yet): `LanguageModelSession` refuses overlapping
+    /// requests, so the new pause must not wait on, or collide with, the old one.
+    @available(macOS 26.0, iOS 26.0, *)
+    private func currentOrNewSession() -> (session: LanguageModelSession, isShared: Bool) {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        if let existing = sessionBox as? LanguageModelSession {
+            if existing.isResponding {
+                return (Self.makeSession(), false)
+            }
+            if sessionTurns < Self.maxTurnsPerSession {
+                sessionTurns += 1
+                return (existing, true)
+            }
+        }
+        let newSession = Self.makeSession()
+        sessionBox = newSession
+        sessionTurns = 1
+        return (newSession, true)
+    }
+
+    @available(macOS 26.0, iOS 26.0, *)
+    private static func makeSession() -> LanguageModelSession {
+        LanguageModelSession(model: .default, instructions: instructions)
+    }
+
+    /// Drops the shared session if it's still `session` (not one a later pause already replaced).
+    @available(macOS 26.0, iOS 26.0, *)
+    private func discardSession(_ session: LanguageModelSession) {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        if let existing = sessionBox as? LanguageModelSession, existing === session {
+            sessionBox = nil
+            sessionTurns = 0
+        }
     }
 
     func lead(request: JazzTextLeadRequest) async throws -> JazzTextLeadResponse? {
@@ -283,14 +348,10 @@ nonisolated final class OnDeviceWritingBandleader: WritingBandleader, @unchecked
         }
     }
 
-    @available(macOS 26.0, *)
-    private func performGeneration(request: JazzTextLeadRequest) async throws -> JazzTextLeadResponse? {
+    @available(macOS 26.0, iOS 26.0, *)
+    private func performGeneration(request: JazzTextLeadRequest, isRetry: Bool = false) async throws -> JazzTextLeadResponse? {
+        let (session, isShared) = currentOrNewSession()
         do {
-            let session = LanguageModelSession(
-                model: .default,
-                instructions: Self.instructions
-            )
-
             let prompt = buildPrompt(for: request)
             let response = try await session.respond(
                 to: prompt,
@@ -299,18 +360,19 @@ nonisolated final class OnDeviceWritingBandleader: WritingBandleader, @unchecked
 
             return response.content.toJazzTextLeadResponse
         } catch let error as LanguageModelSession.GenerationError {
-            // Guardrail refusals, context window limits, rate limits handled quietly -> skip pause
-            switch error {
-            case .exceededContextWindowSize, .guardrailViolation, .refusal, .rateLimited, .assetsUnavailable:
-                return nil
-            default:
-                return nil
+            // A failed exchange can leave a refused or partial turn in the transcript, which would
+            // colour every later pause: start the next one on a fresh session.
+            if isShared { discardSession(session) }
+            // Context window exceeded: the shared transcript filled up, so try this pause once more
+            // on a fresh session rather than dropping it (SWA-30). Other errors (guardrail
+            // refusals, rate limits, missing assets) quietly skip the pause.
+            if case .exceededContextWindowSize = error, isShared, !isRetry, !Task.isCancelled {
+                return try await performGeneration(request: request, isRetry: true)
             }
-        } catch is CancellationError {
-            // Timed out or cancelled
             return nil
         } catch {
-            // Other system errors handled quietly
+            // Timed out, cancelled or another system error: skip this pause quietly.
+            if isShared { discardSession(session) }
             return nil
         }
     }
@@ -359,9 +421,14 @@ nonisolated final class OnDeviceBandleaderAvailability: Sendable {
 }
 
 nonisolated final class OnDeviceWritingBandleader: WritingBandleader, @unchecked Sendable {
+    var provider: WritingPartnerProvider { .onDevice }
+
     typealias Generator = @MainActor @Sendable (JazzTextLeadRequest) async throws -> JazzTextLeadResponse?
 
     init(customGenerator: Generator? = nil, timeoutSeconds: TimeInterval = 3.0) {}
+
+    var hasActiveSession: Bool { false }
+    func resetSession() {}
 
     func lead(request: JazzTextLeadRequest) async throws -> JazzTextLeadResponse? {
         return nil

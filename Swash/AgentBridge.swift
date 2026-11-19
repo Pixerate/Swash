@@ -63,7 +63,7 @@ final class AgentBridge {
         )
         server = MCPServerController(serverName: "swash", realm: "Swash", defaultPort: AgentBridgeDefaults.defaultPort, logSubsystem: "com.pixerate.Swash") { [weak router] method, params in
             guard let router else { return .failure(code: -32603, message: "Server shut down.") }
-            // Name the agent's caret after the client that connected (GOTCHAS #95).
+            // Name the agent's caret after the client that connected (GOTCHAS #96).
             if method == "initialize" { router.actor = AgentBridge.actor(forInitialize: params) }
             return await router.handle(method: method, params: params)
         }
