@@ -18,8 +18,11 @@ struct StyledTextView: UIViewRepresentable {
     let controller: IOSEditorController
     var flavor: MarkdownFlavor
     var baseURL: URL?
+    var formattingEnabled: Bool = true
     /// Space under the navigation bar and banner (see `UIScrollView.setTopBarInset`).
     var topInset: CGFloat = 0
+    /// Focus mode, typewriter scrolling and distraction-free readable column.
+    var writingOptions = WritingOptions()
     /// Font, size (already adjusted for Dynamic Type), line width and theme (GOTCHAS #43).
     var typography = EditorTypography()
 
@@ -48,8 +51,10 @@ struct StyledTextView: UIViewRepresentable {
         textView.typingAttributes = context.coordinator.baseAttributes
         controller.attach(textView)
         textView.flavor = flavor
-        textView.installFormattingBar(enabled: true)
+        textView.baseURL = baseURL
+        textView.installFormattingBar(enabled: formattingEnabled)
         context.coordinator.textView = textView
+        context.coordinator.applyWritingOptions(writingOptions, in: textView)
         context.coordinator.scheduleFullRestyle()
         textView.setTopBarInset(topInset)
         return textView
@@ -59,6 +64,8 @@ struct StyledTextView: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.parent = self
         textView.flavor = flavor
+        textView.baseURL = baseURL
+        textView.installFormattingBar(enabled: formattingEnabled)
         controller.attach(textView)
         textView.setTopBarInset(topInset)
         coordinator.isUpdatingFromSwiftUI = true
@@ -79,6 +86,7 @@ struct StyledTextView: UIViewRepresentable {
             coordinator.lastTypography = typography
             coordinator.applyTypography(in: textView)
         }
+        coordinator.applyWritingOptions(writingOptions, in: textView)
     }
 
     /// Fill the space offered: a text view's own fitting size is its whole content height, which
@@ -102,6 +110,7 @@ struct StyledTextView: UIViewRepresentable {
         var lastFlavor: MarkdownFlavor?
         var lastBaseURL: URL?
         var lastTypography = EditorTypography()
+        var lastWritingOptions = WritingOptions()
 
         private var cachedOffsetMap: AttachmentOffsetMap?
         /// Raw-markdown selection to restore after the next styling pass.
@@ -298,6 +307,10 @@ struct StyledTextView: UIViewRepresentable {
                 textView.selectedRange = snapped
             }
             sanitizeTypingAttributes(textView)
+            if let styled = textView as? StyledUITextView {
+                applyFocus(in: styled)
+                centerCaret(in: styled)
+            }
         }
 
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
@@ -588,7 +601,10 @@ struct StyledTextView: UIViewRepresentable {
             lastSelection = restored
             isHighlighting = false
             textView.typingAttributes = baseAttributes
-            if textView.contentOffset != savedOffset, !textView.isFirstResponder || textView.isDragging || textView.isDecelerating {
+            applyFocus(in: textView)
+            if parent.writingOptions.typewriter {
+                centerCaret(in: textView)
+            } else if textView.contentOffset != savedOffset, !textView.isFirstResponder || textView.isDragging || textView.isDecelerating {
                 textView.contentOffset = savedOffset
             }
             textView.setNeedsOverlayLayout()
@@ -680,16 +696,83 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         /// The readable column centres the text in `readableColumnWidth` (scaled like the text);
-        /// full width keeps the standard margins.
+        /// typewriter scrolling adds half a screen above and below so the first and last lines can
+        /// be centred; full width keeps the standard margins.
         func updateColumnInsets(in textView: StyledUITextView) {
             let typography = parent.typography
+            let options = parent.writingOptions
             var side: CGFloat = 14
-            if typography.lineWidth == .readable {
-                let column = typography.readableColumnWidth * MarkdownEditorStyler.fontScale
+            if typography.lineWidth == .readable || options.readableColumn {
+                let column = (options.readableColumn ? options.columnWidth : typography.readableColumnWidth) * MarkdownEditorStyler.fontScale
                 side = max(14, ((textView.bounds.width - column) / 2).rounded())
             }
-            guard textView.textContainerInset.left != side else { return }
-            textView.textContainerInset = UIEdgeInsets(top: 20, left: side, bottom: 20, right: side)
+            let vertical: CGFloat = options.typewriter ? max(20, (textView.bounds.height / 2).rounded()) : 20
+            let insets = UIEdgeInsets(top: vertical, left: side, bottom: vertical, right: side)
+            guard textView.textContainerInset != insets else { return }
+            textView.textContainerInset = insets
+            centerCaret(in: textView)
+        }
+
+        // MARK: Writing modes
+
+        func applyWritingOptions(_ options: WritingOptions, in textView: StyledUITextView) {
+            guard options != lastWritingOptions else { return }
+            lastWritingOptions = options
+            updateColumnInsets(in: textView)
+            applyFocus(in: textView)
+            centerCaret(in: textView)
+        }
+
+        /// Dims everything outside the focused paragraph or sentence in `StyledLayoutManager`,
+        /// leaving the text storage's attributes unchanged.
+        func applyFocus(in textView: StyledUITextView) {
+            guard let layoutManager = textView.layoutManager as? StyledLayoutManager else { return }
+            let storage = textView.textStorage
+            let newFocused: NSRange?
+            if let unit = parent.writingOptions.focus, storage.length > 0 {
+                newFocused = FocusUnit.range(unit, around: textView.selectedRange, in: storage.string as NSString)
+            } else {
+                newFocused = nil
+            }
+            guard layoutManager.focusedCharacterRange != newFocused else { return }
+            let oldFocused = layoutManager.focusedCharacterRange
+            layoutManager.focusedCharacterRange = newFocused
+            let whole = NSRange(location: 0, length: storage.length)
+            if oldFocused == nil || newFocused == nil {
+                layoutManager.invalidateDisplay(forCharacterRange: whole)
+            } else {
+                if let old = oldFocused { layoutManager.invalidateDisplay(forCharacterRange: NSIntersectionRange(old, whole)) }
+                if let new = newFocused { layoutManager.invalidateDisplay(forCharacterRange: NSIntersectionRange(new, whole)) }
+            }
+            textView.setNeedsDisplay()
+        }
+
+        /// Scrolls so the caret's line sits in the middle of the visible area (not while the user is dragging).
+        func centerCaret(in textView: StyledUITextView) {
+            guard parent.writingOptions.typewriter, !textView.isDragging, !textView.isTracking,
+                  textView.bounds.height > 0 else { return }
+            let layoutManager = textView.layoutManager
+            let storage = textView.textStorage
+            layoutManager.ensureLayout(for: textView.textContainer)
+            let location = textView.selectedRange.location
+            var line: CGRect
+            if location >= storage.length, !layoutManager.extraLineFragmentRect.isEmpty {
+                line = layoutManager.extraLineFragmentRect
+            } else if layoutManager.numberOfGlyphs > 0 {
+                let glyph = layoutManager.glyphIndexForCharacter(at: min(location, storage.length - 1))
+                line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            } else {
+                return
+            }
+            line.origin.y += textView.textContainerInset.top
+            let insets = textView.adjustedContentInset
+            let visibleHeight = max(1, textView.bounds.height - insets.top - insets.bottom)
+            let minY = -insets.top
+            let maxY = max(minY, textView.contentSize.height - textView.bounds.height + insets.bottom)
+            let targetY = (line.midY - insets.top - visibleHeight / 2).rounded()
+            let y = min(max(minY, targetY), maxY)
+            guard abs(textView.contentOffset.y - y) > 0.5 else { return }
+            textView.setContentOffset(CGPoint(x: textView.contentOffset.x, y: y), animated: false)
         }
     }
 }
@@ -699,6 +782,7 @@ struct StyledTextView: UIViewRepresentable {
 final class StyledUITextView: MarkdownEditingTextView {
     weak var coordinator: StyledTextView.Coordinator?
     private var lastLayoutWidth: CGFloat = 0
+    private var lastLayoutHeight: CGFloat = 0
     private var placedTables: [ObjectIdentifier: TableTextAttachment] = [:]
     /// The checkbox tap's delegate. Not the text view itself: a scroll view is already the delegate
     /// of its own pan and text gestures, and overriding those callbacks would filter them too.
@@ -734,12 +818,17 @@ final class StyledUITextView: MarkdownEditingTextView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        if abs(bounds.width - lastLayoutWidth) > 1 {
-            needsOverlayLayout = true
+        let widthChanged = abs(bounds.width - lastLayoutWidth) > 1
+        let heightChanged = abs(bounds.height - lastLayoutHeight) > 1
+        if widthChanged || heightChanged {
             let isFirstLayout = lastLayoutWidth == 0
             lastLayoutWidth = bounds.width
+            lastLayoutHeight = bounds.height
             coordinator?.updateColumnInsets(in: self)
-            if !isFirstLayout { coordinator?.widthChanged(in: self) }
+            if widthChanged {
+                needsOverlayLayout = true
+                if !isFirstLayout { coordinator?.widthChanged(in: self) }
+            }
         }
         // Tables and badge buttons are content subviews: they scroll with the text, so they only
         // move after a restyle or a size change, not on every scroll frame

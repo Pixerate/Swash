@@ -47,9 +47,9 @@ Status: **in progress** on the `feat/universal-ios` branch. The phase checklists
 | Typography (font, size, line width, theme) | Settings › Appearance, View › Bigger/Smaller | Settings sheet › Typography and Colours, on top of Dynamic Type | Same |
 | Document insights (word count, reading time) | Status bar statistic menu | Document Info sheet from the overflow menu, with selection counts | Same |
 | Export and print | File › Export as PDF/HTML, Print, Copy as Rich Text | Overflow › Export: PDF or HTML files through the share sheet, Print (`UIPrintInteractionController`), Copy as Rich Text, Copy HTML | Same |
-| Focus mode, typewriter scrolling | View menu (`WritingModes.swift`) | Not yet (#57) | Not yet |
-| iCloud conflict resolution | Conflict banner and sheet | Not yet (#57) | Not yet |
-| Folder of files | Folder window with a file sidebar | Document browser (no folder sidebar yet, #57) | Document browser |
+| Focus mode, typewriter scrolling | View menu (`WritingModes.swift`) | Overflow › Writing, Settings › Writing and the View menu (`WritingModeCommands`): Focus Mode, Typewriter Scrolling and Distraction-Free Writing (hides toolbar, sidebar and formatting bar) | Overflow › Writing and Settings › Writing: Focus Mode, Typewriter Scrolling and Distraction-Free Writing |
+| iCloud conflict resolution | Conflict banner and sheet | Conflict banner and version-picker sheet (`NSFileVersion`) | Same |
+| Folder of files | Folder window with a file sidebar | Document browser, plus the Folder tab in the split-view sidebar (sibling Markdown files and full-text search) and relative/`[[wiki]]` note links | Document browser, plus relative/`[[wiki]]` note links |
 | Quick Look and thumbnails | Extensions | iOS Quick Look preview and thumbnail extensions | Same |
 | Share into Swash | Share extension, Services menu | Share extension | Same |
 | Widget | Quick Note widget | Widget for iOS families | Same |

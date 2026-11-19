@@ -376,3 +376,8 @@
 - **Issue**: `scripts/run_agent_tools_tests.sh`, `Tests/EditorAudit/run_audit.sh` and the other runners fail with "no such module 'PixerateCore'" (or `PixerateMarkdown`) when the checkout lives under a path with a space (e.g. `~/Development/Claude Worktrees/…`).
 - **Solution**: `$PIXERATE_CORE` / `$PIXERATE_MARKDOWN` are swiftc flags expanded unquoted so they split into words, which also splits `-I <path>` at the space. Run the scripts from a symlink without spaces (`ln -s "<checkout>" /tmp/swash && cd /tmp/swash`): the scripts use `$PWD`, which keeps the symlink's path.
 
+## 92. UIKit's `NSLayoutManager` Has No Temporary Attributes for Focus Mode
+- **Issue**: On macOS, Focus Mode dims text outside the current paragraph or sentence with `NSLayoutManager.addTemporaryAttribute` / `removeTemporaryAttribute`, which doesn't touch `NSTextStorage`. UIKit's `NSLayoutManager` doesn't have temporary attributes, and writing dimmed foreground colours into `NSTextStorage` on every caret move would trigger full restyles and alter the editor's styling fingerprint.
+- **Solution**: `StyledLayoutManager` (`Swash/iOS/StyledLayoutManager.swift`) holds `focusedCharacterRange: NSRange?` and dims glyph runs, list markers, badges and alert icons outside that range to `unfocusedAlpha` (`0.3`) inside `drawGlyphs(forGlyphRange:at:)` and `drawBackground(forGlyphRange:at:)`. Changing the focused range only calls `invalidateDisplay(forCharacterRange:)`, keeping `NSTextStorage` untouched.
+
+

@@ -73,7 +73,6 @@ extension FocusedValues {
     }
 }
 
-#if os(macOS)
 /// View › Focus Mode, Typewriter Scrolling and Distraction-Free Writing.
 struct WritingModeCommands: Commands {
     @AppStorage(WritingDefaults.focusMode) private var focusMode = false
@@ -102,6 +101,7 @@ struct WritingModeCommands: Commands {
     }
 }
 
+#if os(macOS)
 extension SwashTextView.Coordinator {
     /// Applies changed writing options to the text view.
     func applyWritingOptions(_ options: WritingOptions, in textView: NSTextView) {
