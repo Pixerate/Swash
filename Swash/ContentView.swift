@@ -157,7 +157,7 @@ struct ContentView: View {
         withLifecycle
         .modifier(AgentToolsHookup(text: $document.text, editor: editor, name: documentTitle,
                                    readOnlyReason: isEditable ? nil : "the file is locked or can't be saved",
-                                   flavor: document.flavor))
+                                   flavor: document.flavor, documentID: documentID))
         .onChange(of: window) { _, window in
             if window?.isKeyWindow == true { documentWindowBecameKey() }
         }

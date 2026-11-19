@@ -172,14 +172,97 @@ final class SwashEditorController {
         return coordinator.rawText(of: textView)
     }
 
-    /// An agent tool's edit (#49): like `apply`, but never merged into the user's typing, so each
-    /// tool call is its own undo step.
+    /// Callback invoked when the user edits the document (not during an agent edit), reporting the
+    /// replaced raw-Markdown range, the replacement UTF-16 length, and the new document raw length.
+    var onUserRawEdit: ((_ replacedRawRange: NSRange, _ replacementLength: Int, _ newRawLength: Int) -> Void)?
+
+    /// Maps `position` through a sequence of ascending, non-overlapping raw edits.
+    static func mapRawPosition(_ position: Int, through edits: [(range: NSRange, replacementLength: Int)]) -> Int {
+        var delta = 0
+        for edit in edits {
+            if position < edit.range.location || (position == edit.range.location && edit.range.length > 0) { break }
+            if position < NSMaxRange(edit.range) { return edit.range.location + delta + edit.replacementLength }
+            delta += edit.replacementLength - edit.range.length
+        }
+        return position + delta
+    }
+
+    /// Maps `selection` through `edits`, clamping to `newLength`.
+    static func mapRawSelection(_ selection: NSRange, through edits: [(range: NSRange, replacementLength: Int)], newLength: Int) -> NSRange {
+        let start = mapRawPosition(selection.location, through: edits)
+        let end = max(start, mapRawPosition(NSMaxRange(selection), through: edits))
+        let clampedStart = min(max(0, start), newLength)
+        return NSRange(location: clampedStart, length: min(max(0, end - start), newLength - clampedStart))
+    }
+
+    /// Computes the single changed raw-Markdown span between `old` and `new` (common UTF-16 prefix and suffix removed).
+    static func rawEditDelta(from old: NSString, to new: NSString) -> (range: NSRange, replacementLength: Int) {
+        let minLength = min(old.length, new.length)
+        var prefix = 0
+        while prefix < minLength && old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
+        if prefix > 0 && CFStringIsSurrogateHighCharacter(old.character(at: prefix - 1)) { prefix -= 1 }
+        var suffix = 0
+        while suffix < minLength - prefix &&
+              old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
+        if suffix > 0 && CFStringIsSurrogateLowCharacter(old.character(at: old.length - suffix)) { suffix -= 1 }
+        return (NSRange(location: prefix, length: old.length - prefix - suffix), new.length - prefix - suffix)
+    }
+
+    /// An agent tool's edit (#49, #151): like `apply`, but never merged into the user's typing, so
+    /// each tool call is its own undo step, and preserves the user's `NSTextView` selection by
+    /// mapping it through the agent's raw edit deltas instead of overwriting it with `selection`.
     @discardableResult
-    func applyAgentEdit(newText: String, selection: NSRange, actionName: String) -> Bool {
-        textView?.breakUndoCoalescing()
-        let applied = apply(newText: newText, selection: selection, actionName: actionName)
-        textView?.breakUndoCoalescing()
-        return applied
+    func applyAgentEdit(
+        newText: String,
+        selection: NSRange? = nil,
+        edits: [(range: NSRange, replacementLength: Int)] = [],
+        actionName: String
+    ) -> Bool {
+        guard let textView = textView, let coordinator = coordinator, textView.window != nil else { return false }
+        let userSelectionBefore = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        let oldRaw = coordinator.rawText(of: textView) as NSString
+        let newRaw = newText as NSString
+        let effectiveEdits = edits.isEmpty ? [Self.rawEditDelta(from: oldRaw, to: newRaw)] : edits
+        let mappedUserSelection = Self.mapRawSelection(userSelectionBefore, through: effectiveEdits, newLength: newRaw.length)
+        textView.breakUndoCoalescing()
+        coordinator.isApplyingAgentEdit = true
+        defer { coordinator.isApplyingAgentEdit = false }
+        coordinator.applyEdit(in: textView, newRawText: newText, rawSelection: mappedUserSelection, actionName: actionName)
+        textView.breakUndoCoalescing()
+        return true
+    }
+
+    /// Renders an inline MCP agent presence caret, selection highlight, name pill, and modified-range feedback.
+    func showAgentPresence(
+        rawSelection: NSRange,
+        modifiedRawRanges: [NSRange] = [],
+        label: String = "Agent",
+        colorHex: String = "#8b5cf6"
+    ) {
+        guard let textView = textView else { return }
+        let overlay = WritingPartnerOverlay.overlay(for: textView)
+        overlay.showAgentPresence(
+            rawSelection: rawSelection,
+            modifiedRawRanges: modifiedRawRanges,
+            label: label,
+            colorHex: colorHex,
+            coordinator: coordinator
+        )
+    }
+
+    /// Updates the raw offsets of an active MCP agent presence without resetting its fade timer.
+    func remapAgentPresence(rawSelection: NSRange, modifiedRawRanges: [NSRange]) {
+        guard let textView = textView else { return }
+        WritingPartnerOverlay.existing(in: textView)?.remapAgentPresence(
+            rawSelection: rawSelection,
+            modifiedRawRanges: modifiedRawRanges
+        )
+    }
+
+    /// Clears the inline MCP agent presence overlay in the attached editor.
+    func clearAgentPresence() {
+        guard let textView = textView else { return }
+        WritingPartnerOverlay.existing(in: textView)?.clearAgentPresence()
     }
 
     /// Selects `range` (raw-Markdown offsets) and scrolls it into view, without taking focus.
@@ -1574,6 +1657,8 @@ struct SwashTextView: NSViewRepresentable {
         /// registering it with the undo manager and restoring `rawSelection` afterwards.
         /// Set while `applyEdit` changes the text, so its own change isn't treated as typing.
         private var isApplyingEdit = false
+        /// Set while `SwashEditorController.applyAgentEdit` is running, so agent edits don't feed back into `onUserRawEdit`.
+        var isApplyingAgentEdit = false
         
         func applyEdit(in textView: NSTextView, newRawText: String, rawSelection: NSRange?, actionName: String) {
             guard let storage = textView.textStorage else { return }
@@ -1705,8 +1790,11 @@ struct SwashTextView: NSViewRepresentable {
                 return
             }
             if !isUpdatingFromSwiftUI {
+                let previousRaw = (lastPublishedText ?? parent.text) as NSString
+                let updatedRaw: String
                 if parent.isStyled, let textStorage = textView.textStorage {
                     let raw = buildRawMarkdown(from: textStorage)
+                    updatedRaw = raw
                     lastPublishedText = raw
                     parent.text = raw
                     editGeneration += 1
@@ -1718,11 +1806,19 @@ struct SwashTextView: NSViewRepresentable {
                         self.highlightMarkdown(in: textView)
                     }
                 } else {
+                    updatedRaw = textView.string
                     lastPublishedText = textView.string
                     parent.text = textView.string
                     // Typed text takes the monospaced typing attributes; restyling the whole
                     // storage per keystroke would invalidate the entire layout
                     schedulePlainCodeBlockRefresh(in: textView)
+                }
+                if !isApplyingAgentEdit, let onUserRawEdit = parent.controller?.onUserRawEdit {
+                    let newRaw = updatedRaw as NSString
+                    if previousRaw != newRaw {
+                        let delta = SwashEditorController.rawEditDelta(from: previousRaw, to: newRaw)
+                        onUserRawEdit(delta.range, delta.replacementLength, newRaw.length)
+                    }
                 }
                 if !isApplyingEdit {
                     writingPartner.didChange(in: textView, coordinator: self)
@@ -2377,6 +2473,9 @@ struct SwashTextView: NSViewRepresentable {
             if !writingPartner.suggestions.isEmpty {
                 writingPartner.refreshSuggestions(in: textView, coordinator: self)
             }
+            if let overlay = WritingPartnerOverlay.existing(in: textView), overlay.agentPresence != nil {
+                overlay.render()
+            }
             if parent.writingOptions.typewriter {
                 centerCaret(in: textView)
             } else if let origin = savedScrollOrigin, let clipView = textView.enclosingScrollView?.contentView {
@@ -2655,6 +2754,9 @@ struct SwashTextView: NSViewRepresentable {
             applyFocus(in: textView)
             if !writingPartner.suggestions.isEmpty {
                 writingPartner.refreshSuggestions(in: textView, coordinator: self)
+            }
+            if let overlay = WritingPartnerOverlay.existing(in: textView), overlay.agentPresence != nil {
+                overlay.render()
             }
             lastStyledText = textView.string
             lastIsStyled = false
