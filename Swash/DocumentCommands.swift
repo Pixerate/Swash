@@ -13,7 +13,7 @@ import PixerateMarkdown
 
 enum DocumentCommand {
     case copyHeadingLink, copyMarkdownLink, copyFilePath
-    case acceptSuggestion, dismissSuggestion
+    case acceptSuggestion, dismissSuggestion, togglePartnerPause
 }
 
 struct DocumentCommandHandlerKey: FocusedValueKey {
@@ -26,6 +26,11 @@ struct DocumentFileURLKey: FocusedValueKey {
 
 /// Whether the focused window shows the heading outline, for View › Show Outline.
 struct OutlineVisibilityKey: FocusedValueKey {
+    typealias Value = Binding<Bool>
+}
+
+/// Whether the writing partner is paused for the focused document (#112).
+struct PartnerPausedKey: FocusedValueKey {
     typealias Value = Binding<Bool>
 }
 
@@ -59,6 +64,11 @@ extension FocusedValues {
         get { self[OutlineVisibilityKey.self] }
         set { self[OutlineVisibilityKey.self] = newValue }
     }
+
+    var partnerPaused: Binding<Bool>? {
+        get { self[PartnerPausedKey.self] }
+        set { self[PartnerPausedKey.self] = newValue }
+    }
 }
 
 /// Edit menu "Copy …" items and the View menu's view modes and outline toggle.
@@ -67,6 +77,7 @@ struct DocumentMenuCommands: Commands {
     @FocusedValue(\.viewModeSelection) private var viewMode
     @FocusedValue(\.documentFileURL) private var fileURL
     @FocusedValue(\.outlineVisibility) private var showOutline
+    @FocusedValue(\.partnerPaused) private var partnerPaused
 
     var body: some Commands {
         CommandGroup(after: .undoRedo) {
@@ -83,6 +94,13 @@ struct DocumentMenuCommands: Commands {
                     handler?(.dismissSuggestion)
                 }
             }
+            .disabled(handler == nil)
+            Button(partnerPaused?.wrappedValue == true ? "Resume Writing Partner" : "Pause Writing Partner") {
+                if !NSApp.sendAction(#selector(SwashNSTextView.toggleWritingPartnerPause(_:)), to: nil, from: nil) {
+                    handler?(.togglePartnerPause)
+                }
+            }
+            .keyboardShortcut("p", modifiers: [.command, .option])
             .disabled(handler == nil)
         }
         CommandGroup(after: .pasteboard) {

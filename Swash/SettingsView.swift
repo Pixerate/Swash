@@ -272,7 +272,7 @@ private struct UpdatesSettingsView: View {
 
 /// Punctuation and capitals as you type (#61, #105).
 private struct WritingPartnerSettingsView: View {
-    @AppStorage(WritingPartnerDefaults.mode) private var mode: WritingPartnerMode = .off
+    @AppStorage(WritingPartnerDefaults.mode) private var mode: WritingPartnerMode = .automatic
     @AppStorage("markdownFlavor") private var defaultFlavor: MarkdownFlavor = .github
     private let activeVoice = WritingPartnerActiveVoice.shared
     @State private var proseStats = WritingPartnerStats.load(voice: .punctuate)
