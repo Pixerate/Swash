@@ -564,10 +564,17 @@ final class StyledTextViewTests: XCTestCase {
         XCTAssertEqual(e.textView.textContainerInset.top, (e.textView.bounds.height / 2).rounded(), "typewriter scrolling adds vertical margin")
         XCTAssertGreaterThan(e.textView.textContainerInset.left, 14, "readable column insets the sides when wider than the column")
 
+        // The harness leaves the caret at the end of the text, so start from the top explicitly
+        e.select(raw: NSRange(location: 0, length: 0))
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
         let offsetNearTop = e.textView.contentOffset.y
         e.caret(after: "Line 25")
         e.textView.delegate?.textViewDidChangeSelection?(e.textView)
         XCTAssertGreaterThan(e.textView.contentOffset.y, offsetNearTop + 100, "typewriter scrolling scrolls to keep the caret centred")
+        let caret = e.textView.caretRect(for: try XCTUnwrap(e.textView.selectedTextRange).end)
+        let insets = e.textView.adjustedContentInset
+        let visibleMidY = e.textView.contentOffset.y + insets.top + (e.textView.bounds.height - insets.top - insets.bottom) / 2
+        XCTAssertEqual(caret.midY, visibleMidY, accuracy: 30, "the caret's line sits in the middle of the visible area")
 
         // Exiting distraction-free restores the formatting bar
         e.setWritingOptions(WritingOptions(), formattingEnabled: true)

@@ -26,7 +26,10 @@ final class StyledLayoutManager: NSLayoutManager {
             super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
             return
         }
-        let focusedGlyphs = glyphRange(forCharacterRange: focused, actualCharacterRange: nil)
+        // The range can be stale for a moment after an edit shortens the text
+        let length = textStorage?.length ?? 0
+        let clamped = NSIntersectionRange(focused, NSRange(location: 0, length: length))
+        let focusedGlyphs = glyphRange(forCharacterRange: clamped, actualCharacterRange: nil)
         let before = NSIntersectionRange(glyphsToShow, NSRange(location: 0, length: focusedGlyphs.location))
         let inside = NSIntersectionRange(glyphsToShow, focusedGlyphs)
         let afterStart = NSMaxRange(focusedGlyphs)
