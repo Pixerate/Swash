@@ -92,6 +92,21 @@ final class EditorHarness {
         textView.selectedRange = coordinator.storageRange(forRaw: range, in: textView)
     }
 
+    /// Updates the hosted editor's writing options and formatting-bar visibility.
+    func setWritingOptions(_ options: WritingOptions, formattingEnabled: Bool = true, baseURL: URL? = nil) {
+        let box = self.box
+        let binding = Binding(get: { box.text }, set: { box.text = $0 })
+        host.rootView = StyledTextView(
+            text: binding,
+            controller: controller,
+            flavor: flavor,
+            baseURL: baseURL,
+            formattingEnabled: formattingEnabled,
+            writingOptions: options
+        )
+        pump(0.05)
+    }
+
     /// Puts the caret just after the first occurrence of `anchor` in the raw Markdown.
     func caret(after anchor: String, file: StaticString = #filePath, line: UInt = #line) {
         let found = (text as NSString).range(of: anchor)

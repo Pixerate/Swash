@@ -515,4 +515,102 @@ final class StyledTextViewTests: XCTestCase {
         e.forceFullRestyle()
         XCTAssertEqual(incremental, e.fingerprint(), firstDifference(incremental, e.fingerprint()))
     }
+
+    // MARK: - Focus mode, typewriter scrolling, distraction-free & note links (#57)
+
+    func testFocusModeDimsOutsideCurrentParagraphOrSentence() throws {
+        let markdown = "First paragraph here.\n\nSecond paragraph. Another sentence here.\n\nThird paragraph."
+        let e = try editor(markdown)
+        let layoutManager = try XCTUnwrap(e.textView.layoutManager as? StyledLayoutManager)
+        XCTAssertNil(layoutManager.focusedCharacterRange)
+
+        // Paragraph focus on the second paragraph
+        e.caret(after: "Second")
+        e.setWritingOptions(WritingOptions(focus: .paragraph))
+        let ns = e.storage.string as NSString
+        let secondPara = ns.paragraphRange(for: ns.range(of: "Second paragraph"))
+        XCTAssertEqual(layoutManager.focusedCharacterRange, secondPara)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "First").location), StyledLayoutManager.unfocusedAlpha)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Second").location), 1)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Another sentence").location), 1)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Third").location), StyledLayoutManager.unfocusedAlpha)
+
+        // Sentence focus narrows to the current sentence within the second paragraph
+        e.setWritingOptions(WritingOptions(focus: .sentence))
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Second").location), 1)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Another sentence").location), StyledLayoutManager.unfocusedAlpha)
+
+        // Moving the selection updates the focused sentence
+        e.caret(after: "Another")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Second").location), StyledLayoutManager.unfocusedAlpha)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Another").location), 1)
+
+        // Turning Focus Mode off clears the focused range
+        e.setWritingOptions(WritingOptions(focus: nil))
+        XCTAssertNil(layoutManager.focusedCharacterRange)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "First").location), 1)
+    }
+
+    func testTypewriterScrollingAndDistractionFreeFormattingBar() throws {
+        let lines = (1...40).map { "Line \($0) of the document." }.joined(separator: "\n\n")
+        let e = try editor(lines)
+        XCTAssertNotNil(e.textView.inputAccessoryView, "formatting bar is installed by default")
+        XCTAssertEqual(e.textView.textContainerInset.top, 20)
+
+        // Distraction-free + typewriter scrolling
+        e.setWritingOptions(WritingOptions(typewriter: true, readableColumn: true, columnWidth: 200), formattingEnabled: false)
+        XCTAssertNil(e.textView.inputAccessoryView, "distraction-free mode hides the formatting bar")
+        XCTAssertEqual(e.textView.textContainerInset.top, (e.textView.bounds.height / 2).rounded(), "typewriter scrolling adds vertical margin")
+        XCTAssertGreaterThan(e.textView.textContainerInset.left, 14, "readable column insets the sides when wider than the column")
+
+        let offsetNearTop = e.textView.contentOffset.y
+        e.caret(after: "Line 25")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertGreaterThan(e.textView.contentOffset.y, offsetNearTop + 100, "typewriter scrolling scrolls to keep the caret centred")
+
+        // Exiting distraction-free restores the formatting bar
+        e.setWritingOptions(WritingOptions(), formattingEnabled: true)
+        XCTAssertNotNil(e.textView.inputAccessoryView)
+        XCTAssertEqual(e.textView.textContainerInset.top, 20)
+    }
+
+    func testRelativeAndWikiNoteLinksResolveInFolder() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SwashNoteLinks-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let indexURL = folder.appendingPathComponent("Index.md")
+        let otherURL = folder.appendingPathComponent("Other.md")
+        let ideasURL = folder.appendingPathComponent("Ideas.md")
+        let markdown = "See [other](Other.md) and [[Ideas]] for more."
+        try markdown.write(to: indexURL, atomically: true, encoding: .utf8)
+        try "# Other\n".write(to: otherURL, atomically: true, encoding: .utf8)
+        try "# Ideas\n".write(to: ideasURL, atomically: true, encoding: .utf8)
+
+        let e = try editor(markdown)
+        e.setWritingOptions(WritingOptions(), baseURL: indexURL)
+
+        let ns = markdown as NSString
+        let relativePos = NSRange(location: ns.range(of: "other").location + 1, length: 0)
+        XCTAssertEqual(e.textView.noteURL(at: relativePos)?.standardizedFileURL, otherURL.standardizedFileURL)
+
+        let wikiPos = NSRange(location: ns.range(of: "Ideas").location + 1, length: 0)
+        XCTAssertEqual(e.textView.noteURL(at: wikiPos)?.standardizedFileURL, ideasURL.standardizedFileURL)
+    }
+
+    func testConflictResolutionChoicesAndKeepCurrent() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SwashConflicts-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let fileURL = folder.appendingPathComponent("Note.md")
+        try "# Current\n\nBody text.".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(DocumentConflicts.unresolved(at: fileURL).isEmpty)
+        let choices = DocumentConflicts.choices(at: fileURL)
+        XCTAssertEqual(choices.count, 1)
+        XCTAssertEqual(choices.first?.title, "This Version")
+        XCTAssertNil(try DocumentConflicts.resolve(at: fileURL, keeping: choices.first?.version))
+    }
 }
