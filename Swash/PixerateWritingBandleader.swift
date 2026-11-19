@@ -13,6 +13,8 @@ import Foundation
 import PixerateAccount
 
 nonisolated final class PixerateWritingBandleader: WritingBandleader, @unchecked Sendable {
+    var provider: WritingPartnerProvider { .pixerate }
+
     typealias PostHandler = @Sendable (_ path: String, _ body: Data) async throws -> Data
     typealias TeamIdProvider = @Sendable () -> String?
 

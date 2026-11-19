@@ -776,12 +776,16 @@ nonisolated final class BandleaderSessionMemory: @unchecked Sendable {
 }
 
 nonisolated protocol WritingBandleader: Sendable {
+    var provider: WritingPartnerProvider { get }
     func lead(request: JazzTextLeadRequest) async throws -> JazzTextLeadResponse?
     func reportFeedback(_ request: JazzTextFeedbackRequest) async
+    func resetSession()
 }
 
 nonisolated extension WritingBandleader {
+    var provider: WritingPartnerProvider { .none }
     func reportFeedback(_ request: JazzTextFeedbackRequest) async {}
+    func resetSession() {}
 }
 
 /// The default bandleader when signed out, offline or switched off: local voices only.
@@ -1265,17 +1269,22 @@ extension WritingBandleaderFactory {
     /// Calls the active pause-tier bandleader (`override` if set, else `provider`), and when the
     /// Pixerate tier returns `nil` or throws (signed out, out of Fuel `402`, rate-limited `429`,
     /// or offline), falls back to the on-device bandleader if available (#120).
+    /// If an `existing` bandleader is passed, it is reused across pause evaluations.
     static func leadWithFallback(
         request: JazzTextLeadRequest,
         provider: WritingPartnerProvider,
-        override: (any WritingBandleader)? = nil
+        override: (any WritingBandleader)? = nil,
+        existing: (any WritingBandleader)? = nil
     ) async -> (response: JazzTextLeadResponse, bandleader: any WritingBandleader)? {
+        let existingOnDevice = existing?.provider == .onDevice ? existing : nil
+        let existingPixerate = existing?.provider == .pixerate ? existing : nil
+
         if let override {
             if let response = try? await override.lead(request: request) {
                 return (response, override)
             }
             if isOnDeviceAvailable() {
-                let fallback = makeOnDeviceBandleader()
+                let fallback = existingOnDevice ?? makeOnDeviceBandleader()
                 if let response = try? await fallback.lead(request: request) {
                     return (response, fallback)
                 }
@@ -1288,7 +1297,7 @@ extension WritingBandleaderFactory {
                 return (response, activeOverride)
             }
             if isOnDeviceAvailable() {
-                let fallback = makeOnDeviceBandleader()
+                let fallback = existingOnDevice ?? makeOnDeviceBandleader()
                 if let response = try? await fallback.lead(request: request) {
                     return (response, fallback)
                 }
@@ -1298,19 +1307,19 @@ extension WritingBandleaderFactory {
 
         switch provider {
         case .pixerate:
-            let primary = makePixerateBandleader()
+            let primary = existingPixerate ?? makePixerateBandleader()
             if let response = try? await primary.lead(request: request) {
                 return (response, primary)
             }
             if isOnDeviceAvailable() {
-                let fallback = makeOnDeviceBandleader()
+                let fallback = existingOnDevice ?? makeOnDeviceBandleader()
                 if let response = try? await fallback.lead(request: request) {
                     return (response, fallback)
                 }
             }
             return nil
         case .onDevice:
-            let onDevice = makeOnDeviceBandleader()
+            let onDevice = existingOnDevice ?? makeOnDeviceBandleader()
             if let response = try? await onDevice.lead(request: request) {
                 return (response, onDevice)
             }
