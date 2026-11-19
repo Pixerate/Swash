@@ -1694,6 +1694,61 @@ do {
     WritingBandleaderFactory.overrideBandleader = savedOverride
 }
 
+// On-device session sharing & bandleader reuse (#SWA-30)
+do {
+    let savedMakeOnDevice = WritingBandleaderFactory.makeOnDeviceBandleader
+    let savedIsOnDevice = WritingBandleaderFactory.isOnDeviceAvailable
+
+    // 1. Session Lifecycle & Invalidation on OnDeviceWritingBandleader
+    let bandleader = OnDeviceWritingBandleader()
+    check(!bandleader.hasActiveSession, "OnDeviceWritingBandleader starts with no active session")
+    bandleader.resetSession()
+    check(!bandleader.hasActiveSession, "Resetting inactive session keeps hasActiveSession false")
+
+    // 2. Bandleader reuse in leadWithFallback for .onDevice provider
+    let existingOnDevice = OnDeviceWritingBandleader(customGenerator: { _ in
+        JazzTextLeadResponse(genre: .prose, palette: [], suggestions: [], why: "Custom")
+    })
+    WritingBandleaderFactory.isOnDeviceAvailable = { true }
+    WritingBandleaderFactory.makeOnDeviceBandleader = { OnDeviceWritingBandleader() }
+
+    let req = JazzTextLeadRequest(paragraph: "Test paragraph")
+    let leadResult = await WritingBandleaderFactory.leadWithFallback(
+        request: req,
+        provider: .onDevice,
+        existing: existingOnDevice
+    )
+    check(leadResult != nil, "leadWithFallback returns result with existing on-device bandleader")
+    if let result = leadResult {
+        let isSame = (result.bandleader as AnyObject) === (existingOnDevice as AnyObject)
+        check(isSame, "leadWithFallback reuses existing OnDeviceWritingBandleader instance for .onDevice")
+    }
+
+    // 3. Fallback Reuse: when Pixerate fails, existing on-device bandleader is reused
+    let savedMakePixerate = WritingBandleaderFactory.makePixerateBandleader
+    let savedIsPixerate = WritingBandleaderFactory.isPixerateAvailable
+    WritingBandleaderFactory.isPixerateAvailable = { true }
+    WritingBandleaderFactory.makePixerateBandleader = {
+        PixerateWritingBandleader(postHandler: { _, _ in throw PixerateRefusal.signedOut })
+    }
+
+    let fallbackReuseResult = await WritingBandleaderFactory.leadWithFallback(
+        request: req,
+        provider: .pixerate,
+        existing: existingOnDevice
+    )
+    check(fallbackReuseResult != nil, "leadWithFallback falls back when Pixerate fails")
+    if let result = fallbackReuseResult {
+        let isSame = (result.bandleader as AnyObject) === (existingOnDevice as AnyObject)
+        check(isSame, "leadWithFallback reuses existing on-device bandleader upon Pixerate fallback")
+    }
+
+    WritingBandleaderFactory.makePixerateBandleader = savedMakePixerate
+    WritingBandleaderFactory.isPixerateAvailable = savedIsPixerate
+    WritingBandleaderFactory.makeOnDeviceBandleader = savedMakeOnDevice
+    WritingBandleaderFactory.isOnDeviceAvailable = savedIsOnDevice
+}
+
 // WritingPartner protocol conformance (#61): PunctuateVoice conforms to WritingPartner so the fast-tier
 // duet can be injected or moved to a shared package
 do {

@@ -219,10 +219,14 @@ final class OnDeviceBandleaderAvailability: Sendable {
 // MARK: - OnDeviceWritingBandleader
 
 nonisolated final class OnDeviceWritingBandleader: WritingBandleader, @unchecked Sendable {
+    var provider: WritingPartnerProvider { .onDevice }
+
     typealias Generator = @MainActor @Sendable (JazzTextLeadRequest) async throws -> JazzTextLeadResponse?
 
     private let customGenerator: Generator?
     private let timeoutNanoseconds: UInt64
+    private let sessionLock = NSLock()
+    private var sessionBox: Any? = nil
 
     /// System instructions for bandleader guidance.
     static let instructions = """
@@ -243,6 +247,35 @@ nonisolated final class OnDeviceWritingBandleader: WritingBandleader, @unchecked
     ) {
         self.customGenerator = customGenerator
         self.timeoutNanoseconds = UInt64(max(0.1, timeoutSeconds) * 1_000_000_000)
+    }
+
+    /// Whether a cached session instance is currently stored.
+    var hasActiveSession: Bool {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        return sessionBox != nil
+    }
+
+    /// Resets the on-device session, clearing session memory and cached context.
+    func resetSession() {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        sessionBox = nil
+    }
+
+    @available(macOS 26.0, *)
+    private func currentOrNewSession() -> LanguageModelSession {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        if let existing = sessionBox as? LanguageModelSession {
+            return existing
+        }
+        let newSession = LanguageModelSession(
+            model: .default,
+            instructions: Self.instructions
+        )
+        sessionBox = newSession
+        return newSession
     }
 
     func lead(request: JazzTextLeadRequest) async throws -> JazzTextLeadResponse? {
@@ -286,10 +319,7 @@ nonisolated final class OnDeviceWritingBandleader: WritingBandleader, @unchecked
     @available(macOS 26.0, *)
     private func performGeneration(request: JazzTextLeadRequest) async throws -> JazzTextLeadResponse? {
         do {
-            let session = LanguageModelSession(
-                model: .default,
-                instructions: Self.instructions
-            )
+            let session = currentOrNewSession()
 
             let prompt = buildPrompt(for: request)
             let response = try await session.respond(
@@ -301,7 +331,11 @@ nonisolated final class OnDeviceWritingBandleader: WritingBandleader, @unchecked
         } catch let error as LanguageModelSession.GenerationError {
             // Guardrail refusals, context window limits, rate limits handled quietly -> skip pause
             switch error {
-            case .exceededContextWindowSize, .guardrailViolation, .refusal, .rateLimited, .assetsUnavailable:
+            case .exceededContextWindowSize:
+                // Context window exceeded -> reset session so subsequent pauses start fresh (#SWA-30)
+                resetSession()
+                return nil
+            case .guardrailViolation, .refusal, .rateLimited, .assetsUnavailable:
                 return nil
             default:
                 return nil
@@ -359,9 +393,14 @@ nonisolated final class OnDeviceBandleaderAvailability: Sendable {
 }
 
 nonisolated final class OnDeviceWritingBandleader: WritingBandleader, @unchecked Sendable {
+    var provider: WritingPartnerProvider { .onDevice }
+
     typealias Generator = @MainActor @Sendable (JazzTextLeadRequest) async throws -> JazzTextLeadResponse?
 
     init(customGenerator: Generator? = nil, timeoutSeconds: TimeInterval = 3.0) {}
+
+    var hasActiveSession: Bool { false }
+    func resetSession() {}
 
     func lead(request: JazzTextLeadRequest) async throws -> JazzTextLeadResponse? {
         return nil

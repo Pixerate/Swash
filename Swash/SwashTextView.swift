@@ -1166,6 +1166,10 @@ struct SwashTextView: NSViewRepresentable {
         
         let currentBaseURL = baseURL ?? textView.window?.representedURL ?? (textView.window.flatMap { NSDocumentController.shared.document(for: $0)?.fileURL })
         let baseChanged = (context.coordinator.lastBaseURL != currentBaseURL)
+
+        if baseChanged && currentBaseURL != nil && context.coordinator.lastBaseURL != nil {
+            context.coordinator.writingPartner.resetBandleaderSession()
+        }
         
         // Highlight if the text was updated, if style parameters changed, if baseURL updated, or on first run.
         context.coordinator.applyThemeBackground(typography, in: textView)
