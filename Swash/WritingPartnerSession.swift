@@ -336,6 +336,7 @@ final class WritingPartnerSession {
         if paused {
             pendingBoundaries = []
             cancelFix()
+            resetBandleaderSession()
             clearSuggestions(in: textView)
             if hasActiveSuggestion {
                 activeSuggestion = nil
@@ -1154,7 +1155,8 @@ final class WritingPartnerSession {
             guard let result = await WritingBandleaderFactory.leadWithFallback(
                 request: request,
                 provider: provider,
-                override: override
+                override: override,
+                existing: self.activeBandleader
             ) else {
                 return
             }
@@ -1271,6 +1273,16 @@ final class WritingPartnerSession {
     }
 
     // MARK: - Testing Helpers
+
+    /// Resets the current active bandleader's session and clears the active bandleader reference.
+    func resetBandleaderSession() {
+        activeBandleader?.resetSession()
+        activeBandleader = nil
+    }
+
+    var activeBandleaderForTesting: (any WritingBandleader)? {
+        activeBandleader
+    }
 
     func setBandleaderForTesting(_ bandleader: (any WritingBandleader)?) {
         self.testingBandleader = bandleader
