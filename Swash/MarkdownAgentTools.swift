@@ -813,7 +813,8 @@ public final class MarkdownToolProvider {
 public final class AgentDocumentSession: MarkdownToolTarget {
     /// The live raw Markdown.
     public var readMarkdown: () -> String = { "" }
-    /// Optional override for reading selection; nil by default so the agent's selection is decoupled from the user's cursor.
+    /// The user's live selection in raw-Markdown offsets, or nil without an editor. The agent starts
+    /// at the user's cursor; once a tool moves or edits, it keeps its own selection (`hasActivePresence`).
     public var readSelection: () -> NSRange? = { nil }
     /// Applies a whole-text edit as one undo step and passes the agent's new selection.
     public var applyEdit: (String, NSRange, String) -> Void = { _, _, _ in }
@@ -909,7 +910,8 @@ public final class AgentDocumentSession: MarkdownToolTarget {
 
     public var markdown: String { readMarkdown() }
 
-    public var selection: NSRange { readSelection() ?? lastSelection }
+    /// The agent's selection: its own once it has acted, else the user's (so "insert here" works).
+    public var selection: NSRange { hasActivePresence ? lastSelection : (readSelection() ?? lastSelection) }
 
     public func apply(
         markdown: String,

@@ -35,6 +35,8 @@ final class WritingPartnerOverlay: NSView {
     override var isFlipped: Bool { true }
 
     private(set) var suggestionPrompt: SuggestionPromptView?
+    private(set) var introductionView: PartnerIntroductionView?
+    private(set) var undoReminderView: PartnerUndoReminderView?
 
     var hasActiveSuggestion: Bool {
         suggestionPrompt != nil && suggestionPrompt?.isHidden == false
@@ -44,7 +46,27 @@ final class WritingPartnerOverlay: NSView {
         suggestionPrompt?.currentSuggestion
     }
 
+    var hasActiveIntroduction: Bool {
+        introductionView != nil && introductionView?.isHidden == false
+    }
+
+    var hasActiveUndoReminder: Bool {
+        undoReminderView != nil && undoReminderView?.isHidden == false
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
+        if let intro = introductionView, !intro.isHidden {
+            let pointInIntro = convert(point, to: intro)
+            if intro.bounds.contains(pointInIntro) {
+                return intro.hitTest(pointInIntro)
+            }
+        }
+        if let reminder = undoReminderView, !reminder.isHidden {
+            let pointInReminder = convert(point, to: reminder)
+            if reminder.bounds.contains(pointInReminder) {
+                return reminder.hitTest(pointInReminder)
+            }
+        }
         if let prompt = suggestionPrompt, !prompt.isHidden {
             let pointInPrompt = convert(point, to: prompt)
             if prompt.bounds.contains(pointInPrompt) {
@@ -124,6 +146,83 @@ final class WritingPartnerOverlay: NSView {
                 }
             })
         }
+    }
+
+    // MARK: First-Run Introduction & First-Undo Reminder (#112)
+
+    /// Shows the in-place first-run introduction note near `rect`.
+    func showIntroduction(
+        at rect: NSRect,
+        onChooseMode: @escaping (WritingPartnerMode) -> Void,
+        onDismiss: @escaping () -> Void
+    ) {
+        let intro: PartnerIntroductionView
+        if let existing = introductionView {
+            intro = existing
+        } else {
+            intro = PartnerIntroductionView(frame: .zero)
+            addSubview(intro)
+            introductionView = intro
+        }
+
+        intro.configure(onChooseMode: onChooseMode, onDismiss: onDismiss)
+        let size = PartnerIntroductionView.preferredSize
+        let margin: CGFloat = 12
+        let originX = max(margin, min(rect.minX, max(margin, bounds.width - size.width - margin)))
+        var originY = rect.maxY + 8
+        if originY + size.height > bounds.height - margin {
+            originY = max(margin, rect.minY - size.height - 8)
+        }
+        intro.frame = NSRect(origin: NSPoint(x: originX, y: originY), size: size)
+        intro.layoutSubtreeIfNeeded()
+        intro.isHidden = false
+        intro.alphaValue = 1.0
+        intro.startSamplePreview()
+    }
+
+    /// Hides and removes the first-run introduction note.
+    func hideIntroduction() {
+        guard let intro = introductionView else { return }
+        intro.isHidden = true
+        intro.removeFromSuperview()
+        introductionView = nil
+    }
+
+    /// Shows a quiet, non-modal reminder the first time a partner fix is undone.
+    func showUndoReminder(
+        at rect: NSRect,
+        onPause: @escaping () -> Void,
+        onDismiss: @escaping () -> Void
+    ) {
+        let reminder: PartnerUndoReminderView
+        if let existing = undoReminderView {
+            reminder = existing
+        } else {
+            reminder = PartnerUndoReminderView(frame: .zero)
+            addSubview(reminder)
+            undoReminderView = reminder
+        }
+
+        reminder.configure(onPause: onPause, onDismiss: onDismiss)
+        let size = PartnerUndoReminderView.preferredSize
+        let margin: CGFloat = 12
+        let originX = max(margin, min(rect.minX, max(margin, bounds.width - size.width - margin)))
+        var originY = rect.maxY + 6
+        if originY + size.height > bounds.height - margin {
+            originY = max(margin, rect.minY - size.height - 6)
+        }
+        reminder.frame = NSRect(origin: NSPoint(x: originX, y: originY), size: size)
+        reminder.layoutSubtreeIfNeeded()
+        reminder.isHidden = false
+        reminder.alphaValue = 1.0
+    }
+
+    /// Hides and removes the first-undo reminder.
+    func hideUndoReminder() {
+        guard let reminder = undoReminderView else { return }
+        reminder.isHidden = true
+        reminder.removeFromSuperview()
+        undoReminderView = nil
     }
 
     /// The overlay of `textView`, added on first use.
@@ -841,6 +940,431 @@ final class SuggestionPromptView: NSView {
         let totalW = max(320, min(500, 10 + 18 + 8 + textW + 12 + 84 + 6 + 78 + 10))
         let height: CGFloat = suggestion.why.isEmpty ? 36 : 46
         return NSSize(width: totalW, height: height)
+    }
+}
+
+// MARK: - Sample Sentence Preview View (#100, #112)
+
+/// A sample sentence with one wrong word, fixed by the partner's cursor in the chosen style.
+/// Used in Settings › Writing (looping) and in the first-run introduction (#112, playing one sample fix).
+final class WritingPartnerStylePreviewView: NSView {
+    static let before = "It fixes the odd "
+    static let wrong = "wrod"
+    static let right = "word"
+    static let after = " as you write."
+
+    /// The script, in ms: the cursor arrives, selects the word, types the new one a letter at a
+    /// time, the fix lands and stays, then (when `loops` is true) it starts again.
+    private static let selectAt: Double = 700
+    private static let typeMs: Double = 70
+    private static let hold: Double = 2600
+
+    static var sampleFixDurationMs: Double {
+        selectAt + WritingPartnerOverlay.selectMs + typeMs * Double(right.count + 1)
+    }
+
+    var style = WritingPartnerDefaults.defaultStyle {
+        didSet { if style != oldValue { look = nil; start = WritingPartnerStylePreviewView.now } }
+    }
+
+    /// True in Settings › Writing (repeats forever); false in the first-run introduction (plays once and holds).
+    var loops = true
+
+    /// The sentence currently shown in the sample layer.
+    private(set) var currentSampleText: String = before + wrong + after
+    /// True once the sample fix has finished typing and landed.
+    private(set) var hasCompletedSampleFix = false
+
+    private let renderer = FlairTextTreatmentRenderer()
+    private let label = CATextLayer()
+    private var look: WritingPartnerOverlay.Look?
+    private var start = WritingPartnerStylePreviewView.now
+    private var timer: Timer?
+    private let font = NSFont.systemFont(ofSize: 15)
+
+    private static var now: Double { CACurrentMediaTime() * 1000 }
+
+    override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        label.font = font
+        label.fontSize = font.pointSize
+        label.actions = ["contents": NSNull(), "string": NSNull(), "foregroundColor": NSNull()]
+        layer?.addSublayer(renderer.behindLayer)
+        layer?.addSublayer(label)
+        layer?.addSublayer(renderer.aboveLayer)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel("Sample fix: \(Self.before)\(Self.wrong)\(Self.after) becomes \(Self.before)\(Self.right)\(Self.after)")
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        restartAnimation()
+    }
+
+    func restartAnimation() {
+        timer?.invalidate()
+        timer = nil
+        start = Self.now
+        hasCompletedSampleFix = false
+        draw()
+        guard window != nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.draw() }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        look = nil
+    }
+
+    private func width(_ text: String) -> CGFloat {
+        NSAttributedString(string: text, attributes: [.font: font]).size().width
+    }
+
+    func draw(elapsedOverrideMs: Double? = nil) {
+        let dark = WritingPartnerOverlay.isDark(self)
+        if look == nil { look = WritingPartnerOverlay.look(id: style, dark: dark) }
+        guard let look else { return }
+        var background = NSColor.textBackgroundColor
+        var ink = NSColor.textColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            background = NSColor.textBackgroundColor.usingColorSpace(.sRGB) ?? background
+            ink = NSColor.textColor.usingColorSpace(.sRGB) ?? ink
+        }
+        layer?.backgroundColor = background.cgColor
+
+        let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
+        let origin = NSPoint(x: 14, y: max(4, (bounds.height - lineHeight) / 2))
+        let wordX = origin.x + width(Self.before)
+        let line = { (word: String) in NSRect(x: wordX, y: origin.y, width: self.width(word), height: lineHeight) }
+        let caret = { (x: CGFloat) in FlairTreatmentCaret(x: Double(x), y: Double(origin.y), height: Double(lineHeight)) }
+
+        let typeEnd = Self.sampleFixDurationMs
+        var time = elapsedOverrideMs ?? (Self.now - start)
+        if loops && time > typeEnd + Self.hold {
+            start = Self.now
+            time = 0
+        }
+
+        var plans: [FlairTextTreatmentPlan] = []
+        var shown = Self.wrong
+        if time < Self.selectAt {
+            plans.append(look.plan(.caret, at: time, over: FlairTreatmentTarget(caret: caret(wordX + width(Self.wrong)))))
+        } else if time < Self.selectAt + WritingPartnerOverlay.selectMs {
+            let target = FlairTreatmentTarget(lines: [line(Self.wrong)], caret: caret(wordX + width(Self.wrong)))
+            plans.append(look.plan(.selecting, at: time - Self.selectAt, over: target))
+            plans.append(look.plan(.caret, at: time, over: FlairTreatmentTarget(caret: target.caret)))
+        } else if time < typeEnd {
+            let typing = time - Self.selectAt - WritingPartnerOverlay.selectMs
+            let typed = String(Self.right.prefix(min(Self.right.count, Int(typing / Self.typeMs))))
+            let head = caret(wordX + width(typed))
+            let target = FlairTreatmentTarget(lines: [line(Self.wrong)], caret: head, text: typed,
+                                              color: WritingPartnerOverlay.rgba(ink), background: WritingPartnerOverlay.rgba(background))
+            plans.append(look.plan(.typing, at: typing, over: target))
+            plans.append(look.plan(.caret, at: time, over: FlairTreatmentTarget(caret: head)))
+        } else {
+            shown = Self.right
+            hasCompletedSampleFix = true
+            let target = FlairTreatmentTarget(lines: [line(Self.right)], caret: caret(wordX + width(Self.right)))
+            let landed = look.plan(.landed, at: time - typeEnd, over: target)
+            if !landed.done {
+                plans.append(landed)
+            } else if !loops {
+                timer?.invalidate()
+                timer = nil
+            }
+        }
+
+        let fullString = Self.before + shown + Self.after
+        currentSampleText = fullString
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        label.contentsScale = window?.backingScaleFactor ?? 2
+        label.foregroundColor = ink.cgColor
+        label.string = fullString
+        label.frame = NSRect(x: origin.x, y: origin.y, width: max(120, bounds.width - origin.x * 2), height: lineHeight + 2)
+        CATransaction.commit()
+        renderer.contentsScale = label.contentsScale
+        renderer.draw(plans, font: font)
+    }
+}
+
+// MARK: - First-Run Introduction View (#112)
+
+/// In-place, non-modal introduction shown once per install the first time a document is edited.
+/// Plays one sample fix on a sample sentence before the partner touches the user's words, states
+/// plainly that default rules run on the device, and offers Automatically, Suggest, and Not now.
+@MainActor
+final class PartnerIntroductionView: NSView {
+    static let noteText = "Swash can tidy up behind you as you type"
+    nonisolated static let privacyText = "Punctuation and spelling rules run on your Mac and never leave this device."
+    /// Signed in, the pause tier sends the paragraph to Pixerate (docs/writing-partner-privacy.md),
+    /// so the introduction says so before the person chooses.
+    nonisolated static let signedInPrivacyText = "Fixes as you type run on your Mac. Because you're signed in, the paragraph you pause on is also sent to Pixerate for suggestions."
+
+    nonisolated static func privacyText(signedIn: Bool) -> String {
+        signedIn ? signedInPrivacyText : privacyText
+    }
+
+    static let preferredSize = NSSize(width: 420, height: 146)
+
+    let titleLabel = NSTextField(labelWithString: PartnerIntroductionView.noteText)
+    let sampleView = WritingPartnerStylePreviewView(frame: .zero)
+    let privacyLabel = NSTextField(wrappingLabelWithString: PartnerIntroductionView.privacyText)
+    let automaticallyButton = NSButton(title: "Automatically", target: nil, action: nil)
+    let suggestButton = NSButton(title: "Suggest", target: nil, action: nil)
+    let notNowButton = NSButton(title: "Not now", target: nil, action: nil)
+    private let iconView = NSImageView()
+
+    var onChooseMode: ((WritingPartnerMode) -> Void)?
+    var onDismiss: (() -> Void)?
+
+    override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setup()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 10
+        layer?.borderWidth = 1
+        layer?.borderColor = WritingPartnerOverlay.tint.withAlphaComponent(0.45).cgColor
+        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.97).cgColor
+        shadow = NSShadow()
+        shadow?.shadowColor = NSColor.black.withAlphaComponent(0.18)
+        shadow?.shadowOffset = NSSize(width: 0, height: -2)
+        shadow?.shadowBlurRadius = 10
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityIdentifier("WritingPartnerIntroductionView")
+
+        iconView.image = NSImage(systemSymbolName: "character.cursor.ibeam", accessibilityDescription: "Writing partner")
+        iconView.imageScaling = .scaleProportionallyDown
+        iconView.contentTintColor = WritingPartnerOverlay.tint
+        addSubview(iconView)
+
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = NSColor.labelColor
+        titleLabel.isBezeled = false
+        titleLabel.isEditable = false
+        titleLabel.drawsBackground = false
+        addSubview(titleLabel)
+
+        sampleView.loops = false
+        sampleView.style = WritingPartnerDefaults.style()
+        sampleView.layer?.borderWidth = 1
+        sampleView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
+        addSubview(sampleView)
+
+        privacyLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        privacyLabel.textColor = NSColor.secondaryLabelColor
+        privacyLabel.isBezeled = false
+        privacyLabel.isEditable = false
+        privacyLabel.drawsBackground = false
+        addSubview(privacyLabel)
+
+        automaticallyButton.bezelStyle = .rounded
+        automaticallyButton.target = self
+        automaticallyButton.action = #selector(automaticallyClicked)
+        // No Return key equivalent: Return while writing must start a new line, never opt in
+        automaticallyButton.contentTintColor = WritingPartnerOverlay.tint
+        automaticallyButton.toolTip = "Turn on the writing partner in Automatically mode (⌥Return)"
+        automaticallyButton.setAccessibilityElement(true)
+        automaticallyButton.setAccessibilityRole(.button)
+        automaticallyButton.setAccessibilityLabel("Turn on Automatically")
+        automaticallyButton.setAccessibilityIdentifier("IntroAutomaticallyButton")
+        addSubview(automaticallyButton)
+
+        suggestButton.bezelStyle = .rounded
+        suggestButton.target = self
+        suggestButton.action = #selector(suggestClicked)
+        suggestButton.toolTip = "Offer fixes as underlined suggestions without changing text automatically"
+        suggestButton.setAccessibilityElement(true)
+        suggestButton.setAccessibilityRole(.button)
+        suggestButton.setAccessibilityLabel("Turn on Suggest")
+        suggestButton.setAccessibilityIdentifier("IntroSuggestButton")
+        addSubview(suggestButton)
+
+        notNowButton.bezelStyle = .rounded
+        notNowButton.target = self
+        notNowButton.action = #selector(notNowClicked)
+        notNowButton.keyEquivalent = "\u{1b}"
+        notNowButton.toolTip = "Keep the writing partner off for now (Escape)"
+        notNowButton.setAccessibilityElement(true)
+        notNowButton.setAccessibilityRole(.button)
+        notNowButton.setAccessibilityLabel("Not now")
+        notNowButton.setAccessibilityIdentifier("IntroNotNowButton")
+        addSubview(notNowButton)
+
+        setAccessibilityLabel("\(Self.noteText). \(Self.privacyText) Choose Automatically, Suggest, or Not now.")
+        setAccessibilityChildren([titleLabel, sampleView, privacyLabel, automaticallyButton, suggestButton, notNowButton])
+    }
+
+    func configure(
+        onChooseMode: @escaping (WritingPartnerMode) -> Void,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.onChooseMode = onChooseMode
+        self.onDismiss = onDismiss
+        sampleView.style = WritingPartnerDefaults.style()
+        let privacy = Self.privacyText(signedIn: WritingPartnerDefaults.provider() == .pixerate)
+        privacyLabel.stringValue = privacy
+        setAccessibilityLabel("\(Self.noteText). \(privacy) Choose Automatically, Suggest, or Not now.")
+        needsLayout = true
+    }
+
+    func startSamplePreview() {
+        sampleView.restartAnimation()
+    }
+
+    @objc private func automaticallyClicked() {
+        onChooseMode?(.automatic)
+    }
+
+    @objc private func suggestClicked() {
+        onChooseMode?(.suggest)
+    }
+
+    @objc private func notNowClicked() {
+        onDismiss?()
+    }
+
+    override func layout() {
+        super.layout()
+        let padX: CGFloat = 12
+        let padY: CGFloat = 10
+        let iconSize: CGFloat = 16
+
+        iconView.frame = NSRect(x: padX, y: padY + 1, width: iconSize, height: iconSize)
+        titleLabel.frame = NSRect(x: iconView.frame.maxX + 6, y: padY, width: bounds.width - iconView.frame.maxX - 6 - padX, height: 18)
+
+        let sampleY = titleLabel.frame.maxY + 6
+        sampleView.frame = NSRect(x: padX, y: sampleY, width: bounds.width - padX * 2, height: 38)
+
+        let privacyY = sampleView.frame.maxY + 6
+        privacyLabel.frame = NSRect(x: padX, y: privacyY, width: bounds.width - padX * 2, height: 28)
+
+        let buttonH: CGFloat = 24
+        let buttonY = bounds.height - padY - buttonH
+        let notNowW: CGFloat = 76
+        let suggestW: CGFloat = 76
+        let autoW: CGFloat = 108
+
+        notNowButton.frame = NSRect(x: bounds.width - padX - notNowW, y: buttonY, width: notNowW, height: buttonH)
+        suggestButton.frame = NSRect(x: notNowButton.frame.minX - 6 - suggestW, y: buttonY, width: suggestW, height: buttonH)
+        automaticallyButton.frame = NSRect(x: suggestButton.frame.minX - 6 - autoW, y: buttonY, width: autoW, height: buttonH)
+    }
+}
+
+// MARK: - First-Undo Quiet Reminder View (#112)
+
+/// Quiet, non-modal reminder shown once per install the first time a partner fix is undone,
+/// explaining where to pause the partner for this document or turn it off in Settings › Writing.
+@MainActor
+final class PartnerUndoReminderView: NSView {
+    static let messageText = "Pause for this document in Edit › Pause Writing Partner (⌥⌘P), or turn it off in Settings › Writing."
+    static let preferredSize = NSSize(width: 460, height: 42)
+
+    let messageLabel = NSTextField(wrappingLabelWithString: PartnerUndoReminderView.messageText)
+    let pauseButton = NSButton(title: "Pause Here", target: nil, action: nil)
+    let dismissButton = NSButton(title: "Dismiss", target: nil, action: nil)
+
+    var onPause: (() -> Void)?
+    var onDismiss: (() -> Void)?
+
+    override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setup()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.borderWidth = 1
+        layer?.borderColor = WritingPartnerOverlay.tint.withAlphaComponent(0.35).cgColor
+        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.96).cgColor
+        shadow = NSShadow()
+        shadow?.shadowColor = NSColor.black.withAlphaComponent(0.14)
+        shadow?.shadowOffset = NSSize(width: 0, height: -2)
+        shadow?.shadowBlurRadius = 6
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityIdentifier("WritingPartnerUndoReminderView")
+
+        messageLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        messageLabel.textColor = NSColor.secondaryLabelColor
+        messageLabel.isBezeled = false
+        messageLabel.isEditable = false
+        messageLabel.drawsBackground = false
+        addSubview(messageLabel)
+
+        pauseButton.bezelStyle = .rounded
+        pauseButton.target = self
+        pauseButton.action = #selector(pauseClicked)
+        pauseButton.setAccessibilityElement(true)
+        pauseButton.setAccessibilityRole(.button)
+        pauseButton.setAccessibilityLabel("Pause Writing Partner for this document")
+        pauseButton.setAccessibilityIdentifier("UndoReminderPauseButton")
+        addSubview(pauseButton)
+
+        dismissButton.bezelStyle = .rounded
+        dismissButton.target = self
+        dismissButton.action = #selector(dismissClicked)
+        dismissButton.keyEquivalent = "\u{1b}"
+        dismissButton.setAccessibilityElement(true)
+        dismissButton.setAccessibilityRole(.button)
+        dismissButton.setAccessibilityLabel("Dismiss reminder")
+        dismissButton.setAccessibilityIdentifier("UndoReminderDismissButton")
+        addSubview(dismissButton)
+
+        setAccessibilityLabel(Self.messageText)
+        setAccessibilityChildren([messageLabel, pauseButton, dismissButton])
+    }
+
+    func configure(onPause: @escaping () -> Void, onDismiss: @escaping () -> Void) {
+        self.onPause = onPause
+        self.onDismiss = onDismiss
+        needsLayout = true
+    }
+
+    @objc private func pauseClicked() {
+        onPause?()
+    }
+
+    @objc private func dismissClicked() {
+        onDismiss?()
+    }
+
+    override func layout() {
+        super.layout()
+        let padX: CGFloat = 10
+        let buttonH: CGFloat = 22
+        let dismissW: CGFloat = 68
+        let pauseW: CGFloat = 86
+
+        dismissButton.frame = NSRect(x: bounds.width - padX - dismissW, y: (bounds.height - buttonH) / 2, width: dismissW, height: buttonH)
+        pauseButton.frame = NSRect(x: dismissButton.frame.minX - 6 - pauseW, y: (bounds.height - buttonH) / 2, width: pauseW, height: buttonH)
+
+        let textW = max(80, pauseButton.frame.minX - padX - 8)
+        messageLabel.frame = NSRect(x: padX, y: (bounds.height - 28) / 2, width: textW, height: 28)
     }
 }
 #endif

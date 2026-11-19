@@ -6,6 +6,6 @@ cd "$(dirname "$0")/.."
 source scripts/pixerate_markdown.sh
 OUT="build/slack"; mkdir -p "$OUT"
 swiftc -O -target arm64-apple-macos14.0 -sdk "$(xcrun --show-sdk-path --sdk macosx)" \
-  $PIXERATE_MARKDOWN Swash/MarkdownFlavor.swift Swash/PixerateMarkdownExtensions.swift Swash/SlackMarkdown.swift \
+  $PIXERATE_MARKDOWN Swash/MarkdownFlavor.swift Swash/SlackMarkdown.swift \
   Tests/Slack/main.swift -o "$OUT/runner"
 "$OUT/runner"

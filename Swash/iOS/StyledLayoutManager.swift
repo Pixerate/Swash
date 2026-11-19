@@ -12,6 +12,41 @@
 import UIKit
 
 final class StyledLayoutManager: NSLayoutManager {
+    /// The storage character range kept at full strength in Focus Mode (nil when Focus Mode is off).
+    var focusedCharacterRange: NSRange?
+    static let unfocusedAlpha: CGFloat = 0.3
+
+    func focusAlpha(for characterIndex: Int) -> CGFloat {
+        guard let focused = focusedCharacterRange else { return 1 }
+        return NSLocationInRange(characterIndex, focused) ? 1 : Self.unfocusedAlpha
+    }
+
+    override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
+        guard let focused = focusedCharacterRange, let context = UIGraphicsGetCurrentContext() else {
+            super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
+            return
+        }
+        // The range can be stale for a moment after an edit shortens the text
+        let length = textStorage?.length ?? 0
+        let clamped = NSIntersectionRange(focused, NSRange(location: 0, length: length))
+        let focusedGlyphs = glyphRange(forCharacterRange: clamped, actualCharacterRange: nil)
+        let before = NSIntersectionRange(glyphsToShow, NSRange(location: 0, length: focusedGlyphs.location))
+        let inside = NSIntersectionRange(glyphsToShow, focusedGlyphs)
+        let afterStart = NSMaxRange(focusedGlyphs)
+        let after = afterStart < NSMaxRange(glyphsToShow)
+            ? NSIntersectionRange(glyphsToShow, NSRange(location: afterStart, length: NSMaxRange(glyphsToShow) - afterStart))
+            : NSRange(location: 0, length: 0)
+        for dimmed in [before, after] where dimmed.length > 0 {
+            context.saveGState()
+            context.setAlpha(Self.unfocusedAlpha)
+            super.drawGlyphs(forGlyphRange: dimmed, at: origin)
+            context.restoreGState()
+        }
+        if inside.length > 0 {
+            super.drawGlyphs(forGlyphRange: inside, at: origin)
+        }
+    }
+
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
         drawBlockDecorations(forGlyphRange: glyphsToShow, at: origin)
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
@@ -23,7 +58,11 @@ final class StyledLayoutManager: NSLayoutManager {
             guard let badge = value as? CodeBadgeInfo else { return }
             let lineRect = lineFragmentRect(forGlyphAt: glyphIndexForCharacter(at: range.location), effectiveRange: nil)
             let rect = badge.rect(in: textLineRect(lineRect, at: range.location)).offsetBy(dx: origin.x, dy: origin.y)
-            (badge.title as NSString).draw(at: CGPoint(x: rect.minX + 2, y: rect.minY + 1), withAttributes: CodeBadgeInfo.attributes)
+            var attributes = CodeBadgeInfo.attributes
+            if self.focusAlpha(for: range.location) < 1 {
+                attributes[.foregroundColor] = UIColor.tertiaryLabel.withAlphaComponent(Self.unfocusedAlpha)
+            }
+            (badge.title as NSString).draw(at: CGPoint(x: rect.minX + 2, y: rect.minY + 1), withAttributes: attributes)
         }
 
         textStorage.enumerateAttribute(.alertIcon, in: charRange, options: []) { value, range, _ in
@@ -33,7 +72,8 @@ final class StyledLayoutManager: NSLayoutManager {
             let used = lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
             let titleX = lineRect.origin.x + location(forGlyphAt: glyph).x
             let size = image.size
-            image.draw(in: CGRect(x: origin.x + titleX - size.width - 5, y: origin.y + used.midY - size.height / 2, width: size.width, height: size.height))
+            image.draw(in: CGRect(x: origin.x + titleX - size.width - 5, y: origin.y + used.midY - size.height / 2, width: size.width, height: size.height),
+                       blendMode: .normal, alpha: self.focusAlpha(for: range.location))
         }
 
         textStorage.enumerateAttribute(.richPreview, in: charRange, options: []) { value, range, _ in
@@ -46,9 +86,11 @@ final class StyledLayoutManager: NSLayoutManager {
             let markerGlyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
             let used = lineFragmentUsedRect(forGlyphAt: markerGlyphs.location, effectiveRange: nil)
             let lineRect = lineFragmentRect(forGlyphAt: markerGlyphs.location, effectiveRange: nil)
+            let baseColor = marker.color ?? UIColor.secondaryLabel
+            let alpha = self.focusAlpha(for: range.location)
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: UIFont.systemFont(ofSize: 13 * MarkdownEditorStyler.fontScale, weight: .regular),
-                .foregroundColor: marker.color ?? UIColor.secondaryLabel,
+                .foregroundColor: alpha < 1 ? baseColor.withAlphaComponent(alpha) : baseColor,
             ]
             let size = (marker.text as NSString).size(withAttributes: attributes)
             // Just left of where the item's text starts, so it lines up inside boxes too

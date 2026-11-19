@@ -708,6 +708,9 @@ struct InteractionRunner {
              let savedMode = defaults.string(forKey: WritingPartnerDefaults.mode)
              let savedStats = defaults.data(forKey: WritingPartnerDefaults.stats)
              let savedChatStats = defaults.data(forKey: WritingPartnerDefaults.chatStats)
+             // The first-run introduction (#112) holds the partner until it's answered
+             let savedIntroShown = defaults.object(forKey: WritingPartnerDefaults.introShown)
+             WritingPartnerDefaults.setIntroShown(true, defaults)
              defaults.removeObject(forKey: WritingPartnerDefaults.stats)
              defaults.removeObject(forKey: WritingPartnerDefaults.chatStats)
              func typeEach(_ text: String, into tv: NSTextView) {
@@ -1152,6 +1155,7 @@ struct InteractionRunner {
              if let savedMode { defaults.set(savedMode, forKey: WritingPartnerDefaults.mode) } else { defaults.removeObject(forKey: WritingPartnerDefaults.mode) }
              if let savedStats { defaults.set(savedStats, forKey: WritingPartnerDefaults.stats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.stats) }
              if let savedChatStats { defaults.set(savedChatStats, forKey: WritingPartnerDefaults.chatStats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.chatStats) }
+             if let savedIntroShown { defaults.set(savedIntroShown, forKey: WritingPartnerDefaults.introShown) } else { defaults.removeObject(forKey: WritingPartnerDefaults.introShown) }
         }
 
         try? out.write(toFile: CommandLine.arguments[1], atomically: true, encoding: .utf8)

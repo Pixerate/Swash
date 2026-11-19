@@ -151,3 +151,38 @@ struct StatisticsMenu: View {
         .help("Choose the statistic shown here")
     }
 }
+
+// MARK: - Previews
+
+#Preview("Document Outline - Populated") {
+    @Previewable @State var state: DocumentOutlineState = {
+        let state = DocumentOutlineState()
+        state.outline = MarkdownOutline(text: """
+            # Swash Editor
+            ## Getting Started
+            ### Installation
+            ## Features
+            ### Dynamic Previews
+            ### GenUI Blocks
+            ## Troubleshooting
+            """)
+        state.currentIndex = 1
+        return state
+    }()
+    DocumentOutlineView(state: state)
+        .frame(width: 240, height: 400)
+}
+
+#Preview("Document Outline - Empty") {
+    @Previewable @State var state = DocumentOutlineState()
+    DocumentOutlineView(state: state)
+        .frame(width: 240, height: 300)
+}
+
+#Preview("Statistics Menu") {
+    StatisticsMenu(
+        document: MarkdownStatistics(text: SwashSampleDocument.standard.text),
+        selection: nil
+    )
+    .padding()
+}

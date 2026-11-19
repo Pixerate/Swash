@@ -147,13 +147,87 @@ nonisolated enum WritingPartnerDefaults {
     static let quickNoteTidy = "writingPartnerQuickNoteTidy"
     /// The undo action name of an accepted Quick Note tidy-up (#108).
     static let tidyActionName = "Tidy"
+    /// Whether the first-run introduction note has been shown (#112).
+    static let introShown = "writingPartnerIntroShown"
+    /// Whether the quiet reminder on the first undone partner fix has been shown (#112).
+    static let undoReminderShown = "writingPartnerUndoReminderShown"
+    /// Marker recorded once existing-install migration has run (#112).
+    static let installMigrated = "writingPartnerInstallMigrated"
+
+    /// Preference keys written by Swash prior to #112. If any is present when `writingPartnerMode`
+    /// is unset and `installMigrated` is false, this is an upgrade of an existing install whose
+    /// partner was off, so its `.off` setting is preserved.
+    private static let existingInstallKeys: [String] = [
+        "SUHasLaunchedBefore",
+        "suppressDefaultAppPrompt",
+        "defaultMarkdownFlavor",
+        "markdownFlavor",
+        "showOutline",
+        "showMenuBarExtra",
+        stats,
+        chatStats,
+        spelling,
+        curlyQuotes,
+        doubledWords,
+        aAndAn,
+        agreementAndTense,
+        missingWords,
+        style,
+        quickNoteTidy,
+        "writingFocusMode",
+        "writingFocusUnit",
+        "writingTypewriterScrolling",
+        "editorTypographyFont",
+        "editorTypographyTextSize",
+        "editorTypographyLineWidth",
+        "editorTypographyTheme",
+        "agentToolsEnabled",
+        "agentBridgePort",
+    ]
 
     static func quickNoteTidy(_ defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: quickNoteTidy) == nil ? true : defaults.bool(forKey: quickNoteTidy)
     }
 
+    static func introShown(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: introShown)
+    }
+
+    static func setIntroShown(_ shown: Bool, _ defaults: UserDefaults = .standard) {
+        defaults.set(shown, forKey: introShown)
+    }
+
+    static func undoReminderShown(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: undoReminderShown)
+    }
+
+    static func setUndoReminderShown(_ shown: Bool, _ defaults: UserDefaults = .standard) {
+        defaults.set(shown, forKey: undoReminderShown)
+    }
+
+    /// Preserves an existing install's setting on upgrade (#112). Before #112, an untouched
+    /// install had no `writingPartnerMode` key and defaulted to `.off`; a new install has no
+    /// prior Swash keys and defaults to `.automatic`.
+    @discardableResult
+    static func migrateExistingInstall(_ defaults: UserDefaults = .standard) -> WritingPartnerMode {
+        if let raw = defaults.string(forKey: mode), let stored = WritingPartnerMode(rawValue: raw) {
+            defaults.set(true, forKey: installMigrated)
+            return stored
+        }
+        if defaults.bool(forKey: installMigrated) {
+            return .automatic
+        }
+        let isUpgrade = existingInstallKeys.contains { defaults.object(forKey: $0) != nil }
+        let resolved: WritingPartnerMode = isUpgrade ? .off : .automatic
+        defaults.set(resolved.rawValue, forKey: mode)
+        defaults.set(true, forKey: installMigrated)
+        return resolved
+    }
+
+    /// A new install has the partner on in Automatically (#112); an explicit choice or migrated
+    /// upgrade setting takes precedence.
     static func mode(_ defaults: UserDefaults = .standard) -> WritingPartnerMode {
-        defaults.string(forKey: mode).flatMap(WritingPartnerMode.init(rawValue:)) ?? .off
+        defaults.string(forKey: mode).flatMap(WritingPartnerMode.init(rawValue:)) ?? .automatic
     }
 
     /// Who answers when the person pauses (#101). Not a choice: Pixerate when signed in (signing in

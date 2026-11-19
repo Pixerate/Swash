@@ -546,6 +546,23 @@ func run() async {
         expectEqual(session.selection, NSRange(location: 11, length: 7), "user edit before agent selection shifts it by +4")
         expectEqual(session.lastModifiedRanges, [NSRange(location: 11, length: 7)], "user edit before modified range shifts it by +4")
     }
+
+    // An agent that hasn't acted yet starts at the user's cursor; afterwards it keeps its own.
+    do {
+        let session = AgentDocumentSession()
+        var docText = "Hello world"
+        var userSelection = NSRange(location: 5, length: 0)
+        session.readMarkdown = { docText }
+        session.readSelection = { userSelection }
+        session.applyEditWithEdits = { newText, _, _, _ in docText = newText }
+        expectEqual(session.selection, NSRange(location: 5, length: 0), "an idle agent's selection is the user's")
+        _ = await session.registry.callTool("insert_text", ["text": ","])
+        expectEqual(docText, "Hello, world", "insert_text without `at` goes at the user's cursor first")
+        userSelection = NSRange(location: 0, length: 0)
+        expectEqual(session.selection, NSRange(location: 6, length: 0), "once it has acted, the agent keeps its own selection")
+        session.clearPresence()
+        expectEqual(session.selection, NSRange(location: 0, length: 0), "clearing presence hands the selection back to the user's")
+    }
 }
 
 await run()

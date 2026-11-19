@@ -144,6 +144,7 @@ struct AgentToolsHookup: ViewModifier {
             }
             .onDisappear {
                 editor.clearAgentPresence()
+                editor.onUserRawEdit = nil
                 AgentBridge.shared.detach(session)
             }
             .onChange(of: appearsActive) { _, active in
@@ -152,6 +153,7 @@ struct AgentToolsHookup: ViewModifier {
             .onChange(of: documentID) {
                 session.clearPresence()
                 editor.clearAgentPresence()
+                editor.onUserRawEdit = nil
                 configure()
             }
             .onChange(of: name) { configure() }
@@ -165,7 +167,8 @@ struct AgentToolsHookup: ViewModifier {
         let session = session
         let attached = { editor.textView?.window != nil }
         session.readMarkdown = { (attached() ? editor.currentRawText : nil) ?? text.wrappedValue }
-        session.readSelection = { nil }
+        session.readSelection = { attached() ? editor.currentRawSelection : nil }
+        // The agent keeps its own selection: set_selection and edits don't move the user's caret.
         session.selectRange = { _ in }
         session.applyEditWithEdits = { newText, selection, actionName, edits in
             let editTuples = edits.map { (range: $0.range, replacementLength: $0.newLength) }
@@ -178,27 +181,30 @@ struct AgentToolsHookup: ViewModifier {
                 text.wrappedValue = newText
             }
         }
-        session.onPresenceChange = { update in
-            guard attached() else { return }
+        // Weak: the session's closures hold the editor, and the editor holds `onUserRawEdit`.
+        session.onPresenceChange = { [weak session, weak editor] update in
+            guard attached(), let session, let editor else { return }
             editor.showAgentPresence(
                 rawSelection: update.selection,
                 modifiedRawRanges: update.modifiedRanges,
                 label: update.label,
                 colorHex: update.colorHex
             )
-        }
-        editor.onUserRawEdit = { replacedRange, replacementLength, newLength in
-            guard attached() else { return }
-            session.remapSelectionForUserEdit(
-                replacedRange: replacedRange,
-                replacementLength: replacementLength,
-                newTextLength: newLength
-            )
-            if session.hasActivePresence {
-                editor.remapAgentPresence(
-                    rawSelection: session.selection,
-                    modifiedRawRanges: session.lastModifiedRanges
-                )
+            // Only diff the user's edits while the agent has its own selection to keep in place;
+            // before that its selection is the user's, which needs no mapping.
+            if editor.onUserRawEdit == nil {
+                editor.onUserRawEdit = { [weak session, weak editor] replacedRange, replacementLength, newLength in
+                    guard let session, let editor, session.hasActivePresence else { return }
+                    session.remapSelectionForUserEdit(
+                        replacedRange: replacedRange,
+                        replacementLength: replacementLength,
+                        newTextLength: newLength
+                    )
+                    editor.remapAgentPresence(
+                        rawSelection: session.selection,
+                        modifiedRawRanges: session.lastModifiedRanges
+                    )
+                }
             }
         }
         session.readOnlyReason = readOnlyReason

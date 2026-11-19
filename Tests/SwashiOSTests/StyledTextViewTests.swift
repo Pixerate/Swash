@@ -515,4 +515,217 @@ final class StyledTextViewTests: XCTestCase {
         e.forceFullRestyle()
         XCTAssertEqual(incremental, e.fingerprint(), firstDifference(incremental, e.fingerprint()))
     }
+
+    // MARK: - Pointer and keyboard navigation for code badges and block menu
+
+    func testCodeBadgeButtonsHavePointerInteractionAndMenu() throws {
+        let e = try editor("```swift\nlet x = 1\n```")
+        e.textView.layoutSubviews()
+        e.pump()
+        XCTAssertEqual(e.textView.codeBadgeButtons.count, 1)
+        let button = e.textView.codeBadgeButtons[0]
+        XCTAssertFalse(button.isHidden)
+        XCTAssertTrue(button.isPointerInteractionEnabled)
+        XCTAssertNotNil(button.menu)
+        XCTAssertTrue(button.accessibilityLabel?.contains("Swift") == true)
+        XCTAssertEqual(button.accessibilityHint, "Double-tap or click to choose code language")
+    }
+
+    func testEditMenuOffersCodeLanguageForFencedCodeBlock() throws {
+        let e = try editor("```swift\nlet x = 1\n```")
+        e.caret(after: "let x")
+        let textRange = try XCTUnwrap(e.textView.selectedTextRange)
+        let menu = e.textView.editMenu(for: textRange, suggestedActions: [])
+        let langMenu = menu?.children.compactMap { $0 as? UIMenu }.first(where: { $0.title == "Code Language" })
+        XCTAssertNotNil(langMenu, "editMenu should include a 'Code Language' submenu when caret is inside a code block")
+
+        let allActions: [UIAction] = (langMenu?.children ?? []).flatMap { item -> [UIAction] in
+            if let action = item as? UIAction { return [action] }
+            if let sub = item as? UIMenu { return sub.children.compactMap { $0 as? UIAction } }
+            return []
+        }
+        let pythonAction = allActions.first(where: { $0.title == "Python" })
+        XCTAssertNotNil(pythonAction)
+
+        e.textView.coordinator?.setCodeLanguage("python", atStorageLocation: 0, in: e.textView)
+        e.pump()
+        XCTAssertTrue(e.text.hasPrefix("```python\n"))
+    }
+
+    func testBlockMenuViewControllerKeyboardNavigation() throws {
+        var chosenKind: MarkdownEditingCommands.BlockInsert?
+        let menu = BlockMenuViewController { kind in
+            chosenKind = kind
+        }
+        XCTAssertEqual(menu.selectedIndex, 0)
+
+        menu.beginAppearanceTransition(true, animated: false)
+        menu.endAppearanceTransition()
+        XCTAssertEqual(menu.selectedIndex, 0)
+
+        // Down arrow advances selection
+        menu.selectNext()
+        XCTAssertEqual(menu.selectedIndex, 1)
+
+        // Up arrow moves back
+        menu.selectPrevious()
+        XCTAssertEqual(menu.selectedIndex, 0)
+
+        // Up arrow wraps to end
+        menu.selectPrevious()
+        XCTAssertEqual(menu.selectedIndex, menu.kinds.count - 1)
+
+        // Down arrow wraps to start
+        menu.selectNext()
+        XCTAssertEqual(menu.selectedIndex, 0)
+
+        // Return triggers selection
+        menu.chooseSelected()
+        XCTAssertEqual(chosenKind, menu.kinds[0])
+
+        // Table cell has hoverStyle configured
+        let cell = menu.tableView(menu.tableView, cellForRowAt: IndexPath(row: 0, section: 0))
+        XCTAssertNotNil(cell.hoverStyle)
+    }
+
+    func testStyledUITextViewKeyCommandsInBlockMenu() throws {
+        let e = try editor("Text\n\n")
+        e.host.traitOverrides.horizontalSizeClass = .regular
+        e.window.layoutIfNeeded()
+
+        var chosenKind: MarkdownEditingCommands.BlockInsert?
+        e.textView.presentBlockMenu { kind in
+            chosenKind = kind
+        }
+
+        let keyCommands = try XCTUnwrap(e.textView.keyCommands)
+        let inputs = keyCommands.map(\.input)
+        XCTAssertTrue(inputs.contains(UIKeyCommand.inputDownArrow))
+        XCTAssertTrue(inputs.contains(UIKeyCommand.inputUpArrow))
+        XCTAssertTrue(inputs.contains("\r"))
+        XCTAssertTrue(inputs.contains(UIKeyCommand.inputEscape))
+
+        if let menu = e.textView.blockMenuPopover as? BlockMenuViewController {
+            XCTAssertEqual(menu.selectedIndex, 0)
+            e.textView.handleBlockMenuDown(UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(StyledUITextView.handleBlockMenuDown(_:))))
+            XCTAssertEqual(menu.selectedIndex, 1)
+
+            e.textView.handleBlockMenuUp(UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(StyledUITextView.handleBlockMenuUp(_:))))
+            XCTAssertEqual(menu.selectedIndex, 0)
+
+            e.textView.handleBlockMenuReturn(UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(StyledUITextView.handleBlockMenuReturn(_:))))
+            XCTAssertEqual(chosenKind, menu.kinds[0])
+        }
+
+        // Dismiss closes popover
+        e.textView.presentBlockMenu { _ in }
+        XCTAssertNotNil(e.textView.blockMenuPopover)
+        e.textView.handleBlockMenuEscape(UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(StyledUITextView.handleBlockMenuEscape(_:))))
+        XCTAssertNil(e.textView.blockMenuPopover)
+    }
+
+    // MARK: - Focus mode, typewriter scrolling, distraction-free & note links (#57)
+
+    func testFocusModeDimsOutsideCurrentParagraphOrSentence() throws {
+        let markdown = "First paragraph here.\n\nSecond paragraph. Another sentence here.\n\nThird paragraph."
+        let e = try editor(markdown)
+        let layoutManager = try XCTUnwrap(e.textView.layoutManager as? StyledLayoutManager)
+        XCTAssertNil(layoutManager.focusedCharacterRange)
+
+        // Paragraph focus on the second paragraph
+        e.caret(after: "Second")
+        e.setWritingOptions(WritingOptions(focus: .paragraph))
+        let ns = e.storage.string as NSString
+        let secondPara = ns.paragraphRange(for: ns.range(of: "Second paragraph"))
+        XCTAssertEqual(layoutManager.focusedCharacterRange, secondPara)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "First").location), StyledLayoutManager.unfocusedAlpha)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Second").location), 1)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Another sentence").location), 1)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Third").location), StyledLayoutManager.unfocusedAlpha)
+
+        // Sentence focus narrows to the current sentence within the second paragraph
+        e.setWritingOptions(WritingOptions(focus: .sentence))
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Second").location), 1)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Another sentence").location), StyledLayoutManager.unfocusedAlpha)
+
+        // Moving the selection updates the focused sentence
+        e.caret(after: "Another")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Second").location), StyledLayoutManager.unfocusedAlpha)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "Another").location), 1)
+
+        // Turning Focus Mode off clears the focused range
+        e.setWritingOptions(WritingOptions(focus: nil))
+        XCTAssertNil(layoutManager.focusedCharacterRange)
+        XCTAssertEqual(layoutManager.focusAlpha(for: ns.range(of: "First").location), 1)
+    }
+
+    func testTypewriterScrollingAndDistractionFreeFormattingBar() throws {
+        let lines = (1...40).map { "Line \($0) of the document." }.joined(separator: "\n\n")
+        let e = try editor(lines)
+        XCTAssertNotNil(e.textView.inputAccessoryView, "formatting bar is installed by default")
+        XCTAssertEqual(e.textView.textContainerInset.top, 20)
+
+        // Distraction-free + typewriter scrolling
+        e.setWritingOptions(WritingOptions(typewriter: true, readableColumn: true, columnWidth: 200), formattingEnabled: false)
+        XCTAssertNil(e.textView.inputAccessoryView, "distraction-free mode hides the formatting bar")
+        XCTAssertEqual(e.textView.textContainerInset.top, (e.textView.bounds.height / 2).rounded(), "typewriter scrolling adds vertical margin")
+        XCTAssertGreaterThan(e.textView.textContainerInset.left, 14, "readable column insets the sides when wider than the column")
+
+        // The harness leaves the caret at the end of the text, so start from the top explicitly
+        e.select(raw: NSRange(location: 0, length: 0))
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        let offsetNearTop = e.textView.contentOffset.y
+        e.caret(after: "Line 25")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertGreaterThan(e.textView.contentOffset.y, offsetNearTop + 100, "typewriter scrolling scrolls to keep the caret centred")
+        let caret = e.textView.caretRect(for: try XCTUnwrap(e.textView.selectedTextRange).end)
+        let insets = e.textView.adjustedContentInset
+        let visibleMidY = e.textView.contentOffset.y + insets.top + (e.textView.bounds.height - insets.top - insets.bottom) / 2
+        XCTAssertEqual(caret.midY, visibleMidY, accuracy: 30, "the caret's line sits in the middle of the visible area")
+
+        // Exiting distraction-free restores the formatting bar
+        e.setWritingOptions(WritingOptions(), formattingEnabled: true)
+        XCTAssertNotNil(e.textView.inputAccessoryView)
+        XCTAssertEqual(e.textView.textContainerInset.top, 20)
+    }
+
+    func testRelativeAndWikiNoteLinksResolveInFolder() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SwashNoteLinks-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let indexURL = folder.appendingPathComponent("Index.md")
+        let otherURL = folder.appendingPathComponent("Other.md")
+        let ideasURL = folder.appendingPathComponent("Ideas.md")
+        let markdown = "See [other](Other.md) and [[Ideas]] for more."
+        try markdown.write(to: indexURL, atomically: true, encoding: .utf8)
+        try "# Other\n".write(to: otherURL, atomically: true, encoding: .utf8)
+        try "# Ideas\n".write(to: ideasURL, atomically: true, encoding: .utf8)
+
+        let e = try editor(markdown)
+        e.setWritingOptions(WritingOptions(), baseURL: indexURL)
+
+        let ns = markdown as NSString
+        let relativePos = NSRange(location: ns.range(of: "other").location + 1, length: 0)
+        XCTAssertEqual(e.textView.noteURL(at: relativePos)?.standardizedFileURL, otherURL.standardizedFileURL)
+
+        let wikiPos = NSRange(location: ns.range(of: "Ideas").location + 1, length: 0)
+        XCTAssertEqual(e.textView.noteURL(at: wikiPos)?.standardizedFileURL, ideasURL.standardizedFileURL)
+    }
+
+    func testConflictResolutionChoicesAndKeepCurrent() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SwashConflicts-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let fileURL = folder.appendingPathComponent("Note.md")
+        try "# Current\n\nBody text.".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(DocumentConflicts.unresolved(at: fileURL).isEmpty)
+        let choices = DocumentConflicts.choices(at: fileURL)
+        XCTAssertEqual(choices.count, 1)
+        XCTAssertEqual(choices.first?.title, "This Version")
+        XCTAssertNil(try DocumentConflicts.resolve(at: fileURL, keeping: choices.first?.version))
+    }
 }

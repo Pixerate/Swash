@@ -1480,3 +1480,116 @@ struct CodeBlockView: View {
         }
     }
 }
+
+// MARK: - Previews
+
+#Preview("Markdown Preview - Interactive") {
+    @Previewable @State var text = """
+        # Live Markdown Preview
+        
+        Type or edit here to see **immediate updates**!
+        
+        - Interactive checkboxes: [x] Done, [ ] Pending
+        - Inline code: `print("Hello!")`
+        - Blockquote:
+        > Markdown makes writing for the web easy.
+        
+        | Item | Quantity | Price |
+        | :--- | :------: | ----: |
+        | Apple | 10 | $1.50 |
+        | Banana | 5 | $0.80 |
+        """
+    MarkdownPreviewView(text: text, flavor: .github)
+        .padding()
+}
+
+#Preview("Markdown Preview - Dark Mode") {
+    MarkdownPreviewView(
+        text: """
+        # Dark Mode Preview
+
+        | Item | Quantity | Price |
+        | :--- | :------: | ----: |
+        | Apple | 10 | $1.50 |
+        | Banana | 5 | $0.75 |
+
+        $$E = mc^2$$
+        """,
+        flavor: .github
+    )
+    .padding()
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Markdown Preview - GitHub") {
+    MarkdownPreviewView(
+        text: "# Heading for GitHub\n\nSample content rendered using GitHub flavor rules.",
+        flavor: .github
+    )
+    .padding()
+}
+
+#Preview("Markdown Preview - CommonMark") {
+    MarkdownPreviewView(
+        text: "# Heading for CommonMark\n\nSample content rendered using CommonMark flavor rules.",
+        flavor: .commonMark
+    )
+    .padding()
+}
+
+#Preview("Table View") {
+    TableView(
+        headers: ["Header 1", "Header 2", "Header 3"],
+        rows: [
+            ["Cell 1", "Cell 2", "Cell 3"],
+            ["Alpha", "Beta", "Gamma"],
+            ["Left text", "Centered text", "$123.45"]
+        ],
+        flavor: .github
+    )
+    .padding()
+}
+
+#Preview("Code Block") {
+    CodeBlockView(
+        code: """
+        func greet(name: String) -> String {
+            return "Hello, \\(name)!"
+        }
+        """,
+        language: "swift"
+    )
+    .padding()
+}
+
+#Preview("Display Math") {
+    MarkdownDisplayMathView(tex: "\\int_{0}^{\\infty} x^2 e^{-x} dx = 2")
+        .padding()
+}
+
+#Preview("Mermaid Diagram") {
+    MarkdownMermaidView(source: """
+        graph TD
+            A[Start] --> B{Is it working?}
+            B -->|Yes| C[Celebrate]
+            B -->|No| D[Debug]
+            D --> B
+        """)
+        .padding()
+}
+
+#Preview("Details / Summary") {
+    let source = "Here are the hidden details revealed upon expansion!"
+    let doc = MarkdownDocument.parse(source)
+    MarkdownDetailsView(
+        summary: "Click to reveal secrets",
+        initiallyOpen: false,
+        content: doc.root.children,
+        context: MarkdownRenderContext(
+            document: doc,
+            baseURL: nil
+        )
+    )
+    .padding()
+}
+

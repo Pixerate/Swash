@@ -753,4 +753,102 @@ private struct TranslationPopover: ViewModifier {
         }
     }
 }
+
+// MARK: - Previews
+
+#Preview("Bubble Menu - Standard Text") {
+    @Previewable @State var activeFormats: Set<FormatAction> = [.bold]
+    BubbleMenuView(
+        activeFormats: activeFormats,
+        activeCodeFormat: nil,
+        activeHeadingLevel: nil,
+        activeLink: nil,
+        context: .standard,
+        onAction: { action in
+            if activeFormats.contains(action) {
+                activeFormats.remove(action)
+            } else {
+                activeFormats.insert(action)
+            }
+        },
+        onSelectCodeFormat: { _ in },
+        onSelectHeadingLevel: { _ in },
+        onApplyLink: { _ in },
+        onRemoveLink: {},
+        translatableText: "Selected text",
+        onReplaceWithTranslation: nil,
+        onSelectCalloutType: nil,
+        image: nil,
+        imageActions: nil,
+        onInsertFootnote: nil,
+        footnoteActions: nil
+    )
+    .padding()
+}
+
+#Preview("Bubble Menu - Code Context") {
+    BubbleMenuView(
+        activeFormats: [.code],
+        activeCodeFormat: .language(.swift),
+        activeHeadingLevel: nil,
+        activeLink: nil,
+        context: .codeBlock,
+        onAction: { _ in },
+        onSelectCodeFormat: { _ in },
+        onSelectHeadingLevel: { _ in },
+        onApplyLink: { _ in },
+        onRemoveLink: {},
+        translatableText: "let x = 1",
+        onReplaceWithTranslation: nil,
+        onSelectCalloutType: nil,
+        image: nil,
+        imageActions: nil,
+        onInsertFootnote: nil,
+        footnoteActions: nil
+    )
+    .padding()
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Link Editor Popover") {
+    @Previewable @State var url = "https://example.com"
+    LinkEditorPopoverView(
+        initialURL: url,
+        isEditing: true,
+        onApply: { url = $0 },
+        onRemove: {},
+        onCancel: {}
+    )
+    .padding()
+}
+
+#Preview("Image Alt Text Popover") {
+    @Previewable @State var alt = "Diagram preview"
+    ImageAltTextPopoverView(
+        initialText: alt,
+        onApply: { alt = $0 },
+        onCancel: {}
+    )
+    .padding()
+}
+
+#Preview("Bubble Button") {
+    HStack(spacing: 8) {
+        BubbleButton(
+            systemImage: "bold",
+            textLabel: nil,
+            tooltip: "Bold",
+            isActive: true,
+            action: {}
+        )
+        BubbleButton(
+            systemImage: "italic",
+            textLabel: nil,
+            tooltip: "Italic",
+            isActive: false,
+            action: {}
+        )
+    }
+    .padding()
+}
 #endif
