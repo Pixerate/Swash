@@ -17,12 +17,30 @@ import Foundation
 import PixerateCore
 import PixerateMarkdown
 
+/// One revision step in a document's edit history.
+struct MarkdownRevisionEntry: Equatable, Sendable {
+    /// The document revision after these edits landed.
+    var revision: Int
+    /// Non-overlapping edits in ascending order, in the text before this revision.
+    var edits: [(range: NSRange, newLength: Int)]
+
+    static func == (lhs: MarkdownRevisionEntry, rhs: MarkdownRevisionEntry) -> Bool {
+        lhs.revision == rhs.revision
+            && lhs.edits.count == rhs.edits.count
+            && zip(lhs.edits, rhs.edits).allSatisfy { $0.range == $1.range && $0.newLength == $1.newLength }
+    }
+}
+
 /// The document the tools read and edit.
 @MainActor
 protocol MarkdownToolTarget: AnyObject {
     /// The raw Markdown.
     var markdown: String { get }
-    /// The selection, in raw-Markdown UTF-16 offsets.
+    /// Monotonically increasing revision counter, incremented on every document edit.
+    var revision: Int { get }
+    /// The edit history, in ascending revision order, used to map or reject stale-offset writes.
+    var revisionHistory: [MarkdownRevisionEntry] { get }
+    /// The default selection, in raw-Markdown UTF-16 offsets.
     var selection: NSRange { get }
     /// Why the document can't be edited, or nil when it can.
     var readOnlyReason: String? { get }
@@ -33,6 +51,29 @@ protocol MarkdownToolTarget: AnyObject {
     func apply(markdown: String, selection: NSRange, actionName: String)
     /// Moves the selection.
     func select(_ range: NSRange)
+    /// The selection for `agent` (or the default selection when `agent` is nil).
+    func selection(for agent: ToolActor?) -> NSRange
+    /// Moves the selection for `agent`.
+    func select(_ range: NSRange, for agent: ToolActor?)
+    /// Replaces the Markdown with `markdown` as one undoable edit, records `edits` for cursor and
+    /// revision mapping, and updates `agent`'s selection to `agentSelection`.
+    func apply(markdown: String, edits: [(range: NSRange, newLength: Int)], agentSelection: NSRange, for agent: ToolActor?, actionName: String)
+    /// The revision `agent` last observed on this document (via `get_text`, `find_text`, or a write tool).
+    func observedRevision(for agent: ToolActor?) -> Int?
+    /// Records that `agent` observed `revision` on this document.
+    func noteObservedRevision(_ revision: Int, for agent: ToolActor?)
+}
+
+extension MarkdownToolTarget {
+    var revision: Int { 0 }
+    var revisionHistory: [MarkdownRevisionEntry] { [] }
+    func selection(for agent: ToolActor?) -> NSRange { selection }
+    func select(_ range: NSRange, for agent: ToolActor?) { select(range) }
+    func apply(markdown: String, edits: [(range: NSRange, newLength: Int)], agentSelection: NSRange, for agent: ToolActor?, actionName: String) {
+        apply(markdown: markdown, selection: agentSelection, actionName: actionName)
+    }
+    func observedRevision(for agent: ToolActor?) -> Int? { nil }
+    func noteObservedRevision(_ revision: Int, for agent: ToolActor?) {}
 }
 
 /// A tool failure, reported to the agent as an `isError` result with this message.
@@ -95,11 +136,17 @@ final class MarkdownToolProvider {
 
     /// A handler that runs `body` on the main actor (where the bridge client calls the registry
     /// from) and returns its JSON.
-    private static func handler(_ body: @escaping @MainActor (JSONObject) throws -> JSONObject) -> AgentToolHandler {
-        { args, _ in
-            .value(.object(try body(args)))
+    private static func handler(_ body: @escaping @MainActor (JSONObject, ToolCallContext) throws -> JSONObject) -> AgentToolHandler {
+        { args, context in
+            .value(.object(try body(args, context)))
         }
     }
+
+    private static let baseRevisionProperty: JSONValue = [
+        "type": "integer",
+        "minimum": 0,
+        "description": "Optional document revision from get_text, find_text or a previous edit. When earlier edits occurred since this revision, non-overlapping positions are mapped forward and overlapping conflicts fail cleanly.",
+    ]
 
     private static func int(_ args: JSONObject, _ key: String) -> Int? {
         args[key]?.numberValue.map { Int($0) }
@@ -125,16 +172,81 @@ final class MarkdownToolProvider {
         if to > size { throw MarkdownToolError("Position \(to) is outside the document (size \(size)).") }
     }
 
-    /// The range a tool acts on: `from..to`, or the selection when both are omitted.
-    private static func targetRange(_ args: JSONObject, _ target: MarkdownToolTarget, size: Int, allowEmpty: Bool) throws -> NSRange {
+    /// Whether a target range `range` conflicts with an intervening `edit` at the same revision step.
+    private static func overlaps(_ range: NSRange, with edit: (range: NSRange, newLength: Int)) -> Bool {
+        let rStart = range.location, rEnd = NSMaxRange(range)
+        let eStart = edit.range.location, eEnd = NSMaxRange(edit.range)
+        if range.length == 0 {
+            if edit.range.length == 0 { return rStart == eStart }
+            return rStart >= eStart && rStart <= eEnd
+        }
+        if edit.range.length == 0 {
+            return eStart >= rStart && eStart <= rEnd
+        }
+        return rStart < eEnd && eStart < rEnd
+    }
+
+    /// Resolves `range` from `baseRevision` (or the agent's last-observed revision) through any
+    /// intervening edits in `target.revisionHistory`. Throws a conflict error if `baseRevision` is
+    /// invalid or an intervening edit overlaps `range`.
+    static func resolveRange(_ range: NSRange, baseRevision explicitBase: Int?, for agent: ToolActor?, in target: MarkdownToolTarget) throws -> NSRange {
+        let current = target.revision
+        guard let base = explicitBase ?? target.observedRevision(for: agent) else {
+            return range
+        }
+        if base == current { return range }
+        if base > current || base < 0 {
+            throw MarkdownToolError("Conflict: baseRevision \(base) is ahead of the document's current revision (\(current)). Call get_text or find_text to read the latest revision.")
+        }
+        let history = target.revisionHistory.filter { $0.revision > base && $0.revision <= current }
+        let expectedSteps = current - base
+        guard history.count == expectedSteps else {
+            throw MarkdownToolError("Conflict: the document changed from revision \(base) to \(current) and earlier edit history is no longer available. Call get_text or find_text to read revision \(current).")
+        }
+        var mapped = range
+        for step in history {
+            for edit in step.edits {
+                if overlaps(mapped, with: edit) {
+                    throw MarkdownToolError("Conflict: the range \(mapped.location)..\(NSMaxRange(mapped)) from revision \(base) overlaps a concurrent edit in revision \(step.revision) (current revision: \(current)). Call get_text or find_text to read revision \(current).")
+                }
+            }
+            mapped = mapSelection(mapped, through: step.edits)
+        }
+        return mapped
+    }
+
+    /// Validates an explicit `baseRevision` when no raw positions are being mapped (e.g. `replace_text`, `replace_selection`).
+    static func verifyBaseRevision(_ explicitBase: Int?, in target: MarkdownToolTarget, selectionRange: NSRange? = nil) throws {
+        guard let base = explicitBase else { return }
+        let current = target.revision
+        if base == current { return }
+        if base > current || base < 0 {
+            throw MarkdownToolError("Conflict: baseRevision \(base) is ahead of the document's current revision (\(current)). Call get_text or find_text to read the latest revision.")
+        }
+        if let selectionRange {
+            _ = try resolveRange(selectionRange, baseRevision: base, for: nil, in: target)
+        } else {
+            throw MarkdownToolError("Conflict: the document is at revision \(current), not baseRevision \(base). Call get_text or find_text to read revision \(current).")
+        }
+    }
+
+    /// The range a tool acts on: `from..to` (mapped from `baseRevision` or the agent's last-observed
+    /// revision), or `agent`'s selection when both are omitted.
+    private static func targetRange(_ args: JSONObject, _ target: MarkdownToolTarget, for agent: ToolActor?, size: Int, allowEmpty: Bool) throws -> NSRange {
         let from = int(args, "from"), to = int(args, "to")
         if (from == nil) != (to == nil) { throw MarkdownToolError("Pass both \"from\" and \"to\", or neither to use the selection.") }
+        let explicitBase = int(args, "baseRevision")
         let range: NSRange
         if let from, let to {
-            try checkRange(from, to, size: size)
-            range = NSRange(location: from, length: to - from)
+            if from > to { throw MarkdownToolError("\"from\" (\(from)) must not be after \"to\" (\(to)).") }
+            let rawRange = NSRange(location: from, length: to - from)
+            let resolved = try resolveRange(rawRange, baseRevision: explicitBase, for: agent, in: target)
+            try checkRange(resolved.location, NSMaxRange(resolved), size: size)
+            range = resolved
         } else {
-            range = clamp(target.selection, size)
+            let sel = clamp(target.selection(for: agent), size)
+            try verifyBaseRevision(explicitBase, in: target, selectionRange: sel)
+            range = sel
         }
         if !allowEmpty && range.length == 0 {
             throw MarkdownToolError("The range is empty: pass \"from\" and \"to\" around the text (find_text returns them), or select it first.")
@@ -275,7 +387,7 @@ final class MarkdownToolProvider {
             "additionalProperties": false,
         ],
         annotations: ToolAnnotations(title: "Get document text", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false),
-        handler: Self.handler { [unowned self] args in
+        handler: Self.handler { [unowned self] args, context in
             let target = try self.document()
             let text = target.markdown
             let format = args["format"]?.stringValue ?? "markdown"
@@ -286,7 +398,15 @@ final class MarkdownToolProvider {
             default: content = text
             }
             let ns = text as NSString
-            var result: JSONObject = ["format": .string(format), "content": .string(content), "selection": Self.selectionInfo(ns, target.selection), "size": .number(Double(ns.length))]
+            let rev = target.revision
+            target.noteObservedRevision(rev, for: context.actor)
+            var result: JSONObject = [
+                "format": .string(format),
+                "content": .string(content),
+                "selection": Self.selectionInfo(ns, target.selection(for: context.actor)),
+                "size": .number(Double(ns.length)),
+                "revision": .number(Double(rev)),
+            ]
             if let reason = target.readOnlyReason {
                 result["readOnly"] = .string(reason)
             }
@@ -327,17 +447,21 @@ final class MarkdownToolProvider {
                 "ready for replace_range, insert_text `at` or set_selection, plus surrounding context.",
             inputSchema: ["type": "object", "properties": .object(properties), "required": ["query"], "additionalProperties": false],
             annotations: ToolAnnotations(title: "Find text", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false),
-            handler: Self.handler { [unowned self] args in
-                let ns = try self.document().markdown as NSString
+            handler: Self.handler { [unowned self] args, context in
+                let target = try self.document()
+                let ns = target.markdown as NSString
                 let (matches, truncated) = try Self.search(ns, args["query"]?.stringValue ?? "", args)
                 let maxResults = Self.int(args, "maxResults") ?? 50
-                let context = Self.contextCharacters
+                let contextChars = Self.contextCharacters
+                let rev = target.revision
+                target.noteObservedRevision(rev, for: context.actor)
                 return [
                     "total": .number(Double(matches.count)),
                     "truncated": .bool(truncated || matches.count > maxResults),
+                    "revision": .number(Double(rev)),
                     "matches": .array(matches.prefix(maxResults).map { m in
-                        let before = max(0, m.location - context)
-                        let after = min(ns.length, NSMaxRange(m) + context)
+                        let before = max(0, m.location - contextChars)
+                        let after = min(ns.length, NSMaxRange(m) + contextChars)
                         return [
                             "from": .number(Double(m.location)),
                             "to": .number(Double(NSMaxRange(m))),
@@ -354,19 +478,21 @@ final class MarkdownToolProvider {
     // MARK: - Write tools
 
     /// Replaces `range` with `text`; returns the inserted range and the selection after.
-    private func write(_ target: MarkdownToolTarget, _ range: NSRange, _ text: String, actionName: String, selectInserted: Bool) -> (range: NSRange, selection: NSRange, text: NSString) {
+    private func write(_ target: MarkdownToolTarget, _ range: NSRange, _ text: String, for agent: ToolActor?, actionName: String, selectInserted: Bool) -> (range: NSRange, selection: NSRange, text: NSString) {
         let old = target.markdown as NSString
         let new = old.replacingCharacters(in: range, with: text) as NSString
         let length = (text as NSString).length
         let inserted = NSRange(location: range.location, length: length)
+        let edits = [(range: range, newLength: length)]
         let selection = selectInserted
             ? NSRange(location: NSMaxRange(inserted), length: 0)
-            : Self.mapSelection(target.selection, through: [(range, length)])
-        target.apply(markdown: new as String, selection: selection, actionName: actionName)
+            : Self.mapSelection(target.selection(for: agent), through: edits)
+        target.apply(markdown: new as String, edits: edits, agentSelection: selection, for: agent, actionName: actionName)
+        target.noteObservedRevision(target.revision, for: agent)
         return (inserted, selection, new)
     }
 
-    private static func mapSelection(_ selection: NSRange, through edits: [(range: NSRange, newLength: Int)]) -> NSRange {
+    static func mapSelection(_ selection: NSRange, through edits: [(range: NSRange, newLength: Int)]) -> NSRange {
         let start = map(selection.location, through: edits)
         let end = max(start, map(NSMaxRange(selection), through: edits))
         return NSRange(location: start, length: end - start)
@@ -382,24 +508,34 @@ final class MarkdownToolProvider {
             "properties": [
                 "text": ["type": "string", "description": "Text to insert."],
                 "at": ["type": "integer", "minimum": 0, "description": "Position (default: the selection)."],
+                "baseRevision": Self.baseRevisionProperty,
             ],
             "required": ["text"],
             "additionalProperties": false,
         ],
         annotations: ToolAnnotations(title: "Insert text", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false),
-        handler: Self.handler { [unowned self] args in
+        handler: Self.handler { [unowned self] args, context in
             let target = try self.editable()
             let text = args["text"]?.stringValue ?? ""
             let size = (target.markdown as NSString).length
+            let explicitBase = Self.int(args, "baseRevision")
             let range: NSRange
             if let at = Self.int(args, "at") {
-                if at > size { throw MarkdownToolError("Position \(at) is outside the document (size \(size)).") }
-                range = NSRange(location: at, length: 0)
+                let resolved = try Self.resolveRange(NSRange(location: at, length: 0), baseRevision: explicitBase, for: context.actor, in: target)
+                if resolved.location > size { throw MarkdownToolError("Position \(resolved.location) is outside the document (size \(size)).") }
+                range = resolved
             } else {
-                range = Self.clamp(target.selection, size)
+                let sel = Self.clamp(target.selection(for: context.actor), size)
+                try Self.verifyBaseRevision(explicitBase, in: target, selectionRange: sel)
+                range = sel
             }
-            let result = self.write(target, range, text, actionName: "Insert Text", selectInserted: Self.int(args, "at") == nil)
-            return ["inserted": .number(Double((text as NSString).length)), "range": Self.range(result.range), "selection": Self.selectionInfo(result.text, result.selection)]
+            let result = self.write(target, range, text, for: context.actor, actionName: "Insert Text", selectInserted: Self.int(args, "at") == nil)
+            return [
+                "inserted": .number(Double((text as NSString).length)),
+                "range": Self.range(result.range),
+                "selection": Self.selectionInfo(result.text, result.selection),
+                "revision": .number(Double(target.revision)),
+            ]
         }
     )
 
@@ -407,6 +543,7 @@ final class MarkdownToolProvider {
         var properties: JSONObject = [
             "find": ["type": "string", "minLength": 1, "description": "Text (or regex) to find."],
             "replace": ["type": "string", "description": "Replacement text (literal; an empty string deletes the matches)."],
+            "baseRevision": Self.baseRevisionProperty,
         ]
         for (key, value) in Self.findProperties { properties[key] = value }
         properties["occurrence"] = ["type": "integer", "minimum": 1, "description": "Only replace the n-th match (1-based, in document order). Default: all matches."]
@@ -417,8 +554,9 @@ final class MarkdownToolProvider {
                 "Replaces every occurrence by default, or only the n-th with `occurrence`. Fails when nothing matches.",
             inputSchema: ["type": "object", "properties": .object(properties), "required": ["find", "replace"], "additionalProperties": false],
             annotations: ToolAnnotations(title: "Find and replace", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false),
-            handler: Self.handler { [unowned self] args in
+            handler: Self.handler { [unowned self] args, context in
                 let target = try self.editable()
+                try Self.verifyBaseRevision(Self.int(args, "baseRevision"), in: target)
                 let find = args["find"]?.stringValue ?? ""
                 let replace = (args["replace"]?.stringValue ?? "").replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
                 let old = target.markdown as NSString
@@ -442,9 +580,16 @@ final class MarkdownToolProvider {
                     defer { shift += length - r.length }
                     return Self.range(NSRange(location: r.location + shift, length: length))
                 }
-                let selection = Self.mapSelection(target.selection, through: edits)
-                target.apply(markdown: new as String, selection: selection, actionName: "Replace")
-                return ["replaced": .number(Double(chosen.count)), "total": .number(Double(matches.count)), "ranges": .array(ranges), "selection": Self.selectionInfo(new, selection)]
+                let selection = Self.mapSelection(target.selection(for: context.actor), through: edits)
+                target.apply(markdown: new as String, edits: edits, agentSelection: selection, for: context.actor, actionName: "Replace")
+                target.noteObservedRevision(target.revision, for: context.actor)
+                return [
+                    "replaced": .number(Double(chosen.count)),
+                    "total": .number(Double(matches.count)),
+                    "ranges": .array(ranges),
+                    "selection": Self.selectionInfo(new, selection),
+                    "revision": .number(Double(target.revision)),
+                ]
             }
         )
     }()
@@ -460,21 +605,25 @@ final class MarkdownToolProvider {
                 "from": ["type": "integer", "minimum": 0, "description": "Start position."],
                 "to": ["type": "integer", "minimum": 0, "description": "End position."],
                 "text": ["type": "string", "description": "Replacement text (Markdown)."],
+                "baseRevision": Self.baseRevisionProperty,
             ],
             "required": ["from", "to", "text"],
             "additionalProperties": false,
         ],
         annotations: ToolAnnotations(title: "Replace a range", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false),
-        handler: Self.handler { [unowned self] args in
+        handler: Self.handler { [unowned self] args, context in
             let target = try self.editable()
             let from = Self.int(args, "from") ?? 0, to = Self.int(args, "to") ?? 0
-            try Self.checkRange(from, to, size: (target.markdown as NSString).length)
-            let result = self.write(target, NSRange(location: from, length: to - from), args["text"]?.stringValue ?? "", actionName: "Replace", selectInserted: false)
+            if from > to { throw MarkdownToolError("\"from\" (\(from)) must not be after \"to\" (\(to)).") }
+            let resolved = try Self.resolveRange(NSRange(location: from, length: to - from), baseRevision: Self.int(args, "baseRevision"), for: context.actor, in: target)
+            try Self.checkRange(resolved.location, NSMaxRange(resolved), size: (target.markdown as NSString).length)
+            let result = self.write(target, resolved, args["text"]?.stringValue ?? "", for: context.actor, actionName: "Replace", selectInserted: false)
             return [
-                "replaced": ["from": .number(Double(from)), "to": .number(Double(to))],
+                "replaced": Self.range(resolved),
                 "range": Self.range(result.range),
                 "selection": Self.selectionInfo(result.text, result.selection),
                 "size": .number(Double(result.text.length)),
+                "revision": .number(Double(target.revision)),
             ]
         }
     )
@@ -485,16 +634,25 @@ final class MarkdownToolProvider {
         description: "Replaces the selected text with literal text (an empty string deletes the selection). Returns the new text's `range` {from, to}.",
         inputSchema: [
             "type": "object",
-            "properties": ["text": ["type": "string", "description": "Replacement text."]],
+            "properties": [
+                "text": ["type": "string", "description": "Replacement text."],
+                "baseRevision": Self.baseRevisionProperty,
+            ],
             "required": ["text"],
             "additionalProperties": false,
         ],
         annotations: ToolAnnotations(title: "Replace selection", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false),
-        handler: Self.handler { [unowned self] args in
+        handler: Self.handler { [unowned self] args, context in
             let target = try self.editable()
-            let selection = Self.clamp(target.selection, (target.markdown as NSString).length)
-            let result = self.write(target, selection, args["text"]?.stringValue ?? "", actionName: "Replace", selectInserted: true)
-            return ["replaced": Self.range(selection), "range": Self.range(result.range), "selection": Self.selectionInfo(result.text, result.selection)]
+            let selection = Self.clamp(target.selection(for: context.actor), (target.markdown as NSString).length)
+            try Self.verifyBaseRevision(Self.int(args, "baseRevision"), in: target, selectionRange: selection)
+            let result = self.write(target, selection, args["text"]?.stringValue ?? "", for: context.actor, actionName: "Replace", selectInserted: true)
+            return [
+                "replaced": Self.range(selection),
+                "range": Self.range(result.range),
+                "selection": Self.selectionInfo(result.text, result.selection),
+                "revision": .number(Double(target.revision)),
+            ]
         }
     )
 
@@ -507,20 +665,26 @@ final class MarkdownToolProvider {
             "properties": [
                 "from": ["type": "integer", "minimum": 0, "description": "Start position."],
                 "to": ["type": "integer", "minimum": 0, "description": "End position (default: from)."],
+                "baseRevision": Self.baseRevisionProperty,
             ],
             "required": ["from"],
             "additionalProperties": false,
         ],
         annotations: ToolAnnotations(title: "Set the selection", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false),
-        handler: Self.handler { [unowned self] args in
+        handler: Self.handler { [unowned self] args, context in
             let target = try self.editable()
             let from = Self.int(args, "from") ?? 0
             let to = Self.int(args, "to") ?? from
+            if from > to { throw MarkdownToolError("\"from\" (\(from)) must not be after \"to\" (\(to)).") }
             let ns = target.markdown as NSString
-            try Self.checkRange(from, to, size: ns.length)
-            let range = NSRange(location: from, length: to - from)
-            target.select(range)
-            return ["selection": Self.selectionInfo(ns, range)]
+            let resolved = try Self.resolveRange(NSRange(location: from, length: to - from), baseRevision: Self.int(args, "baseRevision"), for: context.actor, in: target)
+            try Self.checkRange(resolved.location, NSMaxRange(resolved), size: ns.length)
+            target.select(resolved, for: context.actor)
+            target.noteObservedRevision(target.revision, for: context.actor)
+            return [
+                "selection": Self.selectionInfo(ns, resolved),
+                "revision": .number(Double(target.revision)),
+            ]
         }
     )
 
@@ -529,6 +693,7 @@ final class MarkdownToolProvider {
     private static let rangeProperties: JSONObject = [
         "from": ["type": "integer", "minimum": 0, "description": "Start position (from find_text or get_text `blocks`). Default: the selection."],
         "to": ["type": "integer", "minimum": 0, "description": "End position. Default: the selection."],
+        "baseRevision": baseRevisionProperty,
     ]
 
     /// The inline formats Markdown has, by `format_text` argument.
@@ -577,13 +742,13 @@ final class MarkdownToolProvider {
                 "Returns the `range` and the formatting now on it (`partly` where only some of the text has it). For headings and lists use set_block_type.",
             inputSchema: ["type": "object", "properties": .object(properties), "additionalProperties": false],
             annotations: ToolAnnotations(title: "Format text", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false),
-            handler: Self.handler { [unowned self] args in
+            handler: Self.handler { [unowned self] args, context in
                 let target = try self.editable()
                 guard names.contains(where: { args[$0] != nil }) else {
                     throw MarkdownToolError("Pass at least one formatting property: \(names.joined(separator: ", ")).")
                 }
                 let original = target.markdown
-                var range = try Self.targetRange(args, target, size: (original as NSString).length, allowEmpty: false)
+                var range = try Self.targetRange(args, target, for: context.actor, size: (original as NSString).length, allowEmpty: false)
                 if let link = args["link"]?.stringValue,
                    Self.unsafeLink.firstMatch(in: link, range: NSRange(location: 0, length: (link as NSString).length)) != nil {
                     throw MarkdownToolError("Links may not use javascript:, data: or vbscript: URLs. Nothing was changed.")
@@ -615,10 +780,18 @@ final class MarkdownToolProvider {
                     }
                 }
                 if text != original {
-                    target.apply(markdown: text, selection: Self.mapSelection(target.selection, from: original as NSString, to: text as NSString), actionName: "Format")
+                    let edit = Self.change(from: original as NSString, to: text as NSString)
+                    let sel = Self.mapSelection(target.selection(for: context.actor), through: [edit])
+                    target.apply(markdown: text, edits: [edit], agentSelection: sel, for: context.actor, actionName: "Format")
                 }
+                target.noteObservedRevision(target.revision, for: context.actor)
                 let ns = text as NSString
-                return ["range": Self.range(range), "text": .string(ns.substring(with: range)), "formatting": .object(Self.formattingInfo(text, range, flavor: target.flavor))]
+                return [
+                    "range": Self.range(range),
+                    "text": .string(ns.substring(with: range)),
+                    "formatting": .object(Self.formattingInfo(text, range, flavor: target.flavor)),
+                    "revision": .number(Double(target.revision)),
+                ]
             }
         )
     }()
@@ -668,14 +841,14 @@ final class MarkdownToolProvider {
                 "Returns the resulting `blocks` with their type, positions, source, level and the list or quote they are in.",
             inputSchema: ["type": "object", "properties": .object(properties), "required": ["type"], "additionalProperties": false],
             annotations: ToolAnnotations(title: "Set the block type", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false),
-            handler: Self.handler { [unowned self] args in
+            handler: Self.handler { [unowned self] args, context in
                 let target = try self.editable()
                 let type = args["type"]?.stringValue ?? ""
                 let level = Self.int(args, "level")
                 if type == "heading" && level == nil { throw MarkdownToolError("Pass a heading \"level\" (1, 2, 3, 4, 5, 6).") }
                 if type != "heading" && level != nil { throw MarkdownToolError("\"level\" only applies to type \"heading\".") }
                 let original = target.markdown
-                var range = try Self.targetRange(args, target, size: (original as NSString).length, allowEmpty: true)
+                var range = try Self.targetRange(args, target, for: context.actor, size: (original as NSString).length, allowEmpty: true)
                 var text = original
                 let flavor = target.flavor
                 let formatting = MarkdownFormatting(text: text, flavor: flavor)
@@ -706,9 +879,17 @@ final class MarkdownToolProvider {
                     }
                 }
                 if text != original {
-                    target.apply(markdown: text, selection: Self.mapSelection(target.selection, from: original as NSString, to: text as NSString), actionName: "Block Type")
+                    let edit = Self.change(from: original as NSString, to: text as NSString)
+                    let sel = Self.mapSelection(target.selection(for: context.actor), through: [edit])
+                    target.apply(markdown: text, edits: [edit], agentSelection: sel, for: context.actor, actionName: "Block Type")
                 }
-                return ["type": .string(type), "range": Self.range(range), "blocks": .array(Self.blocks(in: text, overlapping: range, flavor: flavor))]
+                target.noteObservedRevision(target.revision, for: context.actor)
+                return [
+                    "type": .string(type),
+                    "range": Self.range(range),
+                    "blocks": .array(Self.blocks(in: text, overlapping: range, flavor: flavor)),
+                    "revision": .number(Double(target.revision)),
+                ]
             }
         )
     }()

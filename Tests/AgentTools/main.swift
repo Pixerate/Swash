@@ -11,8 +11,12 @@ final class FakeDocument: MarkdownToolTarget {
     var selection: NSRange
     var readOnlyReason: String?
     var flavor: MarkdownFlavor
+    var revision: Int = 0
+    var revisionHistory: [MarkdownRevisionEntry] = []
     /// Every edit, as the editor's undo stack would record it.
     var edits: [(text: String, actionName: String)] = []
+    private var agentSelections: [String: NSRange] = [:]
+    private var agentObservedRevisions: [String: Int] = [:]
 
     init(_ markdown: String, selection: NSRange = NSRange(location: 0, length: 0), flavor: MarkdownFlavor = .github) {
         self.markdown = markdown
@@ -21,12 +25,66 @@ final class FakeDocument: MarkdownToolTarget {
     }
 
     func apply(markdown: String, selection: NSRange, actionName: String) {
-        edits.append((markdown, actionName))
+        let edit = MarkdownToolProvider.change(from: self.markdown as NSString, to: markdown as NSString)
+        apply(markdown: markdown, edits: [edit], agentSelection: selection, for: nil, actionName: actionName)
+    }
+
+    func apply(markdown: String, edits: [(range: NSRange, newLength: Int)], agentSelection: NSRange, for agent: ToolActor?, actionName: String) {
+        self.edits.append((markdown, actionName))
         self.markdown = markdown
-        self.selection = selection
+        self.revision += 1
+        self.revisionHistory.append(MarkdownRevisionEntry(revision: self.revision, edits: edits))
+        if let agent {
+            self.agentSelections[agent.id] = agentSelection
+            self.selection = MarkdownToolProvider.mapSelection(self.selection, through: edits)
+            for (id, sel) in self.agentSelections where id != agent.id {
+                self.agentSelections[id] = MarkdownToolProvider.mapSelection(sel, through: edits)
+            }
+        } else {
+            self.selection = agentSelection
+            for (id, sel) in self.agentSelections {
+                self.agentSelections[id] = MarkdownToolProvider.mapSelection(sel, through: edits)
+            }
+        }
     }
 
     func select(_ range: NSRange) { selection = range }
+
+    func selection(for agent: ToolActor?) -> NSRange {
+        guard let id = agent?.id else { return selection }
+        if let existing = agentSelections[id] { return existing }
+        agentSelections[id] = selection
+        return selection
+    }
+
+    func select(_ range: NSRange, for agent: ToolActor?) {
+        if let agent {
+            agentSelections[agent.id] = range
+        } else {
+            selection = range
+        }
+    }
+
+    func observedRevision(for agent: ToolActor?) -> Int? {
+        guard let id = agent?.id else { return nil }
+        return agentObservedRevisions[id]
+    }
+
+    func noteObservedRevision(_ revision: Int, for agent: ToolActor?) {
+        guard let id = agent?.id else { return }
+        agentObservedRevisions[id] = revision
+    }
+
+    func simulateUserEdit(to newMarkdown: String) {
+        let edit = MarkdownToolProvider.change(from: self.markdown as NSString, to: newMarkdown as NSString)
+        self.markdown = newMarkdown
+        self.revision += 1
+        self.revisionHistory.append(MarkdownRevisionEntry(revision: self.revision, edits: [edit]))
+        self.selection = MarkdownToolProvider.mapSelection(self.selection, through: [edit])
+        for (id, sel) in self.agentSelections {
+            self.agentSelections[id] = MarkdownToolProvider.mapSelection(sel, through: [edit])
+        }
+    }
 }
 
 var failures = 0
@@ -67,8 +125,8 @@ struct Harness {
     @MainActor static var keep: [MarkdownToolProvider] = []
 
     @MainActor
-    func call(_ name: String, _ args: JSONObject = JSONObject()) async -> McpToolResult {
-        await registry.callTool(name, args)
+    func call(_ name: String, _ args: JSONObject = JSONObject(), actor: ToolActor? = nil) async -> McpToolResult {
+        await registry.callTool(name, args, actor: actor)
     }
 }
 
@@ -85,18 +143,18 @@ func range(_ v: JSONValue?) -> NSRange? {
 
 /// A successful call's structured result; records a failure when it errored.
 @MainActor
-func ok(_ h: Harness, _ name: String, _ args: JSONObject = JSONObject(), line: UInt = #line) async -> JSONObject {
-    let result = await h.call(name, args)
+func ok(_ h: Harness, _ name: String, _ args: JSONObject = JSONObject(), actor: ToolActor? = nil, line: UInt = #line) async -> JSONObject {
+    let result = await h.call(name, args, actor: actor)
     check(!result.isError, "\(name) \(JSONValue.object(args).stringified()) failed: \(result.text ?? "")", line: line)
     return result.value
 }
 
 /// A failing call; checks its error code and that the document didn't change.
 @MainActor
-func fails(_ h: Harness, _ name: String, _ args: JSONObject, code: String, containing: String? = nil, line: UInt = #line) async {
+func fails(_ h: Harness, _ name: String, _ args: JSONObject, actor: ToolActor? = nil, code: String, containing: String? = nil, line: UInt = #line) async {
     let before = h.document.markdown
     let edits = h.document.edits.count
-    let result = await h.call(name, args)
+    let result = await h.call(name, args, actor: actor)
     check(result.isError, "\(name) \(JSONValue.object(args).stringified()) should fail", line: line)
     expectEqual(result.errorCode ?? "", code, "\(name) error code", line: line)
     if let containing {
@@ -440,6 +498,93 @@ func run() async {
         let docs = router.listTargetsResult().structuredContent?["documents"]?.arrayValue ?? []
         expectEqual(docs.compactMap { $0["id"]?.stringValue }, ["notes", "slack"], "list_documents puts the active document first")
         check(docs.last?["flavor"]?.stringValue == "slack" && docs.last?["readOnly"] == .bool(true), "list_documents reports flavor and readOnly")
+    }
+
+    // MARK: Revisions, Per-Agent Cursors & Concurrent Multi-Agent Edits
+    do {
+        let h = Harness("Alpha Beta Gamma", selection: NSRange(location: 0, length: 5))
+        let claude = ToolActor(id: "mcp:sess-claude", name: "Claude Code")
+        let cursor = ToolActor(id: "mcp:sess-cursor", name: "Cursor")
+
+        // 1. Both agents read at revision 0
+        let readA = await ok(h, "get_text", actor: claude)
+        let readB = await ok(h, "find_text", ["query": "Gamma"], actor: cursor)
+        expectEqual(int(readA["revision"]) ?? -1, 0, "initial get_text revision is 0")
+        expectEqual(int(readB["revision"]) ?? -1, 0, "initial find_text revision is 0")
+        let gammaMatch = range(readB["matches"]?.arrayValue?.first) ?? NSRange()
+        expectEqual(gammaMatch, NSRange(location: 11, length: 5), "Gamma is at 11..16 in rev 0")
+
+        // 2. Independent cursors per agent, without clobbering each other or the user's selection
+        let selA = await ok(h, "set_selection", ["from": 0, "to": 5], actor: claude)
+        let selB = await ok(h, "set_selection", ["from": 11, "to": 16], actor: cursor)
+        expectEqual(selA["selection"]?["text"]?.stringValue ?? "", "Alpha", "Claude selected Alpha")
+        expectEqual(selB["selection"]?["text"]?.stringValue ?? "", "Gamma", "Cursor selected Gamma")
+        expectEqual(h.document.selection(for: claude), NSRange(location: 0, length: 5), "Claude cursor stays at 0..5")
+        expectEqual(h.document.selection(for: cursor), NSRange(location: 11, length: 5), "Cursor cursor is at 11..16")
+
+        // 3. Claude replaces its selection ("Alpha" -> "First" + " Item" = "First Item", length 10, delta +5)
+        let repA = await ok(h, "replace_selection", ["text": "First Item"], actor: claude)
+        expectEqual(int(repA["revision"]) ?? -1, 1, "revision increments to 1 after Claude's edit")
+        expectEqual(h.document.markdown, "First Item Beta Gamma", "Claude replaced Alpha")
+        expectEqual(h.document.selection(for: claude), NSRange(location: 10, length: 0), "Claude caret after inserted text")
+        expectEqual(h.document.selection(for: cursor), NSRange(location: 16, length: 5), "Cursor selection automatically mapped by +5 to 16..21")
+
+        // 4. Cursor inserts at its cursor (or replaces its selection) without needing to re-read
+        let repB = await ok(h, "replace_selection", ["text": "Third"], actor: cursor)
+        expectEqual(int(repB["revision"]) ?? -1, 2, "revision increments to 2 after Cursor's edit")
+        expectEqual(h.document.markdown, "First Item Beta Third", "Cursor replaced Gamma at mapped selection")
+        expectEqual(h.document.selection(for: cursor), NSRange(location: 21, length: 0), "Cursor caret at end of Third")
+        expectEqual(h.document.selection(for: claude), NSRange(location: 10, length: 0), "Claude caret before Cursor's edit is unaffected")
+
+        // 5. Stale non-overlapping offsets are automatically transformed through the revision history
+        // Suppose both agents read at rev 2: "First Item Beta Third"
+        // "First Item" is 0..10, "Beta" is 11..15, "Third" is 16..21
+        _ = await ok(h, "get_text", actor: claude)
+        _ = await ok(h, "get_text", actor: cursor)
+        // Claude edits 0..10 ("First Item" -> "One", length 3, delta -7), bumping revision to 3
+        let r3 = await ok(h, "replace_range", ["from": 0, "to": 10, "text": "One"], actor: claude)
+        expectEqual(int(r3["revision"]) ?? -1, 3, "revision is 3")
+        expectEqual(h.document.markdown, "One Beta Third", "text at rev 3")
+
+        // Cursor now calls replace_range with stale offsets 16..21 from rev 2 (when it last read)
+        // Because 16..21 does not overlap 0..10, it transforms by -7 to 9..14 ("Third")!
+        let r4 = await ok(h, "replace_range", ["from": 16, "to": 21, "text": "Three"], actor: cursor)
+        expectEqual(int(r4["revision"]) ?? -1, 4, "revision is 4")
+        expectEqual(h.document.markdown, "One Beta Three", "stale non-overlapping replace_range safely transformed to 9..14")
+        expectEqual(range(r4["replaced"]) ?? NSRange(), NSRange(location: 9, length: 5), "replaced reports transformed range")
+
+        // 6. Stale overlapping offsets are rejected with a clear conflict error
+        // Both agents read at rev 4 ("One Beta Three"): "Beta" is at 4..8
+        _ = await ok(h, "get_text", actor: claude)
+        _ = await ok(h, "get_text", actor: cursor)
+        // Claude edits "Beta" (4..8 -> "Two", rev 5)
+        _ = await ok(h, "replace_range", ["from": 4, "to": 8, "text": "Two"], actor: claude)
+        expectEqual(h.document.markdown, "One Two Three", "text at rev 5")
+        // Cursor tries to edit overlapping stale range 4..8 from rev 4 -> must fail with Conflict!
+        await fails(h, "replace_range", ["from": 4, "to": 8, "text": " middle "], actor: cursor, code: "tool_failed", containing: "Conflict")
+        expectEqual(h.document.markdown, "One Two Three", "overlapping stale write rejected without corrupting text")
+
+        // 7. Explicit baseRevision parameter works for both non-overlapping transformation and conflict detection
+        // At rev 4, "Three" was at 9..14. In rev 5 ("Beta" -> "Two", delta -1), "Three" moved to 8..13.
+        let r6 = await ok(h, "format_text", ["from": 9, "to": 14, "bold": true, "baseRevision": 4], actor: cursor)
+        expectEqual(int(r6["revision"]) ?? -1, 6, "revision is 6")
+        expectEqual(h.document.markdown, "One Two **Three**", "format_text transformed stale range via explicit baseRevision")
+
+        // Explicit baseRevision ahead of current revision fails
+        await fails(h, "replace_range", ["from": 0, "to": 3, "text": "X", "baseRevision": 99], actor: cursor, code: "tool_failed", containing: "Conflict")
+
+        // Explicit baseRevision on replace_text fails when document has changed
+        await fails(h, "replace_text", ["find": "One", "replace": "1", "baseRevision": 5], actor: cursor, code: "tool_failed", containing: "Conflict")
+
+        // 8. Human / external edits also increment revision and map agent cursors
+        _ = await ok(h, "set_selection", ["from": 8, "to": 17], actor: cursor) // selects "**Three**"
+        h.document.simulateUserEdit(to: "Prefix: One Two **Three**") // user inserted "Prefix: " (8 chars) at 0
+        expectEqual(h.document.revision, 7, "user edit increments revision to 7")
+        expectEqual(h.document.selection(for: cursor), NSRange(location: 16, length: 9), "Cursor selection shifted by user edit")
+        // Cursor had observed rev 6 ("One" at 0..3); user inserted at 0..0 which touches 0, so editing 4..7 ("Two" at rev 6) transforms by +8 to 12..15!
+        let r8 = await ok(h, "replace_range", ["from": 4, "to": 7, "text": "2", "baseRevision": 6], actor: cursor)
+        expectEqual(int(r8["revision"]) ?? -1, 8, "revision is 8")
+        expectEqual(h.document.markdown, "Prefix: One 2 **Three**", "transformed across user edit")
     }
 }
 

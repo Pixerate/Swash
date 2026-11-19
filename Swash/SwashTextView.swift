@@ -9,6 +9,7 @@
 import SwiftUI
 import MacAppKitExtras
 import AppKit
+import PixerateCore
 import PixerateMarkdown
 
 func logDebug(_ message: String) {
@@ -72,6 +73,10 @@ final class BlockMenuTarget: NSObject {
 final class SwashEditorController {
     weak var textView: NSTextView?
     weak var coordinator: SwashTextView.Coordinator?
+    /// Connected MCP agents' carets, selections and changed ranges on this document.
+    var agentCarets: AgentCaretStore?
+    /// Called whenever the raw Markdown in the editor changes outside of an agent tool call.
+    var onExternalTextChange: ((String) -> Void)?
     private var cachedFormatting: MarkdownFormatting?
     private var cachedFlavor: MarkdownFlavor?
 
@@ -173,13 +178,48 @@ final class SwashEditorController {
     }
 
     /// An agent tool's edit (#49): like `apply`, but never merged into the user's typing, so each
-    /// tool call is its own undo step.
+    /// tool call is its own undo step. When `selection` is nil, the user's selection in the text view
+    /// is mapped through the edit rather than moved to the agent's cursor.
     @discardableResult
-    func applyAgentEdit(newText: String, selection: NSRange, actionName: String) -> Bool {
+    func applyAgentEdit(newText: String, selection: NSRange? = nil, actionName: String) -> Bool {
         textView?.breakUndoCoalescing()
-        let applied = apply(newText: newText, selection: selection, actionName: actionName)
+        let userSelection: NSRange?
+        if let selection {
+            userSelection = selection
+        } else if let current = currentRawSelection, let oldText = currentRawText {
+            userSelection = Self.mapSelection(current, from: oldText as NSString, to: newText as NSString)
+        } else {
+            userSelection = nil
+        }
+        let applied = apply(newText: newText, selection: userSelection, actionName: actionName)
         textView?.breakUndoCoalescing()
         return applied
+    }
+
+    private static func mapSelection(_ selection: NSRange, from old: NSString, to new: NSString) -> NSRange {
+        let minLength = min(old.length, new.length)
+        var prefix = 0
+        while prefix < minLength && old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
+        var suffix = 0
+        while suffix < minLength - prefix && old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
+        let editRange = NSRange(location: prefix, length: old.length - prefix - suffix)
+        let newLength = new.length - prefix - suffix
+        let delta = newLength - editRange.length
+        func mapPos(_ pos: Int) -> Int {
+            if pos < editRange.location || (pos == editRange.location && editRange.length > 0) { return pos }
+            if pos < NSMaxRange(editRange) { return editRange.location + newLength }
+            return pos + delta
+        }
+        let start = mapPos(selection.location)
+        let end = max(start, mapPos(NSMaxRange(selection)))
+        return NSRange(location: start, length: end - start)
+    }
+
+    /// Ensures the overlay is attached to `agentCarets` so agent cursors and selections render live.
+    @MainActor
+    func attachAgentCaretsIfNeeded() {
+        guard let textView = textView, let coordinator = coordinator, let carets = agentCarets else { return }
+        WritingPartnerOverlay.overlay(for: textView).attachExternal(carets: carets, coordinator: coordinator)
     }
 
     /// Selects `range` (raw-Markdown offsets) and scrolls it into view, without taking focus.
@@ -1126,6 +1166,7 @@ struct SwashTextView: NSViewRepresentable {
         context.coordinator.currentTextView = textView
         controller?.textView = textView
         controller?.coordinator = context.coordinator
+        MainActor.assumeIsolated { controller?.attachAgentCaretsIfNeeded() }
         
         // The binding usually just echoes what the editor published from its last edit: skip
         // rebuilding and normalising the whole document in that case
@@ -1602,6 +1643,7 @@ struct SwashTextView: NSViewRepresentable {
                     let raw = buildRawMarkdown(from: textStorage)
                     lastPublishedText = raw
                     parent.text = raw
+                    parent.controller?.onExternalTextChange?(raw)
                     editGeneration += 1
                     let generation = editGeneration
                     DispatchQueue.main.async { [weak self, weak textView] in
@@ -1613,6 +1655,7 @@ struct SwashTextView: NSViewRepresentable {
                 } else {
                     lastPublishedText = textView.string
                     parent.text = textView.string
+                    parent.controller?.onExternalTextChange?(textView.string)
                     // Typed text takes the monospaced typing attributes; restyling the whole
                     // storage per keystroke would invalidate the entire layout
                     schedulePlainCodeBlockRefresh(in: textView)
@@ -2416,6 +2459,7 @@ struct SwashTextView: NSViewRepresentable {
             let raw = spliced ?? buildRawMarkdown(from: storage)
             lastPublishedText = raw
             parent.text = raw
+            parent.controller?.onExternalTextChange?(raw)
         }
 
         /// Replaces one top-level block's recorded source and moves the blocks after it.

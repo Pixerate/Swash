@@ -154,7 +154,13 @@ final class WritingPartnerOverlay: NSView {
     /// character there, or the right edge of the one before at the end of a line or the text.
     static func caretRect(at location: Int, in textView: NSTextView) -> NSRect? {
         guard let layoutManager = textView.layoutManager, let container = textView.textContainer,
-              let storage = textView.textStorage, storage.length > 0 else { return nil }
+              let storage = textView.textStorage else { return nil }
+        if storage.length == 0 {
+            let font = textView.font ?? NSFont.systemFont(ofSize: 14)
+            let height = ceil(font.ascender - font.descender + font.leading)
+            return NSRect(x: textView.textContainerOrigin.x + container.lineFragmentPadding - 1,
+                          y: textView.textContainerOrigin.y, width: 2, height: max(14, height))
+        }
         let string = storage.string as NSString
         let atLineEnd = location >= string.length || string.character(at: location) == 0x0A
         let index = atLineEnd ? max(0, min(location, string.length) - 1) : location
@@ -181,15 +187,16 @@ final class WritingPartnerOverlay: NSView {
     }
 
     /// The look for a treatment id (the default when it's unknown) in a light or dark appearance:
-    /// the partner's colour, the treatment's dark variant where it has one, and no name tag.
-    static func look(id: String, dark: Bool) -> Look? {
+    /// `color` (the partner's tint by default), the treatment's dark variant where it has one, and
+    /// whether to show a `nameTag` above the caret.
+    static func look(id: String, dark: Bool, colorHex: String? = nil, nameTag: Bool = false) -> Look? {
         guard let treatment = FlairTextTreatments.treatment(id: id)
                 ?? FlairTextTreatments.treatment(id: WritingPartnerDefaults.defaultStyle)
                 ?? FlairTextTreatments.all.first else { return nil }
         let values = treatment.values(values: [
-            "color": .string(rgba(tint)?.hex ?? "#AF52DE"),
+            "color": .string(colorHex ?? rgba(tint)?.hex ?? "#AF52DE"),
             "darkTheme": .bool(dark),
-            "nameTag": .bool(false),
+            "nameTag": .bool(nameTag),
         ])
         return Look(id: treatment.id, dark: dark, stages: FlairTextTreatments.resolve(treatment, values: values))
     }
@@ -326,6 +333,11 @@ final class WritingPartnerOverlay: NSView {
     private weak var target: WritingPartnerTarget?
     private var subscription: UUID?
 
+    private weak var externalCarets: AgentCaretStore?
+    private weak var externalCoordinator: SwashTextView.Coordinator?
+    private var externalSubscription: UUID?
+    private var externalLooks: [String: Look] = [:]
+
     /// Draws the carets in `carets`, in the text of `target`.
     func attach(carets: AgentCaretStore, target: WritingPartnerTarget) {
         if let subscription { self.carets?.unsubscribe(subscription) }
@@ -336,6 +348,28 @@ final class WritingPartnerOverlay: NSView {
             // What a fix changed is measured again once the editor has restyled it
             DispatchQueue.main.async { [weak self] in self?.render() }
         }
+    }
+
+    /// Draws external MCP agents' carets, selections and changed ranges with their colours and name tags.
+    func attachExternal(carets: AgentCaretStore, coordinator: SwashTextView.Coordinator?) {
+        if let externalSubscription { self.externalCarets?.unsubscribe(externalSubscription) }
+        self.externalCarets = carets
+        self.externalCoordinator = coordinator
+        externalSubscription = carets.subscribe { [weak self] _ in
+            self?.render()
+            DispatchQueue.main.async { [weak self] in self?.render() }
+        }
+        render()
+    }
+
+    private func externalLook(colorHex: String, in textView: NSTextView) -> Look? {
+        let id = WritingPartnerDefaults.style()
+        let dark = Self.isDark(textView)
+        let key = "\(id)|\(dark)|\(colorHex)"
+        if let cached = externalLooks[key] { return cached }
+        guard let resolved = Self.look(id: id, dark: dark, colorHex: colorHex, nameTag: true) else { return nil }
+        externalLooks[key] = resolved
+        return resolved
     }
 
     /// Redraws every playing stage from the director's state, and keeps drawing while any plays.
@@ -352,7 +386,9 @@ final class WritingPartnerOverlay: NSView {
         }
     }
 
-    private var isPlaying: Bool { !playbacks.isEmpty || !(carets?.carets.isEmpty ?? true) }
+    private var isPlaying: Bool {
+        !playbacks.isEmpty || !(carets?.carets.isEmpty ?? true) || !(externalCarets?.carets.isEmpty ?? true)
+    }
 
     private func stop() {
         timer?.invalidate()
@@ -445,6 +481,36 @@ final class WritingPartnerOverlay: NSView {
             return false
         }
         plans += live
+
+        // External MCP agents' carets, selections and changed ranges (each with its own colour and name tag)
+        let extCarets = externalCarets?.carets ?? []
+        if !extCarets.isEmpty,
+           let coordinator = externalCoordinator ?? target?.coordinator ?? (textView.delegate as? SwashTextView.Coordinator) {
+            let storeNow = externalCarets?.now() ?? now
+            let storage = { (raw: NSRange) -> NSRange in
+                coordinator.storageRange(forRaw: raw, in: textView)
+            }
+            for caret in extCarets {
+                guard let agentLook = externalLook(colorHex: caret.color, in: textView) else { continue }
+                let headLoc = storage(NSRange(location: caret.head, length: 0)).location
+                let head = Self.caretRect(at: headLoc, in: textView).map(Self.caret)
+                if !caret.changed.isEmpty, let changedSince = caret.changedSince {
+                    let lines = caret.changed.flatMap { Self.rects(for: storage($0), in: textView) }
+                    if !lines.isEmpty {
+                        let landedPlan = agentLook.plan(.landed, at: max(0, storeNow - changedSince), over: FlairTreatmentTarget(lines: lines, caret: head))
+                        if !landedPlan.done { plans.append(landedPlan) }
+                    }
+                }
+                let stageTime = max(0, storeNow - caret.stageSince)
+                if caret.selection.length > 0 {
+                    let lines = Self.rects(for: storage(caret.selection), in: textView)
+                    plans.append(agentLook.plan(.selecting, at: stageTime, over: FlairTreatmentTarget(lines: lines, caret: head)))
+                }
+                if let head {
+                    plans.append(agentLook.plan(.caret, at: stageTime, over: FlairTreatmentTarget(caret: head, label: caret.name)))
+                }
+            }
+        }
 
         guard !plans.isEmpty else {
             clear()

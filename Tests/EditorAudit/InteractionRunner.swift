@@ -2,6 +2,7 @@ import Foundation
 import MacAppKitExtras
 import SwiftUI
 import AppKit
+import PixerateCore
 import PixerateMarkdown
 
 final class TextBox { var text: String; init(_ t: String) { text = t } }
@@ -1092,6 +1093,38 @@ struct InteractionRunner {
              if let savedMode { defaults.set(savedMode, forKey: WritingPartnerDefaults.mode) } else { defaults.removeObject(forKey: WritingPartnerDefaults.mode) }
              if let savedStats { defaults.set(savedStats, forKey: WritingPartnerDefaults.stats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.stats) }
              if let savedChatStats { defaults.set(savedChatStats, forKey: WritingPartnerDefaults.chatStats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.chatStats) }
+        }
+
+        // Multi-agent external carets rendered with distinct colours and name tags in WritingPartnerOverlay (#152)
+        do {
+            let box = TextBox("Hello world and friends")
+            let tv = makeEditor(box, styled: true)
+            let coord = tv.delegate as! SwashTextView.Coordinator
+            let store = AgentCaretStore()
+            let overlay = WritingPartnerOverlay.overlay(for: tv)
+            overlay.attachExternal(carets: store, coordinator: coord)
+            store.set(AgentCaretInfo(id: "mcp:claude", name: "Claude", color: "#7c3aed"), anchor: 0, head: 5)
+            store.set(AgentCaretInfo(id: "mcp:cursor", name: "Cursor", color: "#db2777"), anchor: 16, head: 16)
+            store.markChanges("mcp:claude", [NSRange(location: 0, length: 5)])
+            pump(0.1)
+            let sublayers = overlay.layer?.sublayers ?? []
+            let aboveLayers = sublayers.flatMap { $0.sublayers ?? [] }
+            let tagTexts = aboveLayers.compactMap { layer -> String? in
+                for sub in layer.sublayers ?? [] {
+                    if let textLayer = sub as? CATextLayer, let attr = textLayer.string as? NSAttributedString {
+                        return attr.string
+                    }
+                }
+                return nil
+            }.sorted()
+            store.mapThroughEdit(range: NSRange(location: 0, length: 0), length: 4)
+            let cursorHeadAfter = store.caret("mcp:cursor")?.head ?? -1
+            store.clear()
+            pump(0.1)
+            let cleared = (overlay.layer?.sublayers ?? []).isEmpty
+            log("multi-agent-overlay-carets", "Claude (0..5) + Cursor (16)",
+                "tags=\(tagTexts.joined(separator: ",")) cursorMoved=\(cursorHeadAfter) cleared=\(cleared)",
+                expect: "tags=Claude,Cursor cursorMoved=20 cleared=true")
         }
 
         try? out.write(toFile: CommandLine.arguments[1], atomically: true, encoding: .utf8)
