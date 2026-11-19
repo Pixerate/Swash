@@ -233,7 +233,7 @@
 
 ## 58. Confluence and Jira Copy Images Without an `<img>` Tag
 - **Issue**: Atlassian's editor puts each image on the pasteboard as an empty `<div data-node-type="media">` with `data-file-name`/`data-alt` and `data-context-id` (the page ID). There is no `src` and no image data, so a converter that only reads `<img>` drops the images.
-- **Solution**: `HTMLToMarkdown.convert(_:sourceURL:)` (`Swash/PixerateMarkdownExtensions.swift`) rewrites media nodes as `<img>` before the package converts the HTML. Their source is `https://<site>[/wiki]/download/attachments/<pageID>/<file>`. It takes the site from the `org.chromium.source-url` pasteboard type, which Chromium browsers write. Safari does not write this type, so without it the image keeps only its file name. The attachment needs a signed-in browser, so Swash shows a placeholder for it.
+- **Solution**: `HTMLToMarkdown.convert(_:sourceURL:)` (in `PixerateMarkdown` since 0.82.0; checks in `scripts/run_paste_tests.sh`) rewrites media nodes as `<img>` before the package converts the HTML. Their source is `https://<site>[/wiki]/download/attachments/<pageID>/<file>`. It takes the site from the `org.chromium.source-url` pasteboard type, which Chromium browsers write. Safari does not write this type, so without it the image keeps only its file name. The attachment needs a signed-in browser, so Swash shows a placeholder for it.
 
 ## 59. Don't Re-Identify a View That Declares a Customizable Toolbar
 - **Issue**: The folder window first gave `ContentView` an `.id(file)` so each file got fresh editor state. Every switch rebuilt `ContentView`'s `.toolbar(id: "mainToolbar")`, and AppKit threw `NSInternalInconsistencyException` (`index>=0 && index<[_currentItems count]` in `-[NSToolbar _removeItemAtIndex:]`) while SwiftUI removed the old items. A headless `NSHostingView` harness doesn't crash, because it has no window toolbar.
@@ -375,4 +375,12 @@
 ## 91. The swiftc Test Scripts Break on a Checkout Path With Spaces
 - **Issue**: `scripts/run_agent_tools_tests.sh`, `Tests/EditorAudit/run_audit.sh` and the other runners fail with "no such module 'PixerateCore'" (or `PixerateMarkdown`) when the checkout lives under a path with a space (e.g. `~/Development/Claude Worktrees/…`).
 - **Solution**: `$PIXERATE_CORE` / `$PIXERATE_MARKDOWN` are swiftc flags expanded unquoted so they split into words, which also splits `-I <path>` at the space. Run the scripts from a symlink without spaces (`ln -s "<checkout>" /tmp/swash && cd /tmp/swash`): the scripts use `$PWD`, which keeps the symlink's path.
+
+## 92. UIKit's `NSLayoutManager` Has No Temporary Attributes for Focus Mode
+- **Issue**: On macOS, Focus Mode dims text outside the current paragraph or sentence with `NSLayoutManager.addTemporaryAttribute` / `removeTemporaryAttribute`, which doesn't touch `NSTextStorage`. UIKit's `NSLayoutManager` doesn't have temporary attributes, and writing dimmed foreground colours into `NSTextStorage` on every caret move would trigger full restyles and alter the editor's styling fingerprint.
+- **Solution**: `StyledLayoutManager` (`Swash/iOS/StyledLayoutManager.swift`) holds `focusedCharacterRange: NSRange?` and dims glyph runs, list markers, badges and alert icons outside that range to `unfocusedAlpha` (`0.3`) inside `drawGlyphs(forGlyphRange:at:)` and `drawBackground(forGlyphRange:at:)`. Changing the focused range only calls `invalidateDisplay(forCharacterRange:)`, keeping `NSTextStorage` untouched.
+
+## 93. `#Preview` Bodies Compile in Release Builds
+- **Issue**: Wrapping preview-only helpers (sample documents, `PreviewModifier`s in `Swash/PreviewModifiers.swift`) in `#if DEBUG` breaks the Release build with "cannot find 'SwashSampleDocument' in scope": the `#Preview` macro expansion is not stripped from Release, so every symbol a preview references must exist in all configurations.
+- **Solution**: Keep shared preview helpers unconditional and small, or wrap both the helper and every `#Preview` that uses it in `#if DEBUG`. Build the Release configuration (as `PR Build` does) after touching previews.
 

@@ -152,3 +152,9 @@ struct PixerateAccountSections: View {
         return ""
     }
 }
+
+// MARK: - Previews
+
+#Preview("Pixerate Account Sections", traits: .sectionContainer) {
+    PixerateAccountSections()
+}

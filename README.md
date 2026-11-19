@@ -34,7 +34,7 @@
 - **Tables you can edit.** Click into a cell and type; no lining up pipes by hand.
 - **Clickable to-do lists.** Check items off with a click.
 - **Find your way around.** An outline sidebar follows along as you write and jumps to any heading, ⌘F searches the document, and a live word count shows words, characters or reading time.
-- **Punctuation as you type.** Turn on the writing partner in Settings › Writing, and Swash fixes small things as you finish each word: `i` → `I`, `dont` → `don't`, `its really` → `it's really` (but not `its colour`), a capital to start a sentence or line, and a full stop or question mark when you press Return at the end of a sentence. With Correct spelling on, it also fixes misspellings, in place of macOS's own autocorrect. A soft sweep shows each word being checked, and Swash's own purple cursor selects what it fixes before the change appears. Each fix is its own undo step, Swash learns which ones you undo, and it never touches code, math, links' addresses or tables. It all happens on your Mac.
+- **Punctuation as you type.** The writing partner is on from the start and fixes small things as you finish each word: `i` → `I`, `dont` → `don't`, `its really` → `it's really` (but not `its colour`), a capital to start a sentence or line, a full stop or question mark when you press Return at the end of a sentence, and misspellings in place of macOS's own autocorrect. The first time you edit a document, Swash introduces the partner in place with a sample fix so you can keep it in Automatically, switch to Suggest, or turn it off. A soft sweep shows each word being checked, and Swash's own purple cursor selects what it fixes before the change appears. Each fix is its own undo step, Swash learns which ones you undo, you can pause it for the current document with ⌥⌘P, and it never touches code, math, links' addresses or tables. It all happens on your Mac.
 - **The partner's style.** Each fix is played by the partner's own cursor: it selects the word, types the new one, and a ribbon curls away under what changed. Prefer something quieter? Choose another style in Settings › Writing, with a live preview of each.
 - **Write with Apple Intelligence.** Writing Tools can rewrite and proofread your prose without touching your code, math or tables, and Translate swaps a selection for its translation.
 
@@ -76,6 +76,7 @@
 | ⌘P | Print (File › Export for PDF and HTML) |
 | ⇧⌘D / ⌃⌘T | Focus Mode / Typewriter Scrolling |
 | ⌃⇧⌘F | Distraction-Free Writing |
+| ⌥⌘P | Pause or resume the writing partner for the current document |
 | ⌃⌥⌘N | Quick Note, from any app |
 | ⇧⌘I | Import a Word, RTF, HTML or OpenDocument file |
 | ⇧⌘T | Reopen the last closed document |

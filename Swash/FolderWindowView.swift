@@ -480,4 +480,24 @@ struct OpenFolderCommands: Commands {
         }
     }
 }
+
+// MARK: - Previews
+
+#Preview("Folder Window - Access Required") {
+    FolderWindowView(folderURL: URL(fileURLWithPath: "/tmp/SampleFolder"))
+}
+
+#Preview("Search Result Row") {
+    SearchResultRow(
+        match: FolderSearchMatch(
+            file: URL(fileURLWithPath: "/tmp/SampleFolder/README.md"),
+            line: 42,
+            range: NSRange(location: 0, length: 100),
+            snippet: "Swash supports GitHub Flavored Markdown tables and task lists.",
+            snippetRange: NSRange(location: 15, length: 24)
+        )
+    )
+    .padding()
+    .frame(width: 320)
+}
 #endif

@@ -1,5 +1,5 @@
-// Checks for what Swash adds to the engine's HTML → Markdown paste conversion
-// (Swash/PixerateMarkdownExtensions.swift). Run via scripts/run_paste_tests.sh.
+// Checks for the engine's HTML → Markdown paste conversion that Swash relies on
+// (Confluence and Jira images, in PixerateMarkdown). Run via scripts/run_paste_tests.sh.
 import Foundation
 import PixerateMarkdown
 

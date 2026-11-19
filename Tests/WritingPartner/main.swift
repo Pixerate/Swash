@@ -229,7 +229,25 @@ do {
     check(!WritingPartnerStats.load(defaults, voice: .chat).isActive(.pronounI), "two undos in chat stop pronounI in chat")
     check(WritingPartnerStats.load(defaults, voice: .punctuate).isActive(.pronounI), "prose pronounI is unaffected by chat undos")
     check(WritingPartnerStats.load(defaults, flavor: .github) == kept, "prose stats unchanged after saving chat stats")
-    check(WritingPartnerDefaults.mode(defaults) == .off, "off by default")
+    check(WritingPartnerDefaults.mode(defaults) == .automatic, "on (Automatically) by default (#112)")
+    // Upgrades keep their setting (#112): earlier Swash keys with no mode stored mean the partner was off
+    do {
+        let suite = "swash-writing-partner-migration-tests"
+        let fresh = UserDefaults(suiteName: suite)!
+        fresh.removePersistentDomain(forName: suite)
+        check(WritingPartnerDefaults.migrateExistingInstall(fresh) == .automatic, "a new install is on")
+        fresh.removePersistentDomain(forName: suite)
+        fresh.set(true, forKey: "SUHasLaunchedBefore")
+        check(WritingPartnerDefaults.migrateExistingInstall(fresh) == .off && WritingPartnerDefaults.mode(fresh) == .off,
+              "an upgrade with no mode stored stays off")
+        fresh.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+        check(WritingPartnerDefaults.migrateExistingInstall(fresh) == .automatic, "a later choice isn't migrated again")
+        fresh.removePersistentDomain(forName: suite)
+        fresh.set(true, forKey: "SUHasLaunchedBefore")
+        fresh.set(WritingPartnerMode.suggest.rawValue, forKey: WritingPartnerDefaults.mode)
+        check(WritingPartnerDefaults.migrateExistingInstall(fresh) == .suggest, "an upgrade's explicit choice is kept")
+        fresh.removePersistentDomain(forName: suite)
+    }
     defaults.set(WritingPartnerMode.suggest.rawValue, forKey: WritingPartnerDefaults.mode)
     check(WritingPartnerDefaults.mode(defaults) == .suggest && WritingPartnerMode.suggest.title == "Suggest", "suggest mode round-trip")
     check(WritingPartnerMode.allCases.map(\.title) == ["Off", "Suggest", "Automatically"], "mode titles")
