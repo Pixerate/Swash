@@ -135,6 +135,27 @@ class MarkdownEditingTextView: UITextView {
             }
             actions.insert(UIMenu(options: .displayInline, children: [open]), at: 0)
         }
+        if let block = MarkdownParser.fencedCodeBlock(containing: markdownSelection, in: markdownText) {
+            let current = (block.language ?? "").lowercased()
+            let blockLocation = block.fullRange.location
+            func action(_ title: String, _ value: String?) -> UIAction {
+                UIAction(title: title, state: (value ?? "") == current ? .on : .off) { [weak self] _ in
+                    guard let self = self else { return }
+                    if let edit = MarkdownEditingCommands.setCodeLanguage(value, text: self.markdownText, location: blockLocation) {
+                        self.applyMarkdownEdit(edit, actionName: "Code Language")
+                    }
+                }
+            }
+            var languages = MarkdownEditingCommands.commonLanguages.map { action($0.capitalized, $0) }
+            if !current.isEmpty, !MarkdownEditingCommands.commonLanguages.contains(current) {
+                languages.insert(action(block.language ?? current, block.language), at: 0)
+            }
+            let langMenu = UIMenu(title: "Code Language", image: UIImage(systemName: "chevron.left.forwardslash.chevron.right"), children: [
+                UIMenu(options: .displayInline, children: [action("Plain Text", nil)]),
+                UIMenu(options: .displayInline, children: languages),
+            ])
+            actions.insert(langMenu, at: 0)
+        }
         if let menu = formattingMenu(for: range, suggestedActions: actions) { return menu }
         return actions.count == suggestedActions.count ? nil : UIMenu(children: actions)
     }

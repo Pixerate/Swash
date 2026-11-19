@@ -783,6 +783,7 @@ final class StyledUITextView: MarkdownEditingTextView {
     // MARK: Code language
 
     private var badgeButtons: [UIButton] = []
+    var codeBadgeButtons: [UIButton] { badgeButtons }
 
     /// An invisible button over each code block's language badge; tapping it opens the language menu.
     private func layoutCodeBadgeButtons() {
@@ -791,6 +792,7 @@ final class StyledUITextView: MarkdownEditingTextView {
         while badgeButtons.count < badges.count {
             let button = UIButton(type: .custom)
             button.showsMenuAsPrimaryAction = true
+            button.isPointerInteractionEnabled = true
             addSubview(button)
             badgeButtons.append(button)
         }
@@ -803,6 +805,7 @@ final class StyledUITextView: MarkdownEditingTextView {
             button.isHidden = false
             button.frame = badge.rect.offsetBy(dx: textContainerInset.left, dy: textContainerInset.top).insetBy(dx: -8, dy: -6)
             button.accessibilityLabel = "Code language: \(badge.info.title.capitalized)"
+            button.accessibilityHint = "Double-tap or click to choose code language"
             button.menu = languageMenu(current: badge.info.language, location: badge.location)
         }
     }
@@ -828,7 +831,47 @@ final class StyledUITextView: MarkdownEditingTextView {
     // MARK: "/" block menu
 
     private var blockMenuChoice: ((MarkdownEditingCommands.BlockInsert) -> Void)?
-    private weak var blockMenuPopover: UIViewController?
+    private(set) weak var blockMenuPopover: UIViewController?
+
+    // MARK: - Key commands
+
+    override var keyCommands: [UIKeyCommand]? {
+        guard blockMenuChoice != nil else { return super.keyCommands }
+        let esc = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(handleBlockMenuEscape(_:)))
+        esc.wantsPriorityOverSystemBehavior = true
+        if blockMenuPopover is BlockMenuViewController {
+            let down = UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(handleBlockMenuDown(_:)))
+            down.wantsPriorityOverSystemBehavior = true
+            let up = UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(handleBlockMenuUp(_:)))
+            up.wantsPriorityOverSystemBehavior = true
+            let ret = UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(handleBlockMenuReturn(_:)))
+            ret.wantsPriorityOverSystemBehavior = true
+            return (super.keyCommands ?? []) + [down, up, ret, esc]
+        }
+        return (super.keyCommands ?? []) + [esc]
+    }
+
+    @objc func handleBlockMenuDown(_ command: UIKeyCommand) {
+        if let menu = blockMenuPopover as? BlockMenuViewController {
+            menu.selectNext()
+        }
+    }
+
+    @objc func handleBlockMenuUp(_ command: UIKeyCommand) {
+        if let menu = blockMenuPopover as? BlockMenuViewController {
+            menu.selectPrevious()
+        }
+    }
+
+    @objc func handleBlockMenuReturn(_ command: UIKeyCommand) {
+        if let menu = blockMenuPopover as? BlockMenuViewController {
+            menu.chooseSelected()
+        }
+    }
+
+    @objc func handleBlockMenuEscape(_ command: UIKeyCommand) {
+        dismissBlockMenu()
+    }
 
     /// Offers the block types: a popover at the caret where there is room (iPad), otherwise a bar
     /// above the keyboard (iPhone).
@@ -966,9 +1009,10 @@ private final class TaskTapFilter: NSObject, UIGestureRecognizerDelegate {
     }
 }
 /// The "/" menu's block types in a popover (iPad).
-private final class BlockMenuViewController: UITableViewController, UIPopoverPresentationControllerDelegate {
-    private let choose: (MarkdownEditingCommands.BlockInsert) -> Void
-    private let kinds = MarkdownEditingCommands.BlockInsert.allCases
+final class BlockMenuViewController: UITableViewController, UIPopoverPresentationControllerDelegate {
+    let choose: (MarkdownEditingCommands.BlockInsert) -> Void
+    let kinds = MarkdownEditingCommands.BlockInsert.allCases
+    private(set) var selectedIndex: Int = 0
 
     init(choose: @escaping (MarkdownEditingCommands.BlockInsert) -> Void) {
         self.choose = choose
@@ -980,9 +1024,69 @@ private final class BlockMenuViewController: UITableViewController, UIPopoverPre
         fatalError("init(coder:) has not been implemented")
     }
 
+    override var canBecomeFirstResponder: Bool { true }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "block")
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        selectRow(at: selectedIndex, scrollPosition: .none)
+    }
+
+    func selectRow(at index: Int, scrollPosition: UITableView.ScrollPosition = .middle) {
+        guard !kinds.isEmpty else { return }
+        let clamped = max(0, min(kinds.count - 1, index))
+        selectedIndex = clamped
+        let indexPath = IndexPath(row: clamped, section: 0)
+        tableView.selectRow(at: indexPath, animated: false, scrollPosition: scrollPosition)
+    }
+
+    func selectNext() {
+        guard !kinds.isEmpty else { return }
+        let next = (selectedIndex + 1) % kinds.count
+        selectRow(at: next)
+    }
+
+    func selectPrevious() {
+        guard !kinds.isEmpty else { return }
+        let prev = (selectedIndex - 1 + kinds.count) % kinds.count
+        selectRow(at: prev)
+    }
+
+    func chooseSelected() {
+        guard kinds.indices.contains(selectedIndex) else { return }
+        choose(kinds[selectedIndex])
+    }
+
+    @objc func handleDownArrow(_ command: UIKeyCommand) {
+        selectNext()
+    }
+
+    @objc func handleUpArrow(_ command: UIKeyCommand) {
+        selectPrevious()
+    }
+
+    @objc func handleReturn(_ command: UIKeyCommand) {
+        chooseSelected()
+    }
+
+    @objc func handleEscape(_ command: UIKeyCommand) {
+        dismiss(animated: true)
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        let down = UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(handleDownArrow(_:)))
+        down.wantsPriorityOverSystemBehavior = true
+        let up = UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(handleUpArrow(_:)))
+        up.wantsPriorityOverSystemBehavior = true
+        let ret = UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(handleReturn(_:)))
+        ret.wantsPriorityOverSystemBehavior = true
+        let esc = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(handleEscape(_:)))
+        esc.wantsPriorityOverSystemBehavior = true
+        return (super.keyCommands ?? []) + [down, up, ret, esc]
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -995,10 +1099,12 @@ private final class BlockMenuViewController: UITableViewController, UIPopoverPre
         content.text = kinds[indexPath.row].title
         content.image = UIImage(systemName: kinds[indexPath.row].symbolName)
         cell.contentConfiguration = content
+        cell.hoverStyle = UIHoverStyle(effect: .highlight)
         return cell
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        selectedIndex = indexPath.row
         choose(kinds[indexPath.row])
     }
 
@@ -1018,10 +1124,13 @@ private final class BlockMenuBar: GlassAccessoryBar {
             configuration.imagePadding = 6
             configuration.cornerStyle = .capsule
             configuration.baseForegroundColor = .label
-            return UIButton(configuration: configuration, primaryAction: UIAction { _ in choose(kind) })
+            let button = UIButton(configuration: configuration, primaryAction: UIAction { _ in choose(kind) })
+            button.isPointerInteractionEnabled = true
+            return button
         }
         let closeButton = GlassAccessoryBar.trailingButton(symbol: "xmark", label: "Close Block Menu",
                                                            action: UIAction { _ in close() })
+        closeButton.isPointerInteractionEnabled = true
         super.init(items: chips, trailing: closeButton, groupedInCapsule: false)
     }
 
