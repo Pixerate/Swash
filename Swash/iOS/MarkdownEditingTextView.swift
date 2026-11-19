@@ -10,6 +10,7 @@
 #if os(iOS)
 import SwiftUI
 import UIKit
+import MacAppKitExtras
 import PixerateMarkdown
 
 /// Lets SwiftUI read the selection and apply edits through whichever editor is on screen, so they
@@ -53,6 +54,8 @@ class MarkdownEditingTextView: UITextView {
     var isApplyingEdit = false
     /// The document's flavour, for finding links (Slack mrkdwn writes them as `<url|text>`).
     var flavor: MarkdownFlavor = .github
+    /// The document's file URL, for resolving relative and `[[wiki]]` note links in its folder.
+    var baseURL: URL?
 
     /// The selection in raw-Markdown offsets.
     var markdownSelection: NSRange { selectedRange }
@@ -124,19 +127,72 @@ class MarkdownEditingTextView: UITextView {
 
     // MARK: Edit menu
 
-    /// The edit menu for delegates' `editMenuForTextIn`: the system actions, Open Link when the
-    /// selection is in a link (links aren't followed by tapping while editing, and iOS has no
-    /// ⌘-click), and the Format submenu.
+    /// The edit menu for delegates' `editMenuForTextIn`: the system actions, Open Note / Open Link
+    /// when the selection is in a link (links aren't followed by tapping while editing, and iOS has
+    /// no ⌘-click), and the Format submenu.
     func editMenu(for range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
         var actions = suggestedActions
-        if let url = linkURL(at: markdownSelection) {
+        if let note = noteURL(at: markdownSelection) {
+            let open = UIAction(title: "Open Note", image: UIImage(systemName: "doc.text")) { _ in
+                DocumentOpener.open(note)
+            }
+            actions.insert(UIMenu(options: .displayInline, children: [open]), at: 0)
+        } else if let url = linkURL(at: markdownSelection) {
             let open = UIAction(title: "Open Link", image: UIImage(systemName: "safari")) { _ in
                 UIApplication.shared.open(url)
             }
             actions.insert(UIMenu(options: .displayInline, children: [open]), at: 0)
         }
+        if let block = MarkdownParser.fencedCodeBlock(containing: markdownSelection, in: markdownText) {
+            let current = (block.language ?? "").lowercased()
+            let blockLocation = block.fullRange.location
+            func action(_ title: String, _ value: String?) -> UIAction {
+                UIAction(title: title, state: (value ?? "") == current ? .on : .off) { [weak self] _ in
+                    guard let self = self else { return }
+                    let text = self.markdownText
+                    guard let edit = MarkdownEditingCommands.setCodeLanguage(value, text: text, location: blockLocation) else { return }
+                    // The command puts the caret at the block's start; keep the selection instead,
+                    // shifted by the fence line's change in length.
+                    let selection = self.markdownSelection
+                    let delta = (edit.text as NSString).length - (text as NSString).length
+                    let kept = selection.location > blockLocation
+                        ? NSRange(location: selection.location + delta, length: selection.length) : selection
+                    self.applyMarkdownEdit(MarkdownEdit(text: edit.text, selection: kept), actionName: "Code Language")
+                }
+            }
+            var languages = MarkdownEditingCommands.commonLanguages.map { action($0.capitalized, $0) }
+            if !current.isEmpty, !MarkdownEditingCommands.commonLanguages.contains(current) {
+                languages.insert(action(block.language ?? current, block.language), at: 0)
+            }
+            let langMenu = UIMenu(title: "Code Language", image: UIImage(systemName: "chevron.left.forwardslash.chevron.right"), children: [
+                UIMenu(options: .displayInline, children: [action("Plain Text", nil)]),
+                UIMenu(options: .displayInline, children: languages),
+            ])
+            actions.insert(langMenu, at: 0)
+        }
         if let menu = formattingMenu(for: range, suggestedActions: actions) { return menu }
         return actions.count == suggestedActions.count ? nil : UIMenu(children: actions)
+    }
+
+    /// The Markdown note in the document's folder that a relative link or `[[wiki]]` link at
+    /// `selection` (raw-Markdown offsets) points to, if any.
+    func noteURL(at selection: NSRange) -> URL? {
+        guard let baseURL = baseURL else { return nil }
+        let root = baseURL.deletingLastPathComponent().standardizedFileURL
+        _ = FolderAccessManager.shared.ensureAccess(for: root)
+        let text = markdownText
+        for wiki in NoteLinkResolver.wikiLinks(in: text) {
+            if NSLocationInRange(selection.location, wiki.range) || NSIntersectionRange(selection, wiki.range).length > 0 {
+                let files = FolderScanner.scan(root).files
+                if let resolved = NoteLinkResolver.resolveWiki(wiki.target, from: baseURL, root: root, files: files) {
+                    return resolved
+                }
+            }
+        }
+        if let node = MarkdownFormatting(text: text).link(at: selection), case .link(let target, _, _) = node.kind {
+            return NoteLinkResolver.resolve(target, from: baseURL, root: root)
+        }
+        return nil
     }
 
     /// The URL of the link at `selection` (raw-Markdown offsets), if it is one the system can
