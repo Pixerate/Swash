@@ -12,7 +12,7 @@ swiftc -target arm64-apple-macos14.0 -sdk "$(xcrun --show-sdk-path --sdk macosx)
   -swift-version 5 -default-isolation MainActor -D DEBUG \
   -enable-upcoming-feature NonisolatedNonsendingByDefault -enable-upcoming-feature InferIsolatedConformances \
   $PIXERATE_MARKDOWN $PIXERATE_ACCOUNT \
-  Swash/MarkdownFlavor.swift Swash/PixerateMarkdownExtensions.swift Swash/SlackMarkdown.swift \
+  Swash/MarkdownFlavor.swift Swash/SlackMarkdown.swift \
   Swash/WritingPartner.swift Swash/PixerateAccess.swift Swash/WritingBandleader.swift Swash/PixerateWritingBandleader.swift \
   Swash/OnDeviceWritingBandleader.swift \
   Tests/WritingPartner/main.swift -o "$OUT/runner"
