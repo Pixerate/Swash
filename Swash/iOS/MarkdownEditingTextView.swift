@@ -141,9 +141,15 @@ class MarkdownEditingTextView: UITextView {
             func action(_ title: String, _ value: String?) -> UIAction {
                 UIAction(title: title, state: (value ?? "") == current ? .on : .off) { [weak self] _ in
                     guard let self = self else { return }
-                    if let edit = MarkdownEditingCommands.setCodeLanguage(value, text: self.markdownText, location: blockLocation) {
-                        self.applyMarkdownEdit(edit, actionName: "Code Language")
-                    }
+                    let text = self.markdownText
+                    guard let edit = MarkdownEditingCommands.setCodeLanguage(value, text: text, location: blockLocation) else { return }
+                    // The command puts the caret at the block's start; keep the selection instead,
+                    // shifted by the fence line's change in length.
+                    let selection = self.markdownSelection
+                    let delta = (edit.text as NSString).length - (text as NSString).length
+                    let kept = selection.location > blockLocation
+                        ? NSRange(location: selection.location + delta, length: selection.length) : selection
+                    self.applyMarkdownEdit(MarkdownEdit(text: edit.text, selection: kept), actionName: "Code Language")
                 }
             }
             var languages = MarkdownEditingCommands.commonLanguages.map { action($0.capitalized, $0) }

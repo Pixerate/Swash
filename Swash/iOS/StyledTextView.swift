@@ -836,7 +836,11 @@ final class StyledUITextView: MarkdownEditingTextView {
     // MARK: - Key commands
 
     override var keyCommands: [UIKeyCommand]? {
-        guard blockMenuChoice != nil else { return super.keyCommands }
+        // Only while the menu is actually showing: a popover dismissed by tapping outside it
+        // leaves `blockMenuChoice` set until the next "/".
+        guard blockMenuChoice != nil, blockMenuPopover != nil || inputAccessoryView is BlockMenuBar else {
+            return super.keyCommands
+        }
         let esc = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(handleBlockMenuEscape(_:)))
         esc.wantsPriorityOverSystemBehavior = true
         if blockMenuPopover is BlockMenuViewController {
@@ -1024,8 +1028,6 @@ final class BlockMenuViewController: UITableViewController, UIPopoverPresentatio
         fatalError("init(coder:) has not been implemented")
     }
 
-    override var canBecomeFirstResponder: Bool { true }
-
     override func viewDidLoad() {
         super.viewDidLoad()
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "block")
@@ -1059,34 +1061,6 @@ final class BlockMenuViewController: UITableViewController, UIPopoverPresentatio
     func chooseSelected() {
         guard kinds.indices.contains(selectedIndex) else { return }
         choose(kinds[selectedIndex])
-    }
-
-    @objc func handleDownArrow(_ command: UIKeyCommand) {
-        selectNext()
-    }
-
-    @objc func handleUpArrow(_ command: UIKeyCommand) {
-        selectPrevious()
-    }
-
-    @objc func handleReturn(_ command: UIKeyCommand) {
-        chooseSelected()
-    }
-
-    @objc func handleEscape(_ command: UIKeyCommand) {
-        dismiss(animated: true)
-    }
-
-    override var keyCommands: [UIKeyCommand]? {
-        let down = UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(handleDownArrow(_:)))
-        down.wantsPriorityOverSystemBehavior = true
-        let up = UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(handleUpArrow(_:)))
-        up.wantsPriorityOverSystemBehavior = true
-        let ret = UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(handleReturn(_:)))
-        ret.wantsPriorityOverSystemBehavior = true
-        let esc = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(handleEscape(_:)))
-        esc.wantsPriorityOverSystemBehavior = true
-        return (super.keyCommands ?? []) + [down, up, ret, esc]
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {

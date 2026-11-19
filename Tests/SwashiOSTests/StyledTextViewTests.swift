@@ -558,7 +558,6 @@ final class StyledTextViewTests: XCTestCase {
             chosenKind = kind
         }
         XCTAssertEqual(menu.selectedIndex, 0)
-        XCTAssertTrue(menu.canBecomeFirstResponder)
 
         menu.beginAppearanceTransition(true, animated: false)
         menu.endAppearanceTransition()
