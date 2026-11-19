@@ -380,4 +380,7 @@
 - **Issue**: On macOS, Focus Mode dims text outside the current paragraph or sentence with `NSLayoutManager.addTemporaryAttribute` / `removeTemporaryAttribute`, which doesn't touch `NSTextStorage`. UIKit's `NSLayoutManager` doesn't have temporary attributes, and writing dimmed foreground colours into `NSTextStorage` on every caret move would trigger full restyles and alter the editor's styling fingerprint.
 - **Solution**: `StyledLayoutManager` (`Swash/iOS/StyledLayoutManager.swift`) holds `focusedCharacterRange: NSRange?` and dims glyph runs, list markers, badges and alert icons outside that range to `unfocusedAlpha` (`0.3`) inside `drawGlyphs(forGlyphRange:at:)` and `drawBackground(forGlyphRange:at:)`. Changing the focused range only calls `invalidateDisplay(forCharacterRange:)`, keeping `NSTextStorage` untouched.
 
+## 93. `#Preview` Bodies Compile in Release Builds
+- **Issue**: Wrapping preview-only helpers (sample documents, `PreviewModifier`s in `Swash/PreviewModifiers.swift`) in `#if DEBUG` breaks the Release build with "cannot find 'SwashSampleDocument' in scope": the `#Preview` macro expansion is not stripped from Release, so every symbol a preview references must exist in all configurations.
+- **Solution**: Keep shared preview helpers unconditional and small, or wrap both the helper and every `#Preview` that uses it in `#if DEBUG`. Build the Release configuration (as `PR Build` does) after touching previews.
 

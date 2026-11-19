@@ -40,4 +40,12 @@ struct StickerSetsSection: View {
         }
     }
 }
+
+// MARK: - Previews
+
+#Preview("Sticker Sets Section") {
+    Form {
+        StickerSetsSection()
+    }
+}
 #endif

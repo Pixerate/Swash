@@ -780,12 +780,41 @@ extension View {
     }
 }
 
-#Preview("Document Info") {
+// MARK: - Previews
+
+#Preview("iOS Typography Settings") {
+    Form {
+        IOSTypographySettingsSections()
+    }
+}
+
+#Preview("iOS Outline - Populated") {
+    IOSOutlineList(
+        outline: MarkdownOutline(text: """
+            # Swash iOS
+            ## Introduction
+            ### Navigation
+            ## Settings
+            """),
+        currentIndex: 1,
+        select: { _ in }
+    )
+}
+
+#Preview("iOS Outline - Empty") {
+    IOSOutlineList(
+        outline: MarkdownOutline(text: ""),
+        currentIndex: nil,
+        select: { _ in }
+    )
+}
+
+#Preview("iOS Document Info") {
     IOSDocumentInfoView(
-        title: "Sample.md",
-        document: MarkdownStatistics(text: "# Swash\n\nOne two three."),
+        title: "Document Info",
+        document: MarkdownStatistics(text: SwashSampleDocument.standard.text),
         selection: nil,
-        headings: 1
+        headings: 5
     )
 }
 #endif

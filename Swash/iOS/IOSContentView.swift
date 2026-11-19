@@ -486,9 +486,17 @@ private extension FormatCommand {
     }
 }
 #Preview("iOS Editor") {
-    @Previewable @State var document = SwashDocument(text: "# Swash\n\nLive **Markdown** preview.")
+    @Previewable @State var document = SwashSampleDocument.standard
     NavigationStack {
         IOSContentView(document: $document, fileURL: nil)
     }
+}
+
+#Preview("iOS Editor - Dark Mode") {
+    @Previewable @State var document = SwashSampleDocument.tablesAndMath
+    NavigationStack {
+        IOSContentView(document: $document, fileURL: nil)
+    }
+    .preferredColorScheme(.dark)
 }
 #endif

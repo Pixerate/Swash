@@ -585,6 +585,60 @@ private struct SandboxedWidgetWebView: UIViewRepresentable {
     .frame(width: 480)
 }
 
+#Preview("GenUI - Actions") {
+    GenUIActionsView(data: GenUIActionsBlock(
+        title: "Quick Actions",
+        actions: [
+            GenUIActionItem(id: "run", label: "Run Pipeline", variant: "primary", description: nil),
+            GenUIActionItem(id: "cancel", label: "Cancel", variant: "destructive", description: nil)
+        ]
+    ))
+    .padding()
+    .frame(width: 400)
+}
+
+#Preview("GenUI - Chart") {
+    GenUIChartView(data: GenUIChartBlock(
+        chartType: "bar",
+        title: "Weekly Revenue",
+        unit: "$",
+        categories: ["Mon", "Tue", "Wed", "Thu", "Fri"],
+        series: [
+            GenUIChartSeries(name: "Revenue", data: [120, 200, 150, 310, 280], color: nil)
+        ]
+    ))
+    .padding()
+    .frame(width: 400)
+}
+
+#Preview("GenUI - Tree") {
+    GenUITreeView(data: GenUITreeBlock(
+        title: "File Hierarchy",
+        nodes: [
+            GenUITreeNode(id: "root", label: "Project", detail: nil, parentId: nil),
+            GenUITreeNode(id: "src", label: "Sources", detail: nil, parentId: "root"),
+            GenUITreeNode(id: "file1", label: "ContentView.swift", detail: "Swift", parentId: "src")
+        ]
+    ))
+    .padding()
+    .frame(width: 400)
+}
+
+#Preview("GenUI - Sandboxed Widget") {
+    SandboxedWidgetView(
+        data: GenUICustomWidgetBlock(
+            title: "Interactive Counter",
+            height: 120,
+            html: "<html><body><h3 style='color:blue;'>Widget Content</h3><p>Hello from sandboxed HTML!</p></body></html>",
+            script: nil
+        ),
+        documentKey: "preview-doc"
+    )
+    .padding()
+    .frame(width: 400)
+}
+
+
 #if os(macOS)
 // MARK: - NSTextAttachment & Cell for Edit Text Mode
 

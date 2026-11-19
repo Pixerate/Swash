@@ -67,4 +67,10 @@ private struct WritingPartnerStylePreview: NSViewRepresentable {
     view.configure(onPause: {}, onDismiss: {})
     return view
 }
+
+// MARK: - Previews
+
+#Preview("Writing Partner Style Section", traits: .sectionContainer) {
+    WritingPartnerStyleSection()
+}
 #endif

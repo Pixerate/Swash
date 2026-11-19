@@ -1945,8 +1945,20 @@ private struct ExportAndWritingCommandsModifier: ViewModifier {
     }
 }
 
-#Preview {
-    ContentView(document: .constant(SwashDocument()))
+#Preview("macOS Editor - Standard") {
+    @Previewable @State var document = SwashSampleDocument.standard
+    ContentView(document: $document)
+}
+
+#Preview("macOS Editor - Dark Mode") {
+    @Previewable @State var document = SwashSampleDocument.tablesAndMath
+    ContentView(document: $document)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("macOS Editor - Empty Document") {
+    @Previewable @State var document = SwashSampleDocument.empty
+    ContentView(document: $document)
 }
 
 /// What the folder-access banner depends on.
