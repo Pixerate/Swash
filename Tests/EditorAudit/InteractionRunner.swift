@@ -1091,6 +1091,50 @@ struct InteractionRunner {
                      expect: "text=We use Pixerate from their on Uchiage. lastFeedback=sug-offer-their:undone")
              }
 
+             // Context-aware spelling on device (#98): the model's corrections, judged by ContextSpelling,
+             // play through the partner's cursor without moving the caret; low-confidence ones are only
+             // offered; a misspelling that recurs in the document is left alone
+             do {
+                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+                 defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+                 defaults.set(true, forKey: WritingPartnerDefaults.spelling)
+                 let initial = "Send it form home so we dont loose the colur, and the colur."
+                 let box = TextBox(initial)
+                 let tv = makeEditor(box, styled: false)
+                 let coord = tv.delegate as! SwashTextView.Coordinator
+                 caretAfter(initial, in: tv)
+                 let caretBefore = tv.selectedRange().location
+                 let stub = StubWritingBandleader { req in
+                     JazzTextLeadResponse(
+                         genre: .prose,
+                         palette: [JazzTextVoice(voice: .punctuate, strength: 1.0)],
+                         suggestions: ContextSpelling.suggestions(from: [
+                             ContextSpellingCandidate(kind: .wrongWord, original: "form", replacement: "from", confidence: 0.95),
+                             ContextSpellingCandidate(kind: .wrongWord, original: "loose", replacement: "lose", confidence: 0.6),
+                             ContextSpellingCandidate(kind: .spelling, original: "colur", replacement: "colour", confidence: 0.9),
+                         ], paragraph: req.paragraph),
+                         why: "Context spelling"
+                     )
+                 }
+                 let detector = WritingPauseDetector(pauseDelay: 0)
+                 detector.noteTyping(character: 0x2E, paragraph: initial,
+                                     range: NSRange(location: 0, length: (initial as NSString).length),
+                                     caret: (initial as NSString).length)
+                 coord.writingPartner.setBandleaderForTesting(stub)
+                 coord.writingPartner.setPauseDetectorForTesting(detector)
+                 coord.writingPartner.triggerPauseCheckForTesting(in: tv, coordinator: coord)
+                 waitForPartner(tv)
+                 let offered = coord.writingPartner.suggestions.map { "\($0.edit.original)->\($0.edit.replacement)" }.joined(separator: ",")
+                 let caretAfterFix = tv.selectedRange().location - caretBefore
+                 log("writing-partner-context-spelling", initial,
+                     "text=\(box.text) offered=\(offered) caretMoved=\(caretAfterFix)",
+                     expect: "text=Send it from home so we dont loose the colur, and the colur. offered=loose->lose caretMoved=0")
+                 tv.undoManager?.undo(); pump(0.3)
+                 waitForPartner(tv)
+                 log("writing-partner-context-spelling-undo", "⌘Z", box.text, expect: initial)
+                 coord.writingPartner.setBandleaderForTesting(nil)
+             }
+
              // Inline MCP Agent Presence & Bidirectional Cursor Remapping (#151)
              do {
                  defaults.set(WritingPartnerMode.off.rawValue, forKey: WritingPartnerDefaults.mode)

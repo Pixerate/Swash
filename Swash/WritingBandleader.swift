@@ -1363,6 +1363,124 @@ nonisolated final class StubWritingBandleader: WritingBandleader, @unchecked Sen
     }
 }
 
+// MARK: - Context-Aware Spelling on Device (#98)
+
+/// What the on-device model (#102) says about a word the system spell checker leaves alone: an
+/// ambiguous misspelling the sentence decides, or a real word used wrongly (`form`/`from`,
+/// `there`/`their`/`they're`, `loose`/`lose`, `then`/`than`). The model names the word as written,
+/// not its offsets (small models count characters badly); `ContextSpelling` finds it in the
+/// paragraph and decides what to do with it.
+nonisolated struct ContextSpellingCandidate: Sendable, Equatable {
+    /// `.spelling` or `.wrongWord`.
+    var kind: JazzTextSuggestionKind
+    var original: String
+    var replacement: String
+    var confidence: Double
+    var why: String?
+}
+
+nonisolated enum ContextSpelling {
+    /// At or above this, a correction plays through the partner's cursor in Automatically.
+    static let applyThreshold = 0.85
+    /// Below `applyThreshold` and at or above this, a correction is offered, not made (#103, #128).
+    /// Below this it is dropped.
+    static let offerThreshold = 0.5
+    /// A spelling correction fixes a word, it doesn't rewrite a phrase.
+    static let maxWords = 2
+
+    /// The paragraph's corrections as suggestions for `BandleaderSuggestionPlanner`, with ranges in
+    /// the paragraph. Drops anything below `offerThreshold`, case-only changes (capitals are the
+    /// Punctuate voice's), rewrites, misspelling fixes too far from the word, and words that can't
+    /// be found exactly once.
+    static func suggestions(from candidates: [ContextSpellingCandidate], paragraph: String) -> [JazzTextSuggestion] {
+        let ns = paragraph as NSString
+        var out: [JazzTextSuggestion] = []
+        var taken: [NSRange] = []
+        for candidate in candidates {
+            guard candidate.kind == .spelling || candidate.kind == .wrongWord else { continue }
+            let confidence = min(max(candidate.confidence, 0), 1)
+            let original = candidate.original.trimmingCharacters(in: .whitespacesAndNewlines)
+            let replacement = candidate.replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard confidence >= offerThreshold, !original.isEmpty, !replacement.isEmpty,
+                  original != replacement, original.lowercased() != replacement.lowercased(),
+                  wordCount(original) <= maxWords, wordCount(replacement) <= maxWords,
+                  replacement.rangeOfCharacter(from: .newlines) == nil else { continue }
+            if candidate.kind == .spelling {
+                // A misspelling is close to the word it should be
+                let a = original.lowercased(), b = replacement.lowercased()
+                guard editDistance(a, b) <= max(2, max(a.count, b.count) / 3) else { continue }
+            }
+            let ranges = wholeWordRanges(of: original, in: ns)
+            guard ranges.count == 1, let range = ranges.first,
+                  !taken.contains(where: { NSIntersectionRange($0, range).length > 0 }) else { continue }
+            taken.append(range)
+            out.append(JazzTextSuggestion(
+                id: "on-device:\(candidate.kind.rawValue):\(original)->\(replacement)",
+                kind: candidate.kind,
+                range: JazzTextRange(start: range.location, end: NSMaxRange(range)),
+                replacement: replacement,
+                why: candidate.why ?? candidate.kind.title,
+                confidence: confidence,
+                applyAtOnce: confidence >= applyThreshold
+            ))
+        }
+        return out
+    }
+
+    static func wordCount(_ text: String) -> Int {
+        text.split(whereSeparator: { $0 == " " || $0 == "\t" }).count
+    }
+
+    /// Where `word` stands as a whole word (not inside a longer one) in `text`.
+    static func wholeWordRanges(of word: String, in text: NSString, caseInsensitive: Bool = false) -> [NSRange] {
+        var ranges: [NSRange] = []
+        let wordLength = (word as NSString).length
+        guard wordLength > 0 else { return [] }
+        var search = NSRange(location: 0, length: text.length)
+        let options: NSString.CompareOptions = caseInsensitive ? [.caseInsensitive] : []
+        while search.length > 0 {
+            let found = text.range(of: word, options: options, range: search)
+            guard found.location != NSNotFound else { break }
+            let before = found.location > 0 ? text.character(at: found.location - 1) : 0x20
+            let after = NSMaxRange(found) < text.length ? text.character(at: NSMaxRange(found)) : 0x20
+            if !isWordCharacter(before), !isWordCharacter(after) { ranges.append(found) }
+            let next = found.location + 1
+            search = NSRange(location: next, length: text.length - next)
+        }
+        return ranges
+    }
+
+    private static func isWordCharacter(_ c: unichar) -> Bool {
+        guard let scalar = Unicode.Scalar(c) else { return false }
+        return CharacterSet.alphanumerics.contains(scalar) || c == 0x27 || c == 0x2019 || c == 0x5F
+    }
+
+    /// Whether `word` recurs in the document: a word used more than once is treated as known (#98),
+    /// whatever the spell checker thinks of it (a name, a term, the person's own spelling).
+    static func recurs(_ word: String, in document: NSString) -> Bool {
+        wholeWordRanges(of: word, in: document, caseInsensitive: true).count > 1
+    }
+
+    static func editDistance(_ a: String, _ b: String) -> Int {
+        let a = Array(a), b = Array(b)
+        guard !a.isEmpty else { return b.count }
+        guard !b.isEmpty else { return a.count }
+        var previous = Array(0...b.count)
+        for i in 1...a.count {
+            var current = [i] + Array(repeating: 0, count: b.count)
+            for j in 1...b.count {
+                current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+                // A swapped pair of letters ("teh") counts as one change
+                if i > 1, j > 1, a[i - 1] == b[j - 2], a[i - 2] == b[j - 1] {
+                    current[j] = min(current[j], previous[j - 1])
+                }
+            }
+            previous = current
+        }
+        return previous[b.count]
+    }
+}
+
 // MARK: - Bandleader Suggestion Planner (#120)
 
 /// Plans how a `JazzTextLeadResponse` should be applied in the editor:
@@ -1451,6 +1569,11 @@ nonisolated enum BandleaderSuggestionPlanner {
             // If this word is in the user's vocabulary (and the suggestion isn't an explicit house-style
             // team term rule), do not flag or "correct" it away.
             if suggestion.kind != .houseStyle && memory.isKnownWord(original) {
+                continue
+            }
+
+            // A misspelling that recurs in the document is the person's word, not a typo (#98)
+            if suggestion.kind == .spelling, ContextSpelling.recurs(original, in: documentNS) {
                 continue
             }
 
