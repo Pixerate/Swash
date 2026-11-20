@@ -409,6 +409,9 @@ private struct WritingPartnerSettingsView: View {
             }
             .disabled(mode == .off)
 
+            FormattingSettingsSection()
+                .disabled(mode == .off)
+
             Section {
                 Toggle("Curly quotes", isOn: $curlyQuotes)
             } header: {
@@ -473,6 +476,45 @@ private struct WritingPartnerSettingsView: View {
 // MARK: - Agents
 
 /// Hosts a local Streamable HTTP MCP server so AI agents can read and edit open documents.
+/// Settings › Writing › Formatting (#113): a switch for each of the Formatting voice's rules, and
+/// whether it also tidies in Source view.
+struct FormattingSettingsSection: View {
+    @AppStorage(WritingPartnerDefaults.formattingInSource) private var inSource = false
+
+    var body: some View {
+        Section {
+            ForEach(FormattingVoice.rules, id: \.self) { rule in
+                FormattingRuleToggle(rule: rule)
+            }
+            Toggle("Also in Source view", isOn: $inSource)
+        } header: {
+            Text("Formatting")
+        } footer: {
+            Text("Tidies Markdown in blocks you've edited once the caret leaves them, without changing how the document reads. Never in code, math, HTML or front matter. Each fix is its own undo step and learns from ⌘Z.")
+                .settingsFooterStyle()
+        }
+    }
+}
+
+private struct FormattingRuleToggle: View {
+    let rule: PunctuationRule
+    @AppStorage private var isOn: Bool
+
+    init(rule: PunctuationRule) {
+        self.rule = rule
+        _isOn = AppStorage(wrappedValue: true, WritingPartnerDefaults.formattingKey(rule))
+    }
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            Text(rule.title)
+            if let example = rule.example {
+                Text(example)
+            }
+        }
+    }
+}
+
 private struct AgentSettingsView: View {
     @AppStorage(AgentBridgeDefaults.enabled) private var enabled = false
     @AppStorage(AgentBridgeDefaults.port) private var port = Int(AgentBridgeDefaults.defaultPort)
@@ -608,6 +650,13 @@ private extension View {
 
 #Preview("Writing Partner Settings", traits: .sectionContainer) {
     WritingPartnerSettingsView()
+}
+
+#Preview("Formatting Settings", traits: .sectionContainer) {
+    Form {
+        FormattingSettingsSection()
+    }
+    .formStyle(.grouped)
 }
 
 #Preview("Agent Settings", traits: .sectionContainer) {

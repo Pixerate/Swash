@@ -848,6 +848,39 @@ struct InteractionRunner {
              log("writing-partner-learns", "", "\(learn.text) contraction=\(stats.isActive(.contraction))",
                  expect: "I dont dont dont  contraction=false")
 
+             // Formatting voice (#113): a block is tidied once the caret has left it, each fix its own
+             // undo step, and in Source view only when that's turned on
+             defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+             defaults.removeObject(forKey: WritingPartnerDefaults.formattingInSource)
+             for (styled, inSource) in [(true, false), (false, false), (false, true)] {
+                 let mode = styled ? "styled" : (inSource ? "source-on" : "source")
+                 defaults.set(inSource, forKey: WritingPartnerDefaults.formattingInSource)
+                 let fmt = TextBox("1. Alpha\n3. Beta\n\nThe end"); let tvFmt = makeEditor(fmt, styled: styled)
+                 caretAfter("Beta", in: tvFmt)
+                 typeEach("s", into: tvFmt)
+                 log("writing-partner-format-waits-\(mode)", "type in the list", fmt.text, expect: "1. Alpha\n3. Betas\n\nThe end")
+                 tvFmt.setSelectedRange(NSRange(location: (tvFmt.string as NSString).length, length: 0)); waitForPartner(tvFmt)
+                 let tidiedList = styled || inSource ? "1. Alpha\n2. Betas\n\nThe end" : "1. Alpha\n3. Betas\n\nThe end"
+                 log("writing-partner-format-leaves-\(mode)", "caret to the end", fmt.text, expect: tidiedList)
+                 if styled || inSource {
+                     log("writing-partner-format-undo-name-\(mode)", "", tvFmt.undoManager?.undoActionName ?? "", expect: "Formatting")
+                     tvFmt.undoManager?.undo(); pump(0.3)
+                     log("writing-partner-format-undo-\(mode)", "⌘Z", fmt.text, expect: "1. Alpha\n3. Betas\n\nThe end")
+                 }
+             }
+             defaults.removeObject(forKey: WritingPartnerDefaults.formattingInSource)
+             // Two fixes in one block are two undo steps
+             defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+             let two = TextBox("Say `hell`o and hello  world\n\nThe end"); let tvTwo = makeEditor(two)
+             caretAfter("world", in: tvTwo)
+             typeEach("s", into: tvTwo)
+             tvTwo.setSelectedRange(NSRange(location: (tvTwo.string as NSString).length, length: 0)); waitForPartner(tvTwo)
+             log("writing-partner-format-two-fixes", "", two.text, expect: "Say `hello` and hello worlds\n\nThe end")
+             tvTwo.undoManager?.undo(); pump(0.3)
+             log("writing-partner-format-two-fixes-undo", "⌘Z once", two.text, expect: "Say `hello` and hello  worlds\n\nThe end")
+             let learnedFormatting = WritingPartnerStats.load().weight(.formatSpacing) < 1
+             log("writing-partner-format-learns", "", "spacing weight lowered=\(learnedFormatting)", expect: "spacing weight lowered=true")
+
              // Suggest mode (#103): offers fixes without changing the text; accepted by keyboard,
              // pointer, VoiceOver rotor or Edit menu, and dismissed by Esc or typing past
              defaults.set(WritingPartnerMode.suggest.rawValue, forKey: WritingPartnerDefaults.mode)

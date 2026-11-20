@@ -52,10 +52,9 @@ export const partnerFixes: Feature[] = [
   },
   {
     title: 'Formatting',
-    body: 'Lists, headings, spacing and tables kept consistent as you go.',
+    body: 'Lists renumbered, headings, spacing and tables tidied once you move on, without changing what you wrote.',
     example: ['#Heading', '# Heading'],
-    status: 'soon',
-    issue: 113,
+    status: 'shipped',
   },
   {
     title: 'Typography',

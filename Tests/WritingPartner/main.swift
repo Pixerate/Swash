@@ -1836,6 +1836,7 @@ do {
     check(off.automaticEdits.isEmpty && off.offeredEdits.isEmpty, "With spelling off, no context spelling")
     check(OnDeviceWritingBandleader.instructions.contains("real word used wrongly"), "The on-device instructions ask for context spelling")
 }
+runFormattingTests()
 
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
