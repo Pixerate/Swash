@@ -1836,6 +1836,52 @@ do {
     check(off.automaticEdits.isEmpty && off.offeredEdits.isEmpty, "With spelling off, no context spelling")
     check(OnDeviceWritingBandleader.instructions.contains("real word used wrongly"), "The on-device instructions ask for context spelling")
 }
+
+// Marks (#128): what the partner isn't sure about, kept beside the text
+do {
+    func mark(_ id: Int, _ location: Int, _ original: String, _ candidates: [String], confidence: Double = 0.6) -> PartnerUncertainMark {
+        PartnerUncertainMark(id: id, edit: PartnerEdit(range: NSRange(location: location, length: (original as NSString).length),
+                                                       original: original, replacement: candidates[0], rules: [.spelling],
+                                                       spellingWords: [original], confidence: confidence),
+                             candidates: candidates)
+    }
+    let text = "I came form the shop and their it was." as NSString
+    let form = mark(1, 7, "form", ["from", "for"])
+    let their = mark(2, 25, "their", ["there"])
+    var marks = PartnerMarks.adding([their, form], to: [], kept: [], in: text)
+    check(marks.map(\.id) == [1, 2], "Marks are kept in document order")
+    var moved = PartnerMarks.moved(marks, through: NSRange(location: 38, length: 0), replacement: " More")
+    check(moved.edited.isEmpty && moved.marks.map(\.range.location) == [7, 25], "Typing past a mark leaves it")
+    moved = PartnerMarks.moved(marks, through: NSRange(location: 0, length: 0), replacement: "So ")
+    check(moved.edited.isEmpty && moved.marks.map(\.range.location) == [10, 28], "Typing before a mark moves it")
+    moved = PartnerMarks.moved(marks, through: NSRange(location: 11, length: 0), replacement: "s")
+    check(moved.edited.isEmpty && moved.marks.first?.range.location == 7, "Typing just after a mark leaves it")
+    moved = PartnerMarks.moved(marks, through: NSRange(location: 9, length: 1), replacement: "")
+    check(moved.edited.map(\.id) == [1] && moved.marks.map(\.id) == [2], "Editing inside a mark settles it")
+    marks = PartnerMarks.adding([mark(3, 7, "form", ["from"])], to: [their], kept: ["form"], in: text)
+    check(marks.map(\.id) == [2], "A word kept as written isn't marked again")
+    marks = PartnerMarks.adding([mark(4, 7, "form", ["from"], confidence: 0.7)], to: [form, their], kept: [], in: text)
+    check(marks.map(\.id) == [4, 2], "A new mark replaces one in the same place")
+    let rough = "a b c d e f g h\n\nnext para x" as NSString
+    let many = (0..<5).map { mark(10 + $0, $0 * 2, String(rough.substring(with: NSRange(location: $0 * 2, length: 1))), ["z"], confidence: 0.5 + Double($0) / 100) }
+    let capped = PartnerMarks.adding(many + [mark(20, 25, "x", ["y"])], to: [], kept: [], in: rough)
+    check(capped.map(\.id) == [12, 13, 14, 20], "Each paragraph keeps its \(PartnerMarks.maxPerParagraph) most confident marks: \(capped.map(\.id))")
+    check(PartnerMarks.paragraph(at: 3, in: rough) == NSRange(location: 0, length: 15), "A paragraph ends at a blank line")
+    check(PartnerMarks.step(from: nil, by: 1, count: 3) == 0 && PartnerMarks.step(from: 2, by: 1, count: 3) == 0
+          && PartnerMarks.step(from: 0, by: -1, count: 3) == 2, "Review steps through the marks in order, wrapping")
+    check(PartnerMarks.index(at: 9, in: [form, their]) == 0 && PartnerMarks.index(at: 11, in: [form, their]) == 0
+          && PartnerMarks.index(at: 7, in: [form, their]) == nil, "The caret is in a mark from its second character to just after it")
+    check(form.label == "“form” could be “from” or “for”", "A mark says what it could be: \(form.label)")
+    check(form.edit(choosing: 1).replacement == "for", "Choosing the other candidate")
+    let two = ContextSpelling.suggestions(from: [
+        ContextSpellingCandidate(kind: .wrongWord, original: "form", replacement: "from", confidence: 0.95, alternatives: ["for", "form", "FROM"]),
+    ], paragraph: "I came form the shop.")
+    check(two.first?.alternatives == ["for"] && two.first?.shouldApplyAtOnce == false,
+          "A correction with two candidates is marked, not made: \(String(describing: two.first?.alternatives))")
+    check(WritingPartnerDefaults.markUncertain(UserDefaults(suiteName: "marks-tests-empty")!), "Marking is on by default")
+    check(!WritingPartnerDefaults.announceMarks(UserDefaults(suiteName: "marks-tests-empty")!), "Announcing marks is off unless asked for")
+}
+
 runFormattingTests()
 
 print("\(passes) passed, \(failures) failed")

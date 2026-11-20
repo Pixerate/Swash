@@ -1168,6 +1168,100 @@ struct InteractionRunner {
                  coord.writingPartner.setBandleaderForTesting(nil)
              }
 
+             // Marks (#128): in Automatically, what the partner isn't sure about changes nothing and
+             // leaves a mark that survives typing, settled by review (keep or accept), by editing it,
+             // or with the caret in it. Nothing is written into the Markdown.
+             do {
+                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
+                 defaults.removeObject(forKey: WritingPartnerDefaults.markUncertain)
+                 defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+                 defaults.set(true, forKey: WritingPartnerDefaults.spelling)
+                 func unsure(_ req: JazzTextLeadRequest) -> JazzTextLeadResponse {
+                     JazzTextLeadResponse(
+                         genre: .prose, palette: [JazzTextVoice(voice: .punctuate, strength: 1.0)],
+                         suggestions: ContextSpelling.suggestions(from: [
+                             ContextSpellingCandidate(kind: .wrongWord, original: "form", replacement: "from", confidence: 0.9, alternatives: ["for"]),
+                             ContextSpellingCandidate(kind: .wrongWord, original: "their", replacement: "there", confidence: 0.65),
+                         ], paragraph: req.paragraph),
+                         why: "Unsure")
+                 }
+                 func pause(_ coord: SwashTextView.Coordinator, _ tv: NSTextView, _ text: String) {
+                     let detector = WritingPauseDetector(pauseDelay: 0)
+                     detector.noteTyping(character: 0x2E, paragraph: text, range: NSRange(location: 0, length: (text as NSString).length),
+                                         caret: (text as NSString).length)
+                     coord.writingPartner.setPauseDetectorForTesting(detector)
+                     coord.writingPartner.triggerPauseCheckForTesting(in: tv, coordinator: coord)
+                     waitForPartner(tv)
+                 }
+                 let initial = "I came form the shop and their it was."
+                 let box = TextBox(initial)
+                 let tv = makeEditor(box, styled: false)
+                 let coord = tv.delegate as! SwashTextView.Coordinator
+                 var counts: [Int] = []
+                 coord.writingPartner.onMarksChange = { counts.append($0) }
+                 caretAfter(initial, in: tv)
+                 coord.writingPartner.setBandleaderForTesting(StubWritingBandleader { unsure($0) })
+                 pause(coord, tv, initial)
+                 let markWords = { coord.writingPartner.marks.map(\.original).joined(separator: ",") }
+                 log("writing-partner-marks-made", initial,
+                     "text=\(box.text) marks=\(markWords()) offered=\(coord.writingPartner.suggestions.count) count=\(counts.last ?? -1)",
+                     expect: "text=\(initial) marks=form,their offered=0 count=2")
+
+                 // Typing on neither dismisses a mark nor counts against it
+                 tv.insertText(" Then more", replacementRange: tv.selectedRange()); pump(0.2)
+                 log("writing-partner-marks-survive-typing", "type on", "marks=\(markWords()) drawn=\(WritingPartnerOverlay.existing(in: tv)?.markLayers.count ?? 0)",
+                     expect: "marks=form,their drawn=2")
+
+                 // Review steps through them in order; Esc keeps the text as written and moves on
+                 _ = coord.writingPartner.reviewMarks(in: tv, coordinator: coord)
+                 let first = coord.writingPartner.suggestions.map { "\($0.edit.original)->\($0.edit.replacement)" }.joined()
+                 _ = coord.writingPartner.nextCandidate(in: tv, coordinator: coord)
+                 let other = coord.writingPartner.suggestions.map(\.edit.replacement).joined()
+                 log("writing-partner-marks-review-order", "⌥⌘', then Show Other Choice", "first=\(first) other=\(other)", expect: "first=form->from other=for")
+                 tv.doCommand(by: #selector(NSResponder.cancelOperation(_:))); pump(0.2)
+                 let nowShown = coord.writingPartner.suggestions.map(\.edit.original).joined()
+                 log("writing-partner-marks-keep", "Esc", "text=\(box.text) marks=\(markWords()) shown=\(nowShown)",
+                     expect: "text=\(initial) Then more marks=their shown=their")
+                 // Tab accepts the shown candidate through the partner's cursor, as one undo step
+                 tv.doCommand(by: #selector(NSResponder.insertTab(_:)))
+                 waitForPartner(tv)
+                 log("writing-partner-marks-accept", "Tab", "text=\(box.text) marks=\(markWords()) reviewing=\(coord.writingPartner.isReviewing)",
+                     expect: "text=I came form the shop and there it was. Then more marks= reviewing=false")
+                 tv.undoManager?.undo(); pump(0.3); waitForPartner(tv)
+                 log("writing-partner-marks-accept-undo", "⌘Z", box.text, expect: "\(initial) Then more")
+                 // A kept word isn't marked again in this document
+                 pause(coord, tv, box.text)
+                 log("writing-partner-marks-kept-stays-kept", "pause again", "marks=\(markWords())", expect: "marks=their")
+
+                 // Settling a mark in place: the caret in it shows its candidate; editing it settles it your way
+                 let box2 = TextBox(initial); let tv2 = makeEditor(box2, styled: true)
+                 let coord2 = tv2.delegate as! SwashTextView.Coordinator
+                 caretAfter(initial, in: tv2)
+                 coord2.writingPartner.setBandleaderForTesting(StubWritingBandleader { unsure($0) })
+                 pause(coord2, tv2, initial)
+                 caretAfter("form", in: tv2); pump(0.1)
+                 let shownInPlace = coord2.writingPartner.suggestions.map { "\($0.edit.original)->\($0.edit.replacement)" }.joined()
+                 log("writing-partner-marks-caret-in-mark", "caret after 'form'", "shown=\(shownInPlace)", expect: "shown=form->from")
+                 caretAfter("thei", in: tv2)
+                 tv2.insertText("x", replacementRange: tv2.selectedRange()); pump(0.2)
+                 log("writing-partner-marks-edited", "type inside 'their'", "text=\(box2.text) marks=\(coord2.writingPartner.marks.map(\.original).joined(separator: ","))",
+                     expect: "text=I came form the shop and theixr it was. marks=form")
+
+                 // Switched off, uncertain fixes are offered as before
+                 defaults.set(false, forKey: WritingPartnerDefaults.markUncertain)
+                 let box3 = TextBox(initial); let tv3 = makeEditor(box3, styled: false)
+                 let coord3 = tv3.delegate as! SwashTextView.Coordinator
+                 caretAfter(initial, in: tv3)
+                 coord3.writingPartner.setBandleaderForTesting(StubWritingBandleader { unsure($0) })
+                 pause(coord3, tv3, initial)
+                 log("writing-partner-marks-off", "switch off", "marks=\(coord3.writingPartner.marks.count) offered=\(coord3.writingPartner.suggestions.count)",
+                     expect: "marks=0 offered=2")
+                 defaults.removeObject(forKey: WritingPartnerDefaults.markUncertain)
+                 coord.writingPartner.setBandleaderForTesting(nil)
+                 coord2.writingPartner.setBandleaderForTesting(nil)
+                 coord3.writingPartner.setBandleaderForTesting(nil)
+             }
+
              // Inline MCP Agent Presence & Bidirectional Cursor Remapping (#151)
              do {
                  defaults.set(WritingPartnerMode.off.rawValue, forKey: WritingPartnerDefaults.mode)
