@@ -1099,7 +1099,9 @@ struct InteractionRunner {
                  coord.writingPartner.triggerPauseCheckForTesting(in: tv, coordinator: coord)
                  waitForPartner(tv)
 
-                 let offeredAfterPause = coord.writingPartner.suggestions.map { "\($0.edit.original)->\($0.edit.replacement)" }.joined(separator: ",")
+                 // In Automatically an unsure fix is marked (#128) rather than offered: count both
+                 let offeredAfterPause = (coord.writingPartner.suggestions.map { "\($0.edit.original)->\($0.edit.replacement)" }
+                     + coord.writingPartner.marks.map { "\($0.original)->\($0.candidates[0])" }).joined(separator: ",")
                  let vocabKnown = coord.writingPartner.sessionMemoryForTesting.isKnownWord("Uchiage")
                  let acceptedIds = stub.feedbackItems.filter { $0.outcome == .accepted }.map(\.suggestionId).joined(separator: ",")
                  log("writing-partner-bandleader-spelling-pause", initial,
@@ -1157,7 +1159,9 @@ struct InteractionRunner {
                  coord.writingPartner.setPauseDetectorForTesting(detector)
                  coord.writingPartner.triggerPauseCheckForTesting(in: tv, coordinator: coord)
                  waitForPartner(tv)
-                 let offered = coord.writingPartner.suggestions.map { "\($0.edit.original)->\($0.edit.replacement)" }.joined(separator: ",")
+                 // In Automatically an unsure fix is marked (#128) rather than offered: count both
+                 let offered = (coord.writingPartner.suggestions.map { "\($0.edit.original)->\($0.edit.replacement)" }
+                     + coord.writingPartner.marks.map { "\($0.original)->\($0.candidates[0])" }).joined(separator: ",")
                  let caretAfterFix = tv.selectedRange().location - caretBefore
                  log("writing-partner-context-spelling", initial,
                      "text=\(box.text) offered=\(offered) caretMoved=\(caretAfterFix)",
@@ -1176,7 +1180,7 @@ struct InteractionRunner {
                  defaults.removeObject(forKey: WritingPartnerDefaults.markUncertain)
                  defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
                  defaults.set(true, forKey: WritingPartnerDefaults.spelling)
-                 func unsure(_ req: JazzTextLeadRequest) -> JazzTextLeadResponse {
+                 let unsure: @Sendable (JazzTextLeadRequest) -> JazzTextLeadResponse = { req in
                      JazzTextLeadResponse(
                          genre: .prose, palette: [JazzTextVoice(voice: .punctuate, strength: 1.0)],
                          suggestions: ContextSpelling.suggestions(from: [
@@ -1229,9 +1233,9 @@ struct InteractionRunner {
                      expect: "text=I came form the shop and there it was. Then more marks= reviewing=false")
                  tv.undoManager?.undo(); pump(0.3); waitForPartner(tv)
                  log("writing-partner-marks-accept-undo", "⌘Z", box.text, expect: "\(initial) Then more")
-                 // A kept word isn't marked again in this document
+                 // A kept word isn't marked again in this document, nor is a fix that was accepted and then undone
                  pause(coord, tv, box.text)
-                 log("writing-partner-marks-kept-stays-kept", "pause again", "marks=\(markWords())", expect: "marks=their")
+                 log("writing-partner-marks-kept-stays-kept", "pause again", "marks=\(markWords())", expect: "marks=")
 
                  // Settling a mark in place: the caret in it shows its candidate; editing it settles it your way
                  let box2 = TextBox(initial); let tv2 = makeEditor(box2, styled: true)
