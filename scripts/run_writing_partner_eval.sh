@@ -13,7 +13,7 @@ swiftc -O -target arm64-apple-macos14.0 -sdk "$(xcrun --show-sdk-path --sdk maco
   -swift-version 5 -default-isolation MainActor \
   -enable-upcoming-feature NonisolatedNonsendingByDefault -enable-upcoming-feature InferIsolatedConformances \
   $PIXERATE_MARKDOWN \
-  Swash/MarkdownFlavor.swift Swash/SlackMarkdown.swift Swash/WritingPartner.swift Swash/WritingBandleader.swift \
+  Swash/MarkdownFlavor.swift Swash/SlackMarkdown.swift Swash/WritingPartner.swift Swash/FormattingVoice.swift Swash/WritingBandleader.swift \
   Tests/WritingPartnerEval/main.swift -o "$OUT/runner"
 
 "$OUT/runner" --report "$OUT/report.md" "$@"

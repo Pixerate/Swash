@@ -1,0 +1,5 @@
+---
+"swash": minor
+---
+
+Writing partner: a Formatting voice that tidies Markdown once you move on from a block you edited (#113). It renumbers ordered lists, gives a list one bullet and consistent indentation, fixes heading syntax (`#Heading` → `# Heading`, no closing `#`s or full stop), collapses runs of blank lines and spaces, removes trailing spaces (keeping two-space line breaks), puts a blank line around headings, lists, quotes and code blocks, widens code spans and emphasis that split a word (`` `hell`o `` → `` `hello` ``), removes stray spaces inside `** … **`, keeps one emphasis marker per document, normalises task boxes, realigns table columns and turns a bare URL on its own line into an autolink. It never touches the block the caret is in, or code, math, HTML or front matter, and each fix is its own "Formatting" undo step that learns from ⌘Z. Each rule has a switch in Settings › Writing › Formatting; in Source view it's off unless "Also in Source view" is on. The website now lists Formatting as shipped.

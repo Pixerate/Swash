@@ -1779,5 +1779,7 @@ do {
     check(edits.contains(where: { $0.replacement == "don't" && $0.rules.contains(.contraction) }), "WritingPartner protocol edits computes contraction replacement")
 }
 
+runFormattingTests()
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

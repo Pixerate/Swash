@@ -906,7 +906,8 @@ nonisolated enum Scorer {
                     case .contraction, .spelling:
                         isRestored = finalNorm.lowercased() == origNorm.lowercased()
                     case .pronounI, .capitals, .terminalPunctuation, .clauseComma, .curlyQuotes, .dashes, .ellipses,
-                         .doubledWords, .aAndAn, .agreementAndTense, .missingWords:
+                         .doubledWords, .aAndAn, .agreementAndTense, .missingWords,
+                         .formatLists, .formatHeadings, .formatSpacing, .formatSpans, .formatEmphasis, .formatTasks, .formatTables, .formatLinks:
                         isRestored = finalNorm == origNorm
                     }
                     if isRestored {
@@ -926,7 +927,8 @@ nonisolated enum Scorer {
                     case .contraction, .spelling:
                         isWrong = finalNorm.lowercased() != origNorm.lowercased()
                     case .pronounI, .capitals, .terminalPunctuation, .clauseComma, .curlyQuotes, .dashes, .ellipses,
-                         .doubledWords, .aAndAn, .agreementAndTense, .missingWords:
+                         .doubledWords, .aAndAn, .agreementAndTense, .missingWords,
+                         .formatLists, .formatHeadings, .formatSpacing, .formatSpans, .formatEmphasis, .formatTasks, .formatTables, .formatLinks:
                         isWrong = finalNorm != origNorm
                     }
                     if isWrong {
@@ -1046,7 +1048,7 @@ nonisolated struct EvalBaseline: Codable, Equatable, Sendable {
 
     static func from(summary: EvalSummary, seed: UInt64, margin: Double, ruleMargin: Double) -> EvalBaseline {
         var rulesMap: [String: RuleMetrics] = [:]
-        for rule in PunctuationRule.allCases {
+        for rule in PunctuationRule.allCases where !rule.isFormatting {
             let s = summary.perRule[rule] ?? RuleScore()
             rulesMap[rule.rawValue] = RuleMetrics(
                 stripped: s.stripped,
@@ -1195,7 +1197,7 @@ nonisolated enum ReportGenerator {
         md.append("")
         md.append("| Rule | Description | Stripped | Restored | Missed | Wrong | Precision | Recall | F1 |")
         md.append("| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
-        for rule in PunctuationRule.allCases {
+        for rule in PunctuationRule.allCases where !rule.isFormatting {
             let s = summary.perRule[rule] ?? RuleScore()
             md.append(
                 "| `\(rule.rawValue)` | \(rule.title) | \(s.stripped) | \(s.restored) | \(s.missed) | \(s.wrong) | \(pct(s.precision)) | \(pct(s.recall)) | \(pct(s.f1)) |"
