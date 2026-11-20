@@ -2,6 +2,7 @@ import Foundation
 import MacAppKitExtras
 import SwiftUI
 import AppKit
+import PixerateCore
 import PixerateMarkdown
 
 final class TextBox { var text: String; init(_ t: String) { text = t } }
@@ -1119,22 +1120,19 @@ struct InteractionRunner {
                  let updated = (md as NSString).replacingCharacters(in: NSRange(location: 11, length: 0), with: "dear ")
                  _ = controller.applyAgentEdit(
                      newText: updated,
-                     selection: NSRange(location: 16, length: 0),
                      edits: [(range: NSRange(location: 11, length: 0), replacementLength: 5)],
                      actionName: "Insert Text"
                  )
-                 controller.showAgentPresence(
-                     rawSelection: NSRange(location: 16, length: 0),
-                     modifiedRawRanges: [NSRange(location: 11, length: 5)],
-                     label: "Agent",
-                     colorHex: "#8b5cf6"
-                 )
+                 let store = AgentCaretStore()
+                 controller.agentCarets = store
+                 store.set(AgentCaretInfo(id: "mcp:agent", name: "Agent"), anchor: 16, head: 16)
+                 store.markChanges("mcp:agent", [NSRange(location: 11, length: 5)])
                  pump(0.1)
 
                  let userRawAfterAgentInsert = coord.rawRange(forStorage: tv.selectedRange(), in: tv)
                  let overlay = WritingPartnerOverlay.existing(in: tv)
-                 let hasOverlayPresence = overlay?.agentPresence != nil
-                 let overlayStage = overlay?.agentPresence?.stage == .landed
+                 let hasOverlayPresence = overlay?.hasExternalCarets == true
+                 let overlayStage = !(store.caret("mcp:agent")?.changed.isEmpty ?? true)
                  let emptyCaretRect = WritingPartnerOverlay.caretRect(at: 0, in: tv) != nil
 
                  // User types "!" at their remapped cursor (before "world") -> triggers onUserRawEdit
@@ -1144,10 +1142,12 @@ struct InteractionRunner {
                  }
                  tv.insertText("!", replacementRange: tv.selectedRange())
                  pump(0.1)
+                 controller.agentCarets = nil
+                 let detached = overlay?.hasExternalCarets == false
 
                  log("agent-presence-and-remapping", md,
-                     "userCaret=\(userRawAfterAgentInsert.location) expected=\(worldRaw + 5) presence=\(hasOverlayPresence) stageLanded=\(overlayStage) caretRect=\(emptyCaretRect) userEdit=\(userEditCaptured?.len ?? -1)",
-                     expect: "userCaret=\(worldRaw + 5) expected=\(worldRaw + 5) presence=true stageLanded=true caretRect=true userEdit=1")
+                     "userCaret=\(userRawAfterAgentInsert.location) expected=\(worldRaw + 5) presence=\(hasOverlayPresence) stageLanded=\(overlayStage) caretRect=\(emptyCaretRect) userEdit=\(userEditCaptured?.len ?? -1) detached=\(detached)",
+                     expect: "userCaret=\(worldRaw + 5) expected=\(worldRaw + 5) presence=true stageLanded=true caretRect=true userEdit=1 detached=true")
              }
 
              defaults.removeObject(forKey: WritingPartnerDefaults.spelling)
@@ -1156,6 +1156,38 @@ struct InteractionRunner {
              if let savedStats { defaults.set(savedStats, forKey: WritingPartnerDefaults.stats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.stats) }
              if let savedChatStats { defaults.set(savedChatStats, forKey: WritingPartnerDefaults.chatStats) } else { defaults.removeObject(forKey: WritingPartnerDefaults.chatStats) }
              if let savedIntroShown { defaults.set(savedIntroShown, forKey: WritingPartnerDefaults.introShown) } else { defaults.removeObject(forKey: WritingPartnerDefaults.introShown) }
+        }
+
+        // Multi-agent external carets rendered with distinct colours and name tags in WritingPartnerOverlay (#152)
+        do {
+            let box = TextBox("Hello world and friends")
+            let tv = makeEditor(box, styled: true)
+            let coord = tv.delegate as! SwashTextView.Coordinator
+            let store = AgentCaretStore()
+            let overlay = WritingPartnerOverlay.overlay(for: tv)
+            overlay.attachExternal(carets: store, coordinator: coord)
+            store.set(AgentCaretInfo(id: "mcp:claude", name: "Claude", color: "#7c3aed"), anchor: 0, head: 5)
+            store.set(AgentCaretInfo(id: "mcp:cursor", name: "Cursor", color: "#db2777"), anchor: 16, head: 16)
+            store.markChanges("mcp:claude", [NSRange(location: 0, length: 5)])
+            pump(0.1)
+            let sublayers = overlay.layer?.sublayers ?? []
+            let aboveLayers = sublayers.flatMap { $0.sublayers ?? [] }
+            let tagTexts = aboveLayers.compactMap { layer -> String? in
+                for sub in layer.sublayers ?? [] {
+                    if let textLayer = sub as? CATextLayer, let attr = textLayer.string as? NSAttributedString {
+                        return attr.string
+                    }
+                }
+                return nil
+            }.sorted()
+            store.mapThroughEdit(range: NSRange(location: 0, length: 0), length: 4)
+            let cursorHeadAfter = store.caret("mcp:cursor")?.head ?? -1
+            store.clear()
+            pump(0.1)
+            let cleared = (overlay.layer?.sublayers ?? []).isEmpty
+            log("multi-agent-overlay-carets", "Claude (0..5) + Cursor (16)",
+                "tags=\(tagTexts.joined(separator: ",")) cursorMoved=\(cursorHeadAfter) cleared=\(cleared)",
+                expect: "tags=Claude,Cursor cursorMoved=20 cleared=true")
         }
 
         try? out.write(toFile: CommandLine.arguments[1], atomically: true, encoding: .utf8)

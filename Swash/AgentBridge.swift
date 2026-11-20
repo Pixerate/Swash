@@ -61,8 +61,23 @@ final class AgentBridge {
             ),
             catalog: catalog.registry
         )
-        server = MCPServerController(serverName: "swash", realm: "Swash", defaultPort: AgentBridgeDefaults.defaultPort, logSubsystem: "com.pixerate.Swash", router: router)
+        server = MCPServerController(serverName: "swash", realm: "Swash", defaultPort: AgentBridgeDefaults.defaultPort, logSubsystem: "com.pixerate.Swash") { [weak router] method, params in
+            guard let router else { return .failure(code: -32603, message: "Server shut down.") }
+            // Name the agent's caret after the client that connected (GOTCHAS #96).
+            if method == "initialize" { router.actor = AgentBridge.actor(forInitialize: params) }
+            return await router.handle(method: method, params: params)
+        }
         server.unauthorizedMessage = "Unauthorized: send \"Authorization: Bearer <token>\" with the token from Swash Settings › Agents."
+    }
+
+    /// The tool actor for a client that sent `initialize`: one per client name, so a client that
+    /// reconnects keeps its caret and colour. PixerateCore's server passes the handler no headers
+    /// (no `Mcp-Session-Id`), so calls are attributed to the client that initialized last.
+    static func actor(forInitialize params: JSONObject?) -> ToolActor {
+        let info = params?["clientInfo"]?.objectValue
+        let name = (info?["title"]?.stringValue ?? info?["name"]?.stringValue ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? ToolActor(id: "mcp", name: "MCP Client") : ToolActor(id: "mcp:\(name)", name: name)
     }
 
     private var defaults: UserDefaults { .standard }
@@ -97,7 +112,7 @@ final class AgentBridge {
 
     /// Stops serving a document's tools.
     func detach(_ session: AgentDocumentSession) {
-        session.clearPresence()
+        session.removeAllAgents()
         router.detach(session.target)
         documentCount = router.orderedTargets.count
         if documentCount == 0 { WritingPartnerActiveVoice.shared.documentFlavor = nil }
@@ -143,7 +158,7 @@ struct AgentToolsHookup: ViewModifier {
                 AgentBridge.shared.attach(session)
             }
             .onDisappear {
-                editor.clearAgentPresence()
+                editor.agentCarets = nil
                 editor.onUserRawEdit = nil
                 AgentBridge.shared.detach(session)
             }
@@ -151,8 +166,7 @@ struct AgentToolsHookup: ViewModifier {
                 if active { AgentBridge.shared.activate(session) }
             }
             .onChange(of: documentID) {
-                session.clearPresence()
-                editor.clearAgentPresence()
+                session.removeAllAgents()
                 editor.onUserRawEdit = nil
                 configure()
             }
@@ -166,47 +180,27 @@ struct AgentToolsHookup: ViewModifier {
         let editor = editor
         let session = session
         let attached = { editor.textView?.window != nil }
+        editor.agentCarets = session.carets
         session.readMarkdown = { (attached() ? editor.currentRawText : nil) ?? text.wrappedValue }
         session.readSelection = { attached() ? editor.currentRawSelection : nil }
-        // The agent keeps its own selection: set_selection and edits don't move the user's caret.
-        session.selectRange = { _ in }
-        session.applyEditWithEdits = { newText, selection, actionName, edits in
+        // Agents keep their own selections: their edits map the user's caret instead of moving it.
+        session.applyEdit = { newText, edits, actionName in
             let editTuples = edits.map { (range: $0.range, replacementLength: $0.newLength) }
-            if !editor.applyAgentEdit(newText: newText, selection: selection, edits: editTuples, actionName: actionName) {
+            if !editor.applyAgentEdit(newText: newText, edits: editTuples, actionName: actionName) {
                 text.wrappedValue = newText
             }
         }
-        session.applyEdit = { newText, selection, actionName in
-            if !editor.applyAgentEdit(newText: newText, selection: selection, actionName: actionName) {
-                text.wrappedValue = newText
+        // Report the user's edits (exactly, per keystroke) only once an agent has a selection to
+        // keep in place; before that the session diffs the text when a tool next reads it. Weak:
+        // the session's closures hold the editor, and the editor holds `onUserRawEdit`.
+        let reportUserEdits = { [weak session, weak editor] in
+            guard let editor, let session, editor.onUserRawEdit == nil else { return }
+            editor.onUserRawEdit = { [weak session] range, newLength, newText in
+                session?.noteUserEdit(range: range, newLength: newLength, newMarkdown: newText)
             }
         }
-        // Weak: the session's closures hold the editor, and the editor holds `onUserRawEdit`.
-        session.onPresenceChange = { [weak session, weak editor] update in
-            guard attached(), let session, let editor else { return }
-            editor.showAgentPresence(
-                rawSelection: update.selection,
-                modifiedRawRanges: update.modifiedRanges,
-                label: update.label,
-                colorHex: update.colorHex
-            )
-            // Only diff the user's edits while the agent has its own selection to keep in place;
-            // before that its selection is the user's, which needs no mapping.
-            if editor.onUserRawEdit == nil {
-                editor.onUserRawEdit = { [weak session, weak editor] replacedRange, replacementLength, newLength in
-                    guard let session, let editor, session.hasActivePresence else { return }
-                    session.remapSelectionForUserEdit(
-                        replacedRange: replacedRange,
-                        replacementLength: replacementLength,
-                        newTextLength: newLength
-                    )
-                    editor.remapAgentPresence(
-                        rawSelection: session.selection,
-                        modifiedRawRanges: session.lastModifiedRanges
-                    )
-                }
-            }
-        }
+        session.onAgentsAppeared = reportUserEdits
+        if session.hasAgents { reportUserEdits() }
         session.readOnlyReason = readOnlyReason
         session.flavor = flavor
         session.name = name

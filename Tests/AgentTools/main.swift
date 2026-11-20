@@ -11,8 +11,12 @@ final class FakeDocument: MarkdownToolTarget {
     var selection: NSRange
     var readOnlyReason: String?
     var flavor: MarkdownFlavor
+    var revision: Int = 0
+    var revisionHistory: [MarkdownRevisionEntry] = []
     /// Every edit, as the editor's undo stack would record it.
     var edits: [(text: String, actionName: String)] = []
+    private var agentSelections: [String: NSRange] = [:]
+    private var agentObservedRevisions: [String: Int] = [:]
 
     init(_ markdown: String, selection: NSRange = NSRange(location: 0, length: 0), flavor: MarkdownFlavor = .github) {
         self.markdown = markdown
@@ -20,13 +24,67 @@ final class FakeDocument: MarkdownToolTarget {
         self.flavor = flavor
     }
 
-    func apply(markdown: String, selection: NSRange, actionName: String, edits: [MarkdownToolProvider.RawEdit], modifiedRanges: [NSRange], actor: ToolActor?) {
-        self.edits.append((markdown, actionName))
-        self.markdown = markdown
-        self.selection = selection
+    func apply(markdown: String, selection: NSRange, actionName: String) {
+        let edit = MarkdownToolProvider.change(from: self.markdown as NSString, to: markdown as NSString)
+        apply(markdown: markdown, edits: [edit], agentSelection: selection, for: nil, actionName: actionName)
     }
 
-    func select(_ range: NSRange, actor: ToolActor?) { selection = range }
+    func apply(markdown: String, edits: [(range: NSRange, newLength: Int)], agentSelection: NSRange, for agent: ToolActor?, actionName: String) {
+        self.edits.append((markdown, actionName))
+        self.markdown = markdown
+        self.revision += 1
+        self.revisionHistory.append(MarkdownRevisionEntry(revision: self.revision, edits: edits))
+        if let agent {
+            self.agentSelections[agent.id] = agentSelection
+            self.selection = MarkdownToolProvider.mapSelection(self.selection, through: edits)
+            for (id, sel) in self.agentSelections where id != agent.id {
+                self.agentSelections[id] = MarkdownToolProvider.mapSelection(sel, through: edits)
+            }
+        } else {
+            self.selection = agentSelection
+            for (id, sel) in self.agentSelections {
+                self.agentSelections[id] = MarkdownToolProvider.mapSelection(sel, through: edits)
+            }
+        }
+    }
+
+    func select(_ range: NSRange) { selection = range }
+
+    func selection(for agent: ToolActor?) -> NSRange {
+        guard let id = agent?.id else { return selection }
+        if let existing = agentSelections[id] { return existing }
+        agentSelections[id] = selection
+        return selection
+    }
+
+    func select(_ range: NSRange, for agent: ToolActor?) {
+        if let agent {
+            agentSelections[agent.id] = range
+        } else {
+            selection = range
+        }
+    }
+
+    func observedRevision(for agent: ToolActor?) -> Int? {
+        guard let id = agent?.id else { return nil }
+        return agentObservedRevisions[id]
+    }
+
+    func noteObservedRevision(_ revision: Int, for agent: ToolActor?) {
+        guard let id = agent?.id else { return }
+        agentObservedRevisions[id] = revision
+    }
+
+    func simulateUserEdit(to newMarkdown: String) {
+        let edit = MarkdownToolProvider.change(from: self.markdown as NSString, to: newMarkdown as NSString)
+        self.markdown = newMarkdown
+        self.revision += 1
+        self.revisionHistory.append(MarkdownRevisionEntry(revision: self.revision, edits: [edit]))
+        self.selection = MarkdownToolProvider.mapSelection(self.selection, through: [edit])
+        for (id, sel) in self.agentSelections {
+            self.agentSelections[id] = MarkdownToolProvider.mapSelection(sel, through: [edit])
+        }
+    }
 }
 
 var failures = 0
@@ -67,8 +125,8 @@ struct Harness {
     @MainActor static var keep: [MarkdownToolProvider] = []
 
     @MainActor
-    func call(_ name: String, _ args: JSONObject = JSONObject()) async -> McpToolResult {
-        await registry.callTool(name, args)
+    func call(_ name: String, _ args: JSONObject = JSONObject(), actor: ToolActor? = nil) async -> McpToolResult {
+        await registry.callTool(name, args, actor: actor)
     }
 }
 
@@ -85,18 +143,18 @@ func range(_ v: JSONValue?) -> NSRange? {
 
 /// A successful call's structured result; records a failure when it errored.
 @MainActor
-func ok(_ h: Harness, _ name: String, _ args: JSONObject = JSONObject(), line: UInt = #line) async -> JSONObject {
-    let result = await h.call(name, args)
+func ok(_ h: Harness, _ name: String, _ args: JSONObject = JSONObject(), actor: ToolActor? = nil, line: UInt = #line) async -> JSONObject {
+    let result = await h.call(name, args, actor: actor)
     check(!result.isError, "\(name) \(JSONValue.object(args).stringified()) failed: \(result.text ?? "")", line: line)
     return result.value
 }
 
 /// A failing call; checks its error code and that the document didn't change.
 @MainActor
-func fails(_ h: Harness, _ name: String, _ args: JSONObject, code: String, containing: String? = nil, line: UInt = #line) async {
+func fails(_ h: Harness, _ name: String, _ args: JSONObject, actor: ToolActor? = nil, code: String, containing: String? = nil, line: UInt = #line) async {
     let before = h.document.markdown
     let edits = h.document.edits.count
-    let result = await h.call(name, args)
+    let result = await h.call(name, args, actor: actor)
     check(result.isError, "\(name) \(JSONValue.object(args).stringified()) should fail", line: line)
     expectEqual(result.errorCode ?? "", code, "\(name) error code", line: line)
     if let containing {
@@ -442,126 +500,182 @@ func run() async {
         check(docs.last?["flavor"]?.stringValue == "slack" && docs.last?["readOnly"] == .bool(true), "list_documents reports flavor and readOnly")
     }
 
-    // MARK: Agent presence and decoupled selection (SWA-35 / #151)
+    // MARK: Revisions, Per-Agent Cursors & Concurrent Multi-Agent Edits
     do {
-        let session = AgentDocumentSession()
-        var docText = "Hello world"
-        var userSelectionMutations = 0
-        var presenceUpdates: [AgentPresenceUpdate] = []
-        var capturedEdits: [[MarkdownToolProvider.RawEdit]] = []
+        let h = Harness("Alpha Beta Gamma", selection: NSRange(location: 0, length: 5))
+        let claude = ToolActor(id: "mcp:sess-claude", name: "Claude Code")
+        let cursor = ToolActor(id: "mcp:sess-cursor", name: "Cursor")
 
-        session.readMarkdown = { docText }
-        session.selectRange = { _ in userSelectionMutations += 1 }
-        session.applyEditWithEdits = { newText, _, _, edits in
-            docText = newText
-            capturedEdits.append(edits)
-        }
-        session.onPresenceChange = { update in
-            presenceUpdates.append(update)
-        }
+        // 1. Both agents read at revision 0
+        let readA = await ok(h, "get_text", actor: claude)
+        let readB = await ok(h, "find_text", ["query": "Gamma"], actor: cursor)
+        expectEqual(int(readA["revision"]) ?? -1, 0, "initial get_text revision is 0")
+        expectEqual(int(readB["revision"]) ?? -1, 0, "initial find_text revision is 0")
+        let gammaMatch = range(readB["matches"]?.arrayValue?.first) ?? NSRange()
+        expectEqual(gammaMatch, NSRange(location: 11, length: 5), "Gamma is at 11..16 in rev 0")
 
-        // Initial selection is (0, 0) independent of user cursor
-        expectEqual(session.selection, NSRange(location: 0, length: 0), "initial agent selection is at offset 0")
-        expectEqual(session.hasActivePresence, false, "no active presence before tool call")
+        // 2. Independent cursors per agent, without clobbering each other or the user's selection
+        let selA = await ok(h, "set_selection", ["from": 0, "to": 5], actor: claude)
+        let selB = await ok(h, "set_selection", ["from": 11, "to": 16], actor: cursor)
+        expectEqual(selA["selection"]?["text"]?.stringValue ?? "", "Alpha", "Claude selected Alpha")
+        expectEqual(selB["selection"]?["text"]?.stringValue ?? "", "Gamma", "Cursor selected Gamma")
+        expectEqual(h.document.selection(for: claude), NSRange(location: 0, length: 5), "Claude cursor stays at 0..5")
+        expectEqual(h.document.selection(for: cursor), NSRange(location: 11, length: 5), "Cursor cursor is at 11..16")
 
-        // insert_text without `at` inserts at agent's initial offset 0
-        let res1 = await session.registry.callTool("insert_text", ["text": "Hi "], actor: ToolActor(id: "claude", name: "Claude"))
-        check(!res1.isError, "session insert_text succeeds")
-        expectEqual(docText, "Hi Hello world", "inserted at initial offset 0")
-        expectEqual(session.selection, NSRange(location: 3, length: 0), "agent selection at end of inserted text")
-        expectEqual(session.hasActivePresence, true, "agent presence is active after insert_text")
-        expectEqual(session.lastModifiedRanges, [NSRange(location: 0, length: 3)], "lastModifiedRanges records inserted range")
-        expectEqual(presenceUpdates.last?.selection, NSRange(location: 3, length: 0), "presence update selection")
-        expectEqual(presenceUpdates.last?.modifiedRanges, [NSRange(location: 0, length: 3)], "presence update modifiedRanges")
-        expectEqual(presenceUpdates.last?.label, "Claude", "actor name passed to presence update")
-        expectEqual(presenceUpdates.last?.colorHex, defaultAgentCaretColor, "default violet color")
-        expectEqual(capturedEdits.last, [MarkdownToolProvider.RawEdit(range: NSRange(location: 0, length: 0), newLength: 3)], "captured raw edit delta")
+        // 3. Claude replaces its selection ("Alpha" -> "First" + " Item" = "First Item", length 10, delta +5)
+        let repA = await ok(h, "replace_selection", ["text": "First Item"], actor: claude)
+        expectEqual(int(repA["revision"]) ?? -1, 1, "revision increments to 1 after Claude's edit")
+        expectEqual(h.document.markdown, "First Item Beta Gamma", "Claude replaced Alpha")
+        expectEqual(h.document.selection(for: claude), NSRange(location: 10, length: 0), "Claude caret after inserted text")
+        expectEqual(h.document.selection(for: cursor), NSRange(location: 16, length: 5), "Cursor selection automatically mapped by +5 to 16..21")
 
-        // set_selection updates agent selection and clears modifiedRanges
-        let res2 = await session.registry.callTool("set_selection", ["from": 3, "to": 8])
-        check(!res2.isError, "set_selection succeeds")
-        expectEqual(session.selection, NSRange(location: 3, length: 5), "agent selection updated to 3..8")
-        expectEqual(session.lastModifiedRanges, [], "set_selection clears modifiedRanges")
-        expectEqual(presenceUpdates.last?.selection, NSRange(location: 3, length: 5), "presence update after set_selection")
-        expectEqual(presenceUpdates.last?.modifiedRanges, [], "presence update modifiedRanges empty on set_selection")
-        expectEqual(presenceUpdates.last?.label, "Claude", "sticky actor label")
+        // 4. Cursor inserts at its cursor (or replaces its selection) without needing to re-read
+        let repB = await ok(h, "replace_selection", ["text": "Third"], actor: cursor)
+        expectEqual(int(repB["revision"]) ?? -1, 2, "revision increments to 2 after Cursor's edit")
+        expectEqual(h.document.markdown, "First Item Beta Third", "Cursor replaced Gamma at mapped selection")
+        expectEqual(h.document.selection(for: cursor), NSRange(location: 21, length: 0), "Cursor caret at end of Third")
+        expectEqual(h.document.selection(for: claude), NSRange(location: 10, length: 0), "Claude caret before Cursor's edit is unaffected")
 
-        // replace_selection replaces agent's selection (3..8 "Hello") with "Hey"
-        let res3 = await session.registry.callTool("replace_selection", ["text": "Hey"])
-        check(!res3.isError, "replace_selection succeeds")
-        expectEqual(docText, "Hi Hey world", "replace_selection updated text")
-        expectEqual(session.selection, NSRange(location: 6, length: 0), "caret after replace_selection")
-        expectEqual(session.lastModifiedRanges, [NSRange(location: 3, length: 3)], "modified range after replace_selection")
+        // 5. Stale non-overlapping offsets are automatically transformed through the revision history
+        // Suppose both agents read at rev 2: "First Item Beta Third"
+        // "First Item" is 0..10, "Beta" is 11..15, "Third" is 16..21
+        _ = await ok(h, "get_text", actor: claude)
+        _ = await ok(h, "get_text", actor: cursor)
+        // Claude edits 0..10 ("First Item" -> "One", length 3, delta -7), bumping revision to 3
+        let r3 = await ok(h, "replace_range", ["from": 0, "to": 10, "text": "One"], actor: claude)
+        expectEqual(int(r3["revision"]) ?? -1, 3, "revision is 3")
+        expectEqual(h.document.markdown, "One Beta Third", "text at rev 3")
 
-        // replace_range replaces "world" (7..12) with "everyone" while agent caret is at 6
-        let res4 = await session.registry.callTool("replace_range", ["from": 7, "to": 12, "text": "everyone"], actor: ToolActor(id: "mcp", name: "MCP Client"))
-        check(!res4.isError, "replace_range succeeds")
-        expectEqual(docText, "Hi Hey everyone", "replace_range updated text")
-        expectEqual(session.selection, NSRange(location: 6, length: 0), "agent caret before replaced range stays at 6")
-        expectEqual(session.lastModifiedRanges, [NSRange(location: 7, length: 8)], "modified range after replace_range")
-        expectEqual(presenceUpdates.last?.label, defaultAgentCaretName, "MCP Client actor normalizes to 'Agent' label")
+        // Cursor now calls replace_range with stale offsets 16..21 from rev 2 (when it last read)
+        // Because 16..21 does not overlap 0..10, it transforms by -7 to 9..14 ("Third")!
+        let r4 = await ok(h, "replace_range", ["from": 16, "to": 21, "text": "Three"], actor: cursor)
+        expectEqual(int(r4["revision"]) ?? -1, 4, "revision is 4")
+        expectEqual(h.document.markdown, "One Beta Three", "stale non-overlapping replace_range safely transformed to 9..14")
+        expectEqual(range(r4["replaced"]) ?? NSRange(), NSRange(location: 9, length: 5), "replaced reports transformed range")
 
-        // replace_text with multiple occurrences records all modified ranges
-        let res5 = await session.registry.callTool("replace_text", ["find": "e", "replace": "E"])
-        check(!res5.isError, "replace_text succeeds")
-        expectEqual(docText, "Hi HEy EvEryonE", "replace_text updated all occurrences")
-        expectEqual(session.lastModifiedRanges.count, 4, "replace_text records 4 modified ranges")
+        // 6. Stale overlapping offsets are rejected with a clear conflict error
+        // Both agents read at rev 4 ("One Beta Three"): "Beta" is at 4..8
+        _ = await ok(h, "get_text", actor: claude)
+        _ = await ok(h, "get_text", actor: cursor)
+        // Claude edits "Beta" (4..8 -> "Two", rev 5)
+        _ = await ok(h, "replace_range", ["from": 4, "to": 8, "text": "Two"], actor: claude)
+        expectEqual(h.document.markdown, "One Two Three", "text at rev 5")
+        // Cursor tries to edit overlapping stale range 4..8 from rev 4 -> must fail with Conflict!
+        await fails(h, "replace_range", ["from": 4, "to": 8, "text": " middle "], actor: cursor, code: "tool_failed", containing: "Conflict")
+        expectEqual(h.document.markdown, "One Two Three", "overlapping stale write rejected without corrupting text")
 
-        // Bidirectional offset remapping:
-        // 1. Pure insertion at exact cursor position advances cursor
-        expectEqual(
-            MarkdownToolProvider.mapSelection(NSRange(location: 5, length: 0), replacedRange: NSRange(location: 5, length: 0), replacementLength: 4, newLength: 20),
-            NSRange(location: 9, length: 0),
-            "pure insertion at cursor shifts cursor forward"
-        )
-        // 2. Replacement starting at cursor keeps selection start anchored or moves inside range to end
-        expectEqual(
-            MarkdownToolProvider.mapSelection(NSRange(location: 5, length: 3), replacedRange: NSRange(location: 5, length: 3), replacementLength: 6, newLength: 20),
-            NSRange(location: 5, length: 6),
-            "replacement of exact selected range maps selection to new replacement span"
-        )
-        // 3. Edit before cursor shifts cursor by delta
-        expectEqual(
-            MarkdownToolProvider.mapSelection(NSRange(location: 10, length: 2), replacedRange: NSRange(location: 2, length: 3), replacementLength: 5, newLength: 20),
-            NSRange(location: 12, length: 2),
-            "edit before selection shifts selection by +2"
-        )
-        // 4. Edit after cursor leaves cursor untouched
-        expectEqual(
-            MarkdownToolProvider.mapSelection(NSRange(location: 4, length: 2), replacedRange: NSRange(location: 10, length: 3), replacementLength: 1, newLength: 20),
-            NSRange(location: 4, length: 2),
-            "edit after selection leaves selection unchanged"
-        )
+        // 7. Explicit baseRevision parameter works for both non-overlapping transformation and conflict detection
+        // At rev 4, "Three" was at 9..14. In rev 5 ("Beta" -> "Two", delta -1), "Three" moved to 8..13.
+        let r6 = await ok(h, "format_text", ["from": 9, "to": 14, "bold": true, "baseRevision": 4], actor: cursor)
+        expectEqual(int(r6["revision"]) ?? -1, 6, "revision is 6")
+        expectEqual(h.document.markdown, "One Two **Three**", "format_text transformed stale range via explicit baseRevision")
 
-        // User edit remaps agent session selection and active modified ranges
-        session.select(NSRange(location: 7, length: 8)) // "EvEryonE"
-        _ = await session.registry.callTool("replace_range", ["from": 7, "to": 15, "text": "friends"])
-        // docText is "Hi HEy friends" (length 14), agent caret is at 7 (since select was 7..15, mapped through replace 7..15 -> 7..14)
-        expectEqual(session.selection, NSRange(location: 7, length: 7), "agent selection spans replaced range")
-        expectEqual(session.lastModifiedRanges, [NSRange(location: 7, length: 7)], "modified range spans 'friends'")
+        // Explicit baseRevision ahead of current revision fails
+        await fails(h, "replace_range", ["from": 0, "to": 3, "text": "X", "baseRevision": 99], actor: cursor, code: "tool_failed", containing: "Conflict")
 
-        // Simulate user typing "Oh! " (length 4) at offset 0
-        docText = "Oh! " + docText
-        session.remapSelectionForUserEdit(replacedRange: NSRange(location: 0, length: 0), replacementLength: 4, newTextLength: (docText as NSString).length)
-        expectEqual(session.selection, NSRange(location: 11, length: 7), "user edit before agent selection shifts it by +4")
-        expectEqual(session.lastModifiedRanges, [NSRange(location: 11, length: 7)], "user edit before modified range shifts it by +4")
+        // Explicit baseRevision on replace_text fails when document has changed
+        await fails(h, "replace_text", ["find": "One", "replace": "1", "baseRevision": 5], actor: cursor, code: "tool_failed", containing: "Conflict")
+
+        // 8. Human / external edits also increment revision and map agent cursors
+        _ = await ok(h, "set_selection", ["from": 8, "to": 17], actor: cursor) // selects "**Three**"
+        h.document.simulateUserEdit(to: "Prefix: One Two **Three**") // user inserted "Prefix: " (8 chars) at 0
+        expectEqual(h.document.revision, 7, "user edit increments revision to 7")
+        expectEqual(h.document.selection(for: cursor), NSRange(location: 16, length: 9), "Cursor selection shifted by user edit")
+        // Cursor had observed rev 6 ("One" at 0..3); user inserted at 0..0 which touches 0, so editing 4..7 ("Two" at rev 6) transforms by +8 to 12..15!
+        let r8 = await ok(h, "replace_range", ["from": 4, "to": 7, "text": "2", "baseRevision": 6], actor: cursor)
+        expectEqual(int(r8["revision"]) ?? -1, 8, "revision is 8")
+        expectEqual(h.document.markdown, "Prefix: One 2 **Three**", "transformed across user edit")
     }
 
-    // An agent that hasn't acted yet starts at the user's cursor; afterwards it keeps its own.
+    // MARK: AgentDocumentSession: per-agent selections, presence and the user's edits (#151, #152)
     do {
         let session = AgentDocumentSession()
+        session.caretIdleMs = 0
+        session.changedTintMs = 0
         var docText = "Hello world"
         var userSelection = NSRange(location: 5, length: 0)
+        var undoNames: [String] = []
+        var appeared = 0
         session.readMarkdown = { docText }
         session.readSelection = { userSelection }
-        session.applyEditWithEdits = { newText, _, _, _ in docText = newText }
-        expectEqual(session.selection, NSRange(location: 5, length: 0), "an idle agent's selection is the user's")
-        _ = await session.registry.callTool("insert_text", ["text": ","])
+        session.applyEdit = { newText, _, actionName in
+            docText = newText
+            undoNames.append(actionName)
+        }
+        session.onAgentsAppeared = { appeared += 1 }
+        let claude = ToolActor(id: "mcp:claude", name: "Claude")
+        let cursor = ToolActor(id: "mcp:cursor", name: "Cursor")
+        let anonymous = ToolActor(id: "mcp", name: "MCP Client")
+
+        // A new agent starts at the user's cursor, then keeps its own selection
+        check(!(await session.registry.callTool("insert_text", ["text": ","], actor: claude)).isError, "session insert_text")
         expectEqual(docText, "Hello, world", "insert_text without `at` goes at the user's cursor first")
+        expectEqual(appeared, 1, "the host hears when the first agent appears")
+        expectEqual(undoNames.last, "Insert Text (Claude)", "the undo step is named after the agent")
         userSelection = NSRange(location: 0, length: 0)
-        expectEqual(session.selection, NSRange(location: 6, length: 0), "once it has acted, the agent keeps its own selection")
-        session.clearPresence()
-        expectEqual(session.selection, NSRange(location: 0, length: 0), "clearing presence hands the selection back to the user's")
+        expectEqual(session.selection(for: claude), NSRange(location: 6, length: 0), "once it has acted, the agent keeps its own selection")
+        expectEqual(session.carets.caret("mcp:claude")?.head, 6, "the agent's caret is at its selection")
+        expectEqual(session.carets.caret("mcp:claude")?.changed, [NSRange(location: 5, length: 1)], "the changed text is tinted")
+        expectEqual(session.carets.caret("mcp:claude")?.name, "Claude", "the caret is named after the client")
+
+        // A second agent gets its own caret and colour; its edits move the first agent's selection
+        _ = await session.registry.callTool("set_selection", ["from": 7, "to": 12], actor: cursor)
+        let colours = Set(session.carets.carets.map(\.color))
+        expectEqual(colours.count, 2, "each agent has its own colour")
+        _ = await session.registry.callTool("insert_text", ["text": "big ", "at": 0], actor: cursor)
+        expectEqual(docText, "big Hello, world", "second agent inserts at 0")
+        expectEqual(session.selection(for: claude), NSRange(location: 10, length: 0), "another agent's edit before it shifts the selection")
+        expectEqual(session.carets.caret("mcp:claude")?.head, 10, "and its caret")
+        expectEqual(session.selection(for: cursor), NSRange(location: 11, length: 5), "the editing agent's selection maps too")
+
+        // replace_text with several matches maps carets through each edit (last first)
+        _ = await session.registry.callTool("replace_text", ["find": "o", "replace": "OO"], actor: cursor)
+        expectEqual(docText, "big HellOO, wOOrld", "replace_text replaced both")
+        expectEqual(session.selection(for: claude), NSRange(location: 11, length: 0), "a selection after one of several matches moves by that match only")
+        expectEqual(session.carets.caret("mcp:claude")?.head, 11, "and so does its caret")
+        expectEqual(session.carets.caret("mcp:cursor")?.changed.count, 2, "both replacements are tinted")
+
+        // The user's typing moves agents' selections and carets, and bumps the revision
+        let revision = session.revision
+        docText = "Oh! " + docText
+        session.noteUserEdit(range: NSRange(location: 0, length: 0), newLength: 4, newMarkdown: docText)
+        expectEqual(session.revision, revision + 1, "a user edit is a revision")
+        expectEqual(session.selection(for: claude), NSRange(location: 15, length: 0), "user typing before an agent's selection shifts it")
+        expectEqual(session.carets.caret("mcp:claude")?.head, 15, "and its caret")
+
+        // An edit the session wasn't told about is found by diffing on the next read
+        docText = docText.replacingOccurrences(of: "Oh! ", with: "")
+        expectEqual(session.selection(for: claude), NSRange(location: 11, length: 0), "an unreported edit is mapped on the next read")
+        expectEqual(session.revision, revision + 2, "and recorded as a revision")
+
+        // "MCP Client" (no clientInfo) is shown as "Agent" and its undo step keeps the plain name
+        _ = await session.registry.callTool("insert_text", ["text": "!", "at": 0], actor: anonymous)
+        expectEqual(session.carets.caret("mcp")?.name, defaultAgentCaretName, "an unnamed client is shown as Agent")
+        expectEqual(undoNames.last, "Insert Text", "an unnamed client's undo step has the plain name")
+
+        // Removing agents cancels their carets and selections
+        session.removeAgent("mcp:cursor")
+        check(session.carets.caret("mcp:cursor") == nil, "removeAgent clears the caret")
+        session.removeAllAgents()
+        check(session.carets.carets.isEmpty && !session.hasAgents, "removeAllAgents clears every agent")
+        userSelection = NSRange(location: 2, length: 0)
+        expectEqual(session.selection(for: claude), NSRange(location: 2, length: 0), "a forgotten agent starts at the user's cursor again")
+    }
+
+    // Idle carets and tints expire on their own
+    do {
+        let session = AgentDocumentSession()
+        session.caretIdleMs = 50
+        session.changedTintMs = 20
+        var docText = "abc"
+        session.readMarkdown = { docText }
+        session.applyEdit = { newText, _, _ in docText = newText }
+        _ = await session.registry.callTool("insert_text", ["text": "x", "at": 0], actor: ToolActor(id: "a", name: "A"))
+        check(!(session.carets.caret("a")?.changed.isEmpty ?? true), "the change is tinted")
+        try? await Task.sleep(for: .milliseconds(40))
+        check(session.carets.caret("a")?.changed.isEmpty ?? false, "the tint clears after changedTintMs")
+        try? await Task.sleep(for: .milliseconds(60))
+        check(session.carets.caret("a") == nil, "the idle caret clears after caretIdleMs")
     }
 }
 

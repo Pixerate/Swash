@@ -279,125 +279,6 @@ final class WritingPartnerOverlay: NSView {
             .offsetBy(dx: origin.x, dy: origin.y)
     }
 
-    // MARK: Inline MCP Agent Presence (#151)
-
-    /// Active inline MCP agent presence state shown over the editor.
-    struct AgentPresenceState: Equatable {
-        enum Stage: Equatable {
-            case caret
-            case selecting
-            case landed
-        }
-
-        var rawSelection: NSRange
-        var modifiedRawRanges: [NSRange]
-        var label: String
-        var colorHex: String
-        var stage: Stage
-        var selectionStartedAt: Double
-        var landedStartedAt: Double?
-        var lastActivityAt: Double
-    }
-
-    /// How long the post-edit range highlight stays visible before fading out (ms).
-    static let agentLandedDurationMs: Double = 900
-    /// How long the inline agent caret and selection remain visible after the last tool call (ms).
-    static let agentInactivityDurationMs: Double = 4000
-
-    private(set) var agentPresence: AgentPresenceState?
-    private var agentPresenceLook: (colorHex: String, dark: Bool, look: Look)?
-    private weak var agentCoordinator: SwashTextView.Coordinator?
-
-    /// Resolves the Look for the inline MCP agent presence (violet caret + name pill + fading range tint).
-    static func agentLook(colorHex: String, dark: Bool) -> Look? {
-        guard let treatment = FlairTextTreatments.treatment(id: "soft-sweep")
-                ?? FlairTextTreatments.treatment(id: FlairTextTreatments.defaultID)
-                ?? FlairTextTreatments.all.first else { return nil }
-        let hex = FlairRGBA(hex: colorHex) != nil ? colorHex : defaultAgentCaretColor
-        let values = treatment.values(values: [
-            "color": .string(hex),
-            "darkTheme": .bool(dark),
-            "nameTag": .bool(true),
-            "blink": .bool(false),
-            "landMs": .number(agentLandedDurationMs),
-        ])
-        return Look(id: treatment.id, dark: dark, stages: FlairTextTreatments.resolve(treatment, values: values))
-    }
-
-    private func currentAgentLook(colorHex: String, in textView: NSTextView) -> Look? {
-        let dark = Self.isDark(textView)
-        if let cached = agentPresenceLook, cached.colorHex == colorHex, cached.dark == dark {
-            return cached.look
-        }
-        guard let resolved = Self.agentLook(colorHex: colorHex, dark: dark) else { return nil }
-        agentPresenceLook = (colorHex, dark, resolved)
-        return resolved
-    }
-
-    /// Shows or updates the inline MCP agent presence caret, selection highlight, name pill, and modified-range feedback.
-    func showAgentPresence(
-        rawSelection: NSRange,
-        modifiedRawRanges: [NSRange] = [],
-        label: String = defaultAgentCaretName,
-        colorHex: String = defaultAgentCaretColor,
-        coordinator: SwashTextView.Coordinator? = nil
-    ) {
-        if let coordinator { self.agentCoordinator = coordinator }
-        let now = Self.now
-        let nonEmptyModified = modifiedRawRanges.filter { $0.length > 0 }
-        let stage: AgentPresenceState.Stage
-        if !nonEmptyModified.isEmpty {
-            stage = .landed
-        } else if rawSelection.length > 0 {
-            stage = .selecting
-        } else {
-            stage = .caret
-        }
-        let selectionStart: Double
-        if let existing = agentPresence, existing.rawSelection == rawSelection, rawSelection.length > 0 {
-            selectionStart = existing.selectionStartedAt
-        } else {
-            selectionStart = now
-        }
-        let landedStart: Double?
-        if !nonEmptyModified.isEmpty {
-            landedStart = now
-        } else {
-            landedStart = nil
-        }
-        agentPresence = AgentPresenceState(
-            rawSelection: rawSelection,
-            modifiedRawRanges: nonEmptyModified,
-            label: label.isEmpty ? defaultAgentCaretName : label,
-            colorHex: colorHex.isEmpty ? defaultAgentCaretColor : colorHex,
-            stage: stage,
-            selectionStartedAt: selectionStart,
-            landedStartedAt: landedStart,
-            lastActivityAt: now
-        )
-        render()
-        DispatchQueue.main.async { [weak self] in self?.render() }
-    }
-
-    /// Updates the raw offsets of an active MCP agent presence without resetting its inactivity or animation timers.
-    func remapAgentPresence(rawSelection: NSRange, modifiedRawRanges: [NSRange]) {
-        guard var presence = agentPresence else { return }
-        presence.rawSelection = rawSelection
-        presence.modifiedRawRanges = modifiedRawRanges.filter { $0.length > 0 }
-        if presence.stage != .landed {
-            presence.stage = rawSelection.length > 0 ? .selecting : .caret
-        }
-        agentPresence = presence
-        render()
-    }
-
-    /// Clears the inline MCP agent presence immediately.
-    func clearAgentPresence() {
-        guard agentPresence != nil else { return }
-        agentPresence = nil
-        render()
-    }
-
     // MARK: The treatment
 
     /// The chosen treatment with the partner's values, resolved once for a style and appearance.
@@ -413,15 +294,16 @@ final class WritingPartnerOverlay: NSView {
     }
 
     /// The look for a treatment id (the default when it's unknown) in a light or dark appearance:
-    /// the partner's colour, the treatment's dark variant where it has one, and no name tag.
-    static func look(id: String, dark: Bool) -> Look? {
+    /// `colorHex` (the partner's tint by default), the treatment's dark variant where it has one,
+    /// and a name tag over the caret when `nameTag` (for agents, #152).
+    static func look(id: String, dark: Bool, colorHex: String? = nil, nameTag: Bool = false) -> Look? {
         guard let treatment = FlairTextTreatments.treatment(id: id)
                 ?? FlairTextTreatments.treatment(id: WritingPartnerDefaults.defaultStyle)
                 ?? FlairTextTreatments.all.first else { return nil }
         let values = treatment.values(values: [
-            "color": .string(rgba(tint)?.hex ?? "#AF52DE"),
+            "color": .string(colorHex.flatMap { FlairRGBA(hex: $0) != nil ? $0 : nil } ?? rgba(tint)?.hex ?? "#AF52DE"),
             "darkTheme": .bool(dark),
-            "nameTag": .bool(false),
+            "nameTag": .bool(nameTag),
         ])
         return Look(id: treatment.id, dark: dark, stages: FlairTextTreatments.resolve(treatment, values: values))
     }
@@ -570,6 +452,49 @@ final class WritingPartnerOverlay: NSView {
         }
     }
 
+    // MARK: MCP agents' carets (#151, #152)
+
+    private weak var externalCarets: AgentCaretStore?
+    private weak var externalCoordinator: SwashTextView.Coordinator?
+    private var externalSubscription: UUID?
+    private var externalLooks: [String: Look] = [:]
+
+    /// Whether MCP agents' carets are on screen (the editor redraws them after restyling).
+    var hasExternalCarets: Bool { !(externalCarets?.carets.isEmpty ?? true) }
+
+    /// Draws MCP agents' carets, selections and changed ranges from `carets`, each in its colour
+    /// with a name tag. Calling it again with the same store only updates the coordinator.
+    func attachExternal(carets: AgentCaretStore, coordinator: SwashTextView.Coordinator?) {
+        if let coordinator { externalCoordinator = coordinator }
+        if externalCarets === carets, externalSubscription != nil { return }
+        detachExternal()
+        externalCarets = carets
+        externalSubscription = carets.subscribe { [weak self] _ in
+            self?.render()
+            // Changed text is measured again once the editor has restyled it
+            DispatchQueue.main.async { [weak self] in self?.render() }
+        }
+        render()
+    }
+
+    /// Stops drawing MCP agents' carets.
+    func detachExternal() {
+        if let externalSubscription { externalCarets?.unsubscribe(externalSubscription) }
+        externalSubscription = nil
+        externalCarets = nil
+        render()
+    }
+
+    private func externalLook(colorHex: String, in textView: NSTextView) -> Look? {
+        let id = WritingPartnerDefaults.style()
+        let dark = Self.isDark(textView)
+        let key = "\(id)|\(dark)|\(colorHex)"
+        if let cached = externalLooks[key] { return cached }
+        guard let resolved = Self.look(id: id, dark: dark, colorHex: colorHex, nameTag: true) else { return nil }
+        externalLooks[key] = resolved
+        return resolved
+    }
+
     /// Redraws every playing stage from the director's state, and keeps drawing while any plays.
     func render(animated: Bool = true) {
         draw()
@@ -584,7 +509,7 @@ final class WritingPartnerOverlay: NSView {
         }
     }
 
-    private var isPlaying: Bool { !playbacks.isEmpty || !(carets?.carets.isEmpty ?? true) || agentPresence != nil }
+    private var isPlaying: Bool { !playbacks.isEmpty || !(carets?.carets.isEmpty ?? true) || hasExternalCarets }
 
     private func stop() {
         timer?.invalidate()
@@ -678,48 +603,28 @@ final class WritingPartnerOverlay: NSView {
         }
         plans += live
 
-        // Inline MCP agent presence (caret, selection, name pill, and transient post-edit range highlight)
-        if var presence = agentPresence {
-            if now - presence.lastActivityAt >= Self.agentInactivityDurationMs {
-                agentPresence = nil
-            } else if let agentLook = currentAgentLook(colorHex: presence.colorHex, in: textView) {
-                let coordinator = agentCoordinator ?? target?.coordinator ?? (textView.delegate as? SwashTextView.Coordinator)
-                let toStorage: (NSRange) -> NSRange = { raw in
-                    if let coordinator { return coordinator.storageRange(forRaw: raw, in: textView) }
-                    let len = textView.textStorage?.length ?? 0
-                    let start = min(max(0, raw.location), len)
-                    return NSRange(location: start, length: min(max(0, raw.length), len - start))
-                }
-                if let landedStart = presence.landedStartedAt {
-                    let elapsed = now - landedStart
-                    let modifiedLines = presence.modifiedRawRanges.flatMap { Self.rects(for: toStorage($0), in: textView) }
-                    let landedPlan = agentLook.plan(.landed, at: elapsed, over: FlairTreatmentTarget(lines: modifiedLines))
-                    if landedPlan.done {
-                        presence.modifiedRawRanges = []
-                        presence.landedStartedAt = nil
-                        presence.stage = presence.rawSelection.length > 0 ? .selecting : .caret
-                        agentPresence = presence
-                    } else if !modifiedLines.isEmpty {
-                        plans.append(landedPlan)
+        // MCP agents' carets, selections and changed ranges (raw-Markdown offsets), each in its colour
+        if let store = externalCarets, !store.carets.isEmpty,
+           let coordinator = externalCoordinator ?? (textView.delegate as? SwashTextView.Coordinator) {
+            let storeNow = store.now()
+            let storage = { (raw: NSRange) -> NSRange in coordinator.storageRange(forRaw: raw, in: textView) }
+            for caret in store.carets {
+                guard let agentLook = externalLook(colorHex: caret.color, in: textView) else { continue }
+                let headLocation = storage(NSRange(location: caret.head, length: 0)).location
+                let head = Self.caretRect(at: headLocation, in: textView).map(Self.caret)
+                if !caret.changed.isEmpty, let changedSince = caret.changedSince {
+                    let lines = caret.changed.flatMap { Self.rects(for: storage($0), in: textView) }
+                    if !lines.isEmpty {
+                        let landed = agentLook.plan(.landed, at: max(0, storeNow - changedSince), over: FlairTreatmentTarget(lines: lines))
+                        if !landed.done { plans.append(landed) }
                     }
                 }
-                let storageSelection = toStorage(presence.rawSelection)
-                let headLocation = NSMaxRange(storageSelection)
-                let headCaret = Self.caretRect(at: headLocation, in: textView).map(Self.caret)
-                if presence.rawSelection.length > 0 {
-                    let selectionLines = Self.rects(for: storageSelection, in: textView)
-                    let selectElapsed = max(0, now - presence.selectionStartedAt)
-                    plans.append(agentLook.plan(
-                        .selecting,
-                        at: selectElapsed,
-                        over: FlairTreatmentTarget(lines: selectionLines, caret: headCaret, label: presence.label)
-                    ))
-                } else if let headCaret {
-                    plans.append(agentLook.plan(
-                        .caret,
-                        at: max(0, now - presence.lastActivityAt),
-                        over: FlairTreatmentTarget(caret: headCaret, label: presence.label)
-                    ))
+                let stageTime = max(0, storeNow - caret.stageSince)
+                if caret.selection.length > 0 {
+                    let lines = Self.rects(for: storage(caret.selection), in: textView)
+                    plans.append(agentLook.plan(.selecting, at: stageTime, over: FlairTreatmentTarget(lines: lines, caret: head, label: caret.name)))
+                } else if let head {
+                    plans.append(agentLook.plan(.caret, at: stageTime, over: FlairTreatmentTarget(caret: head, label: caret.name)))
                 }
             }
         }

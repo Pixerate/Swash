@@ -9,6 +9,7 @@
 import SwiftUI
 import MacAppKitExtras
 import AppKit
+import PixerateCore
 import PixerateMarkdown
 
 func logDebug(_ message: String) {
@@ -72,6 +73,10 @@ final class BlockMenuTarget: NSObject {
 final class SwashEditorController {
     weak var textView: NSTextView?
     weak var coordinator: SwashTextView.Coordinator?
+    /// Agents' carets, selections and changed ranges, drawn over the text (#151, #152).
+    var agentCarets: AgentCaretStore? {
+        didSet { attachAgentCarets() }
+    }
     private var cachedFormatting: MarkdownFormatting?
     private var cachedFlavor: MarkdownFlavor?
 
@@ -172,9 +177,9 @@ final class SwashEditorController {
         return coordinator.rawText(of: textView)
     }
 
-    /// Callback invoked when the user edits the document (not during an agent edit), reporting the
-    /// replaced raw-Markdown range, the replacement UTF-16 length, and the new document raw length.
-    var onUserRawEdit: ((_ replacedRawRange: NSRange, _ replacementLength: Int, _ newRawLength: Int) -> Void)?
+    /// Called when the user edits the document (not during an agent edit), with the replaced
+    /// raw-Markdown range, the replacement's UTF-16 length and the new raw Markdown.
+    var onUserRawEdit: ((_ replacedRawRange: NSRange, _ replacementLength: Int, _ newRaw: String) -> Void)?
 
     /// Maps `position` through a sequence of ascending, non-overlapping raw edits.
     static func mapRawPosition(_ position: Int, through edits: [(range: NSRange, replacementLength: Int)]) -> Int {
@@ -209,12 +214,11 @@ final class SwashEditorController {
     }
 
     /// An agent tool's edit (#49, #151): like `apply`, but never merged into the user's typing, so
-    /// each tool call is its own undo step, and preserves the user's `NSTextView` selection by
-    /// mapping it through the agent's raw edit deltas instead of overwriting it with `selection`.
+    /// each tool call is its own undo step, and the user's selection is mapped through the agent's
+    /// raw edits (`edits`, or the changed span when empty) rather than moved to the agent's.
     @discardableResult
     func applyAgentEdit(
         newText: String,
-        selection: NSRange? = nil,
         edits: [(range: NSRange, replacementLength: Int)] = [],
         actionName: String
     ) -> Bool {
@@ -232,37 +236,14 @@ final class SwashEditorController {
         return true
     }
 
-    /// Renders an inline MCP agent presence caret, selection highlight, name pill, and modified-range feedback.
-    func showAgentPresence(
-        rawSelection: NSRange,
-        modifiedRawRanges: [NSRange] = [],
-        label: String = "Agent",
-        colorHex: String = "#8b5cf6"
-    ) {
+    /// Draws `agentCarets` in the attached editor's overlay, or stops drawing them when nil.
+    func attachAgentCarets() {
         guard let textView = textView else { return }
-        let overlay = WritingPartnerOverlay.overlay(for: textView)
-        overlay.showAgentPresence(
-            rawSelection: rawSelection,
-            modifiedRawRanges: modifiedRawRanges,
-            label: label,
-            colorHex: colorHex,
-            coordinator: coordinator
-        )
-    }
-
-    /// Updates the raw offsets of an active MCP agent presence without resetting its fade timer.
-    func remapAgentPresence(rawSelection: NSRange, modifiedRawRanges: [NSRange]) {
-        guard let textView = textView else { return }
-        WritingPartnerOverlay.existing(in: textView)?.remapAgentPresence(
-            rawSelection: rawSelection,
-            modifiedRawRanges: modifiedRawRanges
-        )
-    }
-
-    /// Clears the inline MCP agent presence overlay in the attached editor.
-    func clearAgentPresence() {
-        guard let textView = textView else { return }
-        WritingPartnerOverlay.existing(in: textView)?.clearAgentPresence()
+        if let agentCarets {
+            WritingPartnerOverlay.overlay(for: textView).attachExternal(carets: agentCarets, coordinator: coordinator)
+        } else {
+            WritingPartnerOverlay.existing(in: textView)?.detachExternal()
+        }
     }
 
     /// Selects `range` (raw-Markdown offsets) and scrolls it into view, without taking focus.
@@ -1305,6 +1286,7 @@ struct SwashTextView: NSViewRepresentable {
         context.coordinator.currentTextView = textView
         controller?.textView = textView
         controller?.coordinator = context.coordinator
+        if controller?.agentCarets != nil { controller?.attachAgentCarets() }
         
         // The binding usually just echoes what the editor published from its last edit: skip
         // rebuilding and normalising the whole document in that case
@@ -1817,7 +1799,7 @@ struct SwashTextView: NSViewRepresentable {
                     let newRaw = updatedRaw as NSString
                     if previousRaw != newRaw {
                         let delta = SwashEditorController.rawEditDelta(from: previousRaw, to: newRaw)
-                        onUserRawEdit(delta.range, delta.replacementLength, newRaw.length)
+                        onUserRawEdit(delta.range, delta.replacementLength, updatedRaw)
                     }
                 }
                 if !isApplyingEdit {
@@ -2473,7 +2455,7 @@ struct SwashTextView: NSViewRepresentable {
             if !writingPartner.suggestions.isEmpty {
                 writingPartner.refreshSuggestions(in: textView, coordinator: self)
             }
-            if let overlay = WritingPartnerOverlay.existing(in: textView), overlay.agentPresence != nil {
+            if let overlay = WritingPartnerOverlay.existing(in: textView), overlay.hasExternalCarets {
                 overlay.render()
             }
             if parent.writingOptions.typewriter {
@@ -2755,7 +2737,7 @@ struct SwashTextView: NSViewRepresentable {
             if !writingPartner.suggestions.isEmpty {
                 writingPartner.refreshSuggestions(in: textView, coordinator: self)
             }
-            if let overlay = WritingPartnerOverlay.existing(in: textView), overlay.agentPresence != nil {
+            if let overlay = WritingPartnerOverlay.existing(in: textView), overlay.hasExternalCarets {
                 overlay.render()
             }
             lastStyledText = textView.string
