@@ -104,6 +104,8 @@ struct ContentView: View {
     @State private var enteredFullScreenForWriting = false
     /// Whether the writing partner is paused for the current document (#112).
     @State private var isPartnerPaused = false
+    /// How many of the partner's marks are left to check (#128), for the status bar.
+    @State private var partnerMarkCount = 0
 
     @AppStorage(EditorTypography.Keys.font) private var typographyFont: TypographyFont = .system
     @AppStorage(EditorTypography.Keys.textSize) private var typographyTextSize: Double = Double(EditorTypography.defaultTextSize)
@@ -307,6 +309,7 @@ struct ContentView: View {
         }
         .onAppear {
             outlineState.select = { heading in editor.reveal(rawLocation: heading.range.location) }
+            editor.onPartnerMarksChange = { partnerMarkCount = $0 }
             // An untitled document created for a quick note or an import starts with its text
             if fileURL == nil, document.text.isEmpty, let seed = NewDocumentSeed.take() {
                 document.text = seed
@@ -720,6 +723,22 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                     .help("Resume the writing partner for this document (⌥⌘P)")
                     .accessibilityIdentifier("WritingPartnerPausedStatusButton")
+                }
+
+                if partnerMarkCount > 0 {
+                    Text("•")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary.opacity(0.5))
+                    Button {
+                        editor.reviewPartnerMarks()
+                    } label: {
+                        Text("\(partnerMarkCount) to check")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Review what the writing partner isn't sure about (⌥⌘')")
+                    .accessibilityIdentifier("WritingPartnerMarksStatusButton")
                 }
             }
             
@@ -1837,6 +1856,12 @@ struct ContentView: View {
         case .togglePartnerPause:
             isPartnerPaused.toggle()
             editor.setPartnerPaused(isPartnerPaused)
+        case .reviewPartnerMarks:
+            if !editor.reviewPartnerMarks() { NSSound.beep() }
+        case .nextPartnerMark:
+            if !editor.stepPartnerMarks(by: 1) { NSSound.beep() }
+        case .previousPartnerMark:
+            if !editor.stepPartnerMarks(by: -1) { NSSound.beep() }
         }
     }
     

@@ -14,6 +14,7 @@ import PixerateMarkdown
 enum DocumentCommand {
     case copyHeadingLink, copyMarkdownLink, copyFilePath
     case acceptSuggestion, dismissSuggestion, togglePartnerPause
+    case reviewPartnerMarks, nextPartnerMark, previousPartnerMark
 }
 
 struct DocumentCommandHandlerKey: FocusedValueKey {
@@ -101,6 +102,33 @@ struct DocumentMenuCommands: Commands {
                 }
             }
             .keyboardShortcut("p", modifiers: [.command, .option])
+            .disabled(handler == nil)
+            // What the partner isn't sure about (#128)
+            Button("Review What to Check") {
+                if !NSApp.sendAction(#selector(SwashNSTextView.reviewPartnerMarks(_:)), to: nil, from: nil) {
+                    handler?(.reviewPartnerMarks)
+                }
+            }
+            .keyboardShortcut("'", modifiers: [.command, .option])
+            .disabled(handler == nil)
+            Button("Next to Check") {
+                if !NSApp.sendAction(#selector(SwashNSTextView.nextPartnerMark(_:)), to: nil, from: nil) {
+                    handler?(.nextPartnerMark)
+                }
+            }
+            .keyboardShortcut("]", modifiers: [.command, .option])
+            .disabled(handler == nil)
+            Button("Previous to Check") {
+                if !NSApp.sendAction(#selector(SwashNSTextView.previousPartnerMark(_:)), to: nil, from: nil) {
+                    handler?(.previousPartnerMark)
+                }
+            }
+            .keyboardShortcut("[", modifiers: [.command, .option])
+            .disabled(handler == nil)
+            Button("Show Other Choice") {
+                _ = NSApp.sendAction(#selector(SwashNSTextView.nextMarkCandidate(_:)), to: nil, from: nil)
+            }
+            .keyboardShortcut("'", modifiers: [.command, .option, .shift])
             .disabled(handler == nil)
         }
         CommandGroup(after: .pasteboard) {
