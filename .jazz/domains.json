@@ -1,0 +1,124 @@
+{
+  "domains": [
+    {
+      "id": "markdown-editing",
+      "name": "WYSIWYG Markdown Editing",
+      "paths": [
+        "Swash/SwashTextView.swift",
+        "Swash/MarkdownEditorStyler.swift",
+        "Swash/MarkdownParser.swift",
+        "Swash/EditorSupport.swift",
+        "Swash/EditorTypography.swift",
+        "Swash/BubbleMenuView.swift",
+        "Swash/FormatCommands.swift",
+        "Swash/InteractiveTableView.swift",
+        "Swash/ImageInsertion.swift",
+        "Swash/DetectedLink.swift",
+        "Swash/DocumentOutlineView.swift",
+        "Swash/ViewMode.swift",
+        "Swash/WritingModes.swift",
+        "Swash/MarkdownFlavor.swift",
+        "Swash/SlackMarkdown.swift",
+        "Swash/ContentView.swift",
+        "Swash/iOS/MarkdownEditingTextView.swift",
+        "Swash/iOS/StyledTextView.swift",
+        "Swash/iOS/StyledLayoutManager.swift",
+        "Swash/iOS/SourceTextView.swift",
+        "Swash/iOS/GlassAccessoryBar.swift",
+        "Swash/iOS/EditorClipboard.swift",
+        "Swash/iOS/EditorAttachments.swift",
+        "Swash/iOS/IOSContentView.swift"
+      ],
+      "docs": [
+        "docs/WYSIWYG_AUDIT.md",
+        "docs/MARKDOWN_ENGINE.md",
+        "docs/PERFORMANCE_AUDIT.md",
+        "docs/UNIVERSAL_PLAN.md"
+      ],
+      "labels": ["editor", "markdown"]
+    },
+    {
+      "id": "rendering-and-export",
+      "name": "Rich Markdown Rendering, File Previews & Export",
+      "paths": [
+        "Swash/MarkdownPreviewView.swift",
+        "Swash/RichContentRenderer.swift",
+        "Swash/CodeHighlightTheme.swift",
+        "Swash/Rendering",
+        "Swash/GenUIBlock.swift",
+        "Swash/GenUIBlockView.swift",
+        "Swash/WidgetTrustManager.swift",
+        "Swash/DocumentExporter.swift",
+        "Swash/ExportCommands.swift",
+        "SwashQuickLookExtension",
+        "SwashThumbnailExtension"
+      ],
+      "labels": ["rendering", "export"]
+    },
+    {
+      "id": "writing-assistant",
+      "name": "AI Writing Assistant, Autocorrect & Subscriptions",
+      "paths": [
+        "Swash/WritingPartner.swift",
+        "Swash/WritingPartnerOverlay.swift",
+        "Swash/WritingPartnerSession.swift",
+        "Swash/WritingPartnerStyleSettings.swift",
+        "Swash/WritingBandleader.swift",
+        "Swash/OnDeviceWritingBandleader.swift",
+        "Swash/PixerateWritingBandleader.swift",
+        "Swash/PixerateAccess.swift",
+        "Swash/PixerateAccountSettings.swift",
+        "Swash/PixerateStore.swift"
+      ],
+      "docs": [
+        "docs/writing-partner-privacy.md"
+      ],
+      "labels": ["writing-assistant", "ai"]
+    },
+    {
+      "id": "documents-and-folders",
+      "name": "Note Files, Folder Workspaces & Cloud Sync",
+      "paths": [
+        "Swash/SwashDocument.swift",
+        "Swash/DocumentOpening.swift",
+        "Swash/DocumentCommands.swift",
+        "Swash/FolderIndex.swift",
+        "Swash/FolderWorkspace.swift",
+        "Swash/FolderWindowView.swift",
+        "Swash/FolderAccessManager.swift",
+        "Swash/ConflictResolution.swift",
+        "Swash/DefaultAppManager.swift",
+        "Swash/iOS/DocumentOpener.swift",
+        "Swash/iOS/IOSDocumentFeatures.swift",
+        "Packages/MacAppKitExtras"
+      ],
+      "labels": ["documents", "files"]
+    },
+    {
+      "id": "capture-and-automation",
+      "name": "Quick Capture, Widgets & Desktop Automation",
+      "paths": [
+        "Swash/QuickCapture.swift",
+        "Swash/ServicesProvider.swift",
+        "Swash/SwashAppIntents.swift",
+        "Swash/SwashAppleScript.swift",
+        "Swash/Swash.sdef",
+        "SwashShareExtension",
+        "SwashWidgetExtension"
+      ],
+      "docs": [
+        "docs/AUTOMATION.md"
+      ],
+      "labels": ["capture", "automation"]
+    },
+    {
+      "id": "ai-agent-integration",
+      "name": "AI Agent Document Editing via MCP",
+      "paths": [
+        "Swash/AgentBridge.swift",
+        "Swash/MarkdownAgentTools.swift"
+      ],
+      "labels": ["agents", "mcp"]
+    }
+  ]
+}
