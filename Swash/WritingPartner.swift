@@ -95,6 +95,21 @@ nonisolated enum WritingPartnerDefaults {
         defaults.string(forKey: style) ?? defaultStyle
     }
 
+    /// Whether, in Automatically, the partner marks what it isn't sure about instead of offering it
+    /// (#128). Unset, it's on.
+    static let markUncertain = "writingPartnerMarkUncertain"
+
+    static func markUncertain(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: markUncertain) == nil ? true : defaults.bool(forKey: markUncertain)
+    }
+
+    /// Whether VoiceOver hears how many marks a finished paragraph left (#128). Off unless asked for.
+    static let announceMarks = "writingPartnerAnnounceMarks"
+
+    static func announceMarks(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: announceMarks)
+    }
+
     /// The undo action name of the partner's structural suggestions.
     static let suggestionActionName = "Suggestion"
     static func statsKey(for voice: WritingPartnerVoice) -> String {
@@ -626,6 +641,11 @@ nonisolated struct PartnerEdit: Equatable, Sendable {
     var bandleaderCheckId: String? = nil
     /// Played at once rather than typed: a tidy across lines (a table, a blank line) isn't a word.
     var playsInstantly = false
+    /// Other words it could be, when the partner can't choose (#128): such a fix is never made at
+    /// once, only marked or offered.
+    var alternatives: [String] = []
+    /// How sure the partner is, when it said (the pause tier's corrections).
+    var confidence: Double? = nil
 }
 
 /// Where one of the voice's edits landed in the fixed text, and what it did.

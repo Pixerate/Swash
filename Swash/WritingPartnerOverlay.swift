@@ -430,6 +430,36 @@ final class WritingPartnerOverlay: NSView {
         CATransaction.commit()
     }
 
+    // MARK: Marks (#128)
+
+    /// What the partner isn't sure about: a faint dotted underline in its colour, with no motion,
+    /// quiet enough to type past and clear enough to find afterwards. Not the spelling squiggle.
+    private(set) var markLayers: [CALayer] = []
+
+    func showMarks(_ rects: [NSRect]) {
+        guard let root = layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for layer in markLayers { layer.removeFromSuperlayer() }
+        markLayers = []
+        for rect in rects where rect.width > 0 {
+            let line = CAShapeLayer()
+            let y = rect.maxY - 1.5
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: rect.minX, y: y))
+            path.addLine(to: CGPoint(x: rect.maxX, y: y))
+            line.path = path
+            line.strokeColor = Self.tint.withAlphaComponent(0.55).cgColor
+            line.lineWidth = 1.5
+            line.lineDashPattern = [1.5, 2.5]
+            line.lineCap = .round
+            line.fillColor = nil
+            root.addSublayer(line)
+            markLayers.append(line)
+        }
+        CATransaction.commit()
+    }
+
     // MARK: The partner's cursor
 
     /// How long the partner's cursor holds a word selected before typing over it, in ms. The
