@@ -60,6 +60,7 @@
       "name": "AI Writing Assistant, Autocorrect & Subscriptions",
       "paths": [
         "Swash/WritingPartner.swift",
+        "Swash/FormattingVoice.swift",
         "Swash/WritingPartnerOverlay.swift",
         "Swash/WritingPartnerSession.swift",
         "Swash/WritingPartnerStyleSettings.swift",
