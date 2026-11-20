@@ -4,8 +4,8 @@
 
   // A re-enactment of the writing partner (Swash/WritingPartner.swift): someone types without
   // looking back, and the partner's cursor follows a few words behind, fixing what they left.
-  // It shows every kind of fix on the page: spelling, capitals, apostrophes and full stops, and
-  // grammar (#111), formatting (#113) and typography (#104), which are on their way.
+  // It shows every kind of fix on the page: spelling, capitals, apostrophes, full stops and
+  // formatting (#113), and grammar (#111) and typography (#104), which are on their way.
   //
   // The partner's look is Flair's `ribbon-curl` text treatment, the same kind of treatment the
   // app's partner can draw with: its caret (with no name tag, as in the app), the selection, the word typed over the
@@ -26,12 +26,13 @@
 
   /**
    * Each line as typed, word by word, with what the partner leaves where that differs. The first
-   * line is typed as plain words: the partner works out that it is the heading and makes it one
-   * (shown formatted, with no `#`, as Swash draws headings).
+   * line is typed as `#Field notes`, without the space a heading needs: the Formatting voice adds
+   * it once the person moves on, and the line becomes a heading (shown formatted, with no `#`, as
+   * Swash draws headings).
    */
   const SCRIPT: [raw: string, fix?: string][][] = [
-    // Formatting: the title line becomes a heading.
-    [['field', 'Field'], ['notes']],
+    // Formatting: "#Field notes" gets the space after "#" and becomes a heading.
+    [['#Field', 'Field'], ['notes']],
     // Capitals, an apostrophe and a full stop.
     [['i', 'I'], ['started'], ['writing'], ['and'], ['didnt', 'didn’t'], ['look'], ['back', 'back.']],
     // Spelling, and grammar: "an" before a vowel.
@@ -269,7 +270,7 @@
   </div>
   <figcaption>
     You type “its liek having a editor who never interupts”. Swash follows a few words behind and leaves “It’s like
-    having an editor who never interrupts.” It also makes the first line a heading and turns two hyphens into a dash.
+    having an editor who never interrupts.” It also gives “#Field notes” the space it needs to be a heading, and turns two hyphens into a dash.
   </figcaption>
 </figure>
 

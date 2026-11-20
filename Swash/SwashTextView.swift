@@ -1818,6 +1818,10 @@ struct SwashTextView: NSViewRepresentable {
             
             // Only update selection if it wasn't triggered by SwiftUI itself
             if !isUpdatingFromSwiftUI {
+                if !isApplyingEdit, !isHighlighting {
+                    // The Formatting voice tidies a block once the caret has left it (#113)
+                    writingPartner.selectionDidChange(in: textView, coordinator: self)
+                }
                 if let onCaretMove = parent.onCaretMove, !isHighlighting {
                     onCaretMove(rawRange(forStorage: textView.selectedRange(), in: textView).location)
                 }

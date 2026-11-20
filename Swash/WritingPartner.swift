@@ -84,6 +84,8 @@ nonisolated enum WritingPartnerDefaults {
     static let missingWords = "writingPartnerMissingWords"
     /// The undo action name of the partner's edits.
     static let actionName = "Punctuation"
+    /// The undo action name of the Formatting voice's tidies (#113).
+    static let formattingActionName = "Formatting"
     /// How the partner's fixes look: the id of a Flair text treatment (#100).
     static let style = "writingPartnerStyle"
     /// The style when none is chosen: a ribbon curling away under what changed.
@@ -139,8 +141,25 @@ nonisolated enum WritingPartnerDefaults {
         case .aAndAn: return aAndAn(defaults)
         case .agreementAndTense: return agreementAndTense(defaults)
         case .missingWords: return missingWords(defaults)
-        default: return true
+        default:
+            if rule.isFormatting { return formattingRule(rule, defaults) }
+            return true
         }
+    }
+
+    /// The Formatting voice's rule switches (#113): each on unless turned off.
+    static func formattingKey(_ rule: PunctuationRule) -> String { "writingPartnerFormat-\(rule.rawValue)" }
+
+    static func formattingRule(_ rule: PunctuationRule, _ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: formattingKey(rule)) == nil ? true : defaults.bool(forKey: formattingKey(rule))
+    }
+
+    /// Whether the Formatting voice also tidies in Source view, where the Markdown is what's shown.
+    /// Off unless turned on (#113).
+    static let formattingInSource = "writingPartnerFormattingInSource"
+
+    static func formattingInSource(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: formattingInSource)
     }
 
     /// Whether Quick Note offers a tidy-up on pause or save (#108), with Pixerate. Unset, it's on.
@@ -269,10 +288,31 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
     case dashes
     /// `...` becomes an ellipsis (`…`).
     case ellipses
+    /// Formatting voice (#113): one bullet per list, consistent indentation, ordered lists renumbered.
+    case formatLists
+    /// Formatting voice: a space after `#`, no closing `#`s or full stop on a heading.
+    case formatHeadings
+    /// Formatting voice: blank lines around blocks, runs of spaces between words, trailing spaces.
+    case formatSpacing
+    /// Formatting voice: a code span or emphasis that splits a word wraps the whole word, and spaces
+    /// just inside `** … **` that kept it from being bold go.
+    case formatSpans
+    /// Formatting voice: one emphasis marker (`*` or `_`) per document.
+    case formatEmphasis
+    /// Formatting voice: `[]`, `[ ]`, `[X]` at the start of a list item become `- [ ]` and `- [x]`.
+    case formatTasks
+    /// Formatting voice: table columns realigned once the caret leaves the table.
+    case formatTables
+    /// Formatting voice: a bare URL on its own becomes an autolink.
+    case formatLinks
 
     /// Curly quotes, dashes and ellipses: style, not correction. The strip-and-restore eval and the
     /// voice tests leave them out; in the app, curly quotes has a switch and the others are learned.
     var isTypography: Bool { self == .curlyQuotes || self == .dashes || self == .ellipses }
+
+    /// The Formatting voice's rules (#113): they tidy Markdown, not words, so the Punctuate voice's
+    /// tests and the strip-and-restore eval leave them out.
+    var isFormatting: Bool { FormattingVoice.rules.contains(self) }
 
     /// The four grammar rules (#111): each has its own switch in Settings › Writing and learns from ⌘Z.
     var isGrammar: Bool {
@@ -300,6 +340,29 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
         case .curlyQuotes: return "Curly quotes"
         case .dashes: return "Dashes"
         case .ellipses: return "Ellipses"
+        case .formatLists: return "Lists"
+        case .formatHeadings: return "Headings"
+        case .formatSpacing: return "Spacing"
+        case .formatSpans: return "Emphasis and code markers"
+        case .formatEmphasis: return "One emphasis style"
+        case .formatTasks: return "Task boxes"
+        case .formatTables: return "Table columns"
+        case .formatLinks: return "Bare links"
+        }
+    }
+
+    /// An example of the rule's fix, for Settings › Writing.
+    var example: String? {
+        switch self {
+        case .formatLists: return "1. 3. 2. → 1. 2. 3."
+        case .formatHeadings: return "#Heading → # Heading"
+        case .formatSpacing: return "hello  world → hello world"
+        case .formatSpans: return "`hell`o → `hello`, ** hi ** → **hi**"
+        case .formatEmphasis: return "_this_ and *that* → *this* and *that*"
+        case .formatTasks: return "- [] → - [ ]"
+        case .formatTables: return "Columns lined up"
+        case .formatLinks: return "https://… → <https://…>"
+        default: return nil
         }
     }
 }
@@ -357,7 +420,8 @@ nonisolated struct WritingPartnerStats: Codable, Equatable, Sendable {
         var totalKept = 0
         var totalUndone = 0
 
-        for rule in PunctuationRule.allCases {
+        // The bandleader's voice state is the Punctuate voice's: formatting isn't part of its schema
+        for rule in PunctuationRule.allCases where !rule.isFormatting {
             let key = Self.schemaRuleKey(for: rule)
             let entry = rules[rule.rawValue]
             let kept = entry?.kept ?? 0
@@ -392,6 +456,14 @@ nonisolated struct WritingPartnerStats: Codable, Equatable, Sendable {
         case .curlyQuotes: return "curly-quotes"
         case .dashes: return "dashes"
         case .ellipses: return "ellipses"
+        case .formatLists: return "format-lists"
+        case .formatHeadings: return "format-headings"
+        case .formatSpacing: return "format-spacing"
+        case .formatSpans: return "format-spans"
+        case .formatEmphasis: return "format-emphasis"
+        case .formatTasks: return "format-tasks"
+        case .formatTables: return "format-tables"
+        case .formatLinks: return "format-links"
         }
     }
     func save(_ defaults: UserDefaults = .standard, voice: WritingPartnerVoice = .punctuate) {
@@ -552,6 +624,8 @@ nonisolated struct PartnerEdit: Equatable, Sendable {
     var bandleaderSuggestionId: String? = nil
     var bandleaderSuggestionKind: JazzTextSuggestionKind? = nil
     var bandleaderCheckId: String? = nil
+    /// Played at once rather than typed: a tidy across lines (a table, a blank line) isn't a word.
+    var playsInstantly = false
 }
 
 /// Where one of the voice's edits landed in the fixed text, and what it did.
