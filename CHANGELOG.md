@@ -1,5 +1,17 @@
 # swash
 
+## 1.35.0
+
+### Minor Changes
+
+- Agent tools: an MCP agent's caret, selection and name tag now show inline in the macOS editor, and the text it changes is briefly tinted. The agent keeps its own insertion cursor (starting at yours), so its edits and `set_selection` no longer move your caret or selection, and your typing keeps the agent's cursor in place.
+
+## 1.34.1
+
+### Patch Changes
+
+- 63dd67d: Share the on-device LanguageModelSession across pauses within the same document to use its session memory and cached context. The session is never shared between documents, is dropped when the document changes or the partner is paused, starts again after a few exchanges or when its context window fills (retrying that pause once), and is never asked to answer two pauses at once.
+
 ## 1.34.0
 
 ### Minor Changes
