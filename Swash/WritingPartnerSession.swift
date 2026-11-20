@@ -165,6 +165,10 @@ final class WritingPartnerSession {
     /// by the time it's looked at, the person may have typed the next line.
     private var pendingBoundaries: [(location: Int, enterEndedLine: Bool?)] = []
     private var isScheduled = false
+    /// What the person changed (raw offsets) that the Formatting voice (#113) hasn't tidied yet:
+    /// it tidies a block once the caret has left it, and never touches text nobody edited.
+    private(set) var formattingDirty: [NSRange] = []
+    private var isTidyScheduled = false
     /// The partner's undo steps since the person last typed, oldest first: typing keeps them all,
     /// undo takes back the newest.
     private var applied: [Step] = []
@@ -266,6 +270,7 @@ final class WritingPartnerSession {
         fixInFlight == nil
             && pendingBoundaries.isEmpty
             && !isScheduled
+            && !isTidyScheduled
             && pauseTask == nil
             && leadTask == nil
             && pendingFeedbackCount == 0
@@ -434,6 +439,7 @@ final class WritingPartnerSession {
         }
         if let undoManager = textView.undoManager, undoManager.isUndoing || undoManager.isRedoing {
             pendingBoundaries = []
+            formattingDirty = []
             cancelFix()
             clearSuggestions(in: textView)
             return
@@ -490,6 +496,9 @@ final class WritingPartnerSession {
                 if raw.location >= NSMaxRange(suggestion.edit.range) {
                     // Typing on after a suggestion keeps it on offer. Finishing the line, or typing
                     // well past it, without accepting it dismisses it and counts against its rules
+                    // A tidy offered for a block the person has left waits for them: typing elsewhere is
+                    // what they're meant to be doing (#113)
+                    if suggestion.edit.rules.allSatisfy(\.isFormatting) { return suggestion }
                     if replacement.contains("\n") || raw.location - suggestion.triggerEnd > Self.suggestionReach {
                         penalize(suggestion.edit, in: textView)
                         return nil
@@ -562,6 +571,13 @@ final class WritingPartnerSession {
             savedAutocorrect = nil
         }
 
+        if isOn {
+            formattingDirty = Self.move(ranges: formattingDirty, through: raw, replacement: replacement)
+            formattingDirty.append(NSRange(location: raw.location, length: (replacement as NSString).length))
+        } else {
+            formattingDirty = []
+        }
+
         let charCode: unichar = (replacement as NSString).length > 0 ? (replacement as NSString).character(at: 0) : 0
         var enterEndedLine: Bool?
         if charCode == 0x0A {
@@ -620,7 +636,10 @@ final class WritingPartnerSession {
                 lastKnownParagraphText = current.paragraph
             }
         }
-        guard !pendingBoundaries.isEmpty, !isScheduled, fixInFlight == nil else { return }
+        guard !pendingBoundaries.isEmpty, !isScheduled, fixInFlight == nil else {
+            scheduleTidy(in: textView, coordinator: coordinator)
+            return
+        }
         isScheduled = true
         DispatchQueue.main.async { [weak self, weak textView, weak coordinator] in
             guard let self else { return }
@@ -713,12 +732,81 @@ final class WritingPartnerSession {
             // straight to the selection: a sweep and then a selection over the same word reads as
             // the same thing drawn twice (#100).
             overlay.sweep(checked.flatMap { WritingPartnerOverlay.rects(for: coordinator.storageRange(forRaw: $0, in: textView), in: textView) })
+            scheduleTidy(in: textView, coordinator: coordinator)
             return
         }
         if mode == .suggest {
             offer(edits, triggerEnd: selection.location, in: textView, coordinator: coordinator)
         } else {
             play(Fix(remaining: edits, boundaries: boundaries, isRetry: isRetry), in: textView, coordinator: coordinator)
+        }
+    }
+
+    // MARK: Formatting (#113)
+
+    /// The caret moved: a block it left may be ready to tidy.
+    func selectionDidChange(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        guard !formattingDirty.isEmpty else { return }
+        scheduleTidy(in: textView, coordinator: coordinator)
+    }
+
+    /// Tidies on the next turn of the run loop, after punctuation has had its turn.
+    private func scheduleTidy(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        guard !formattingDirty.isEmpty, !isTidyScheduled else { return }
+        isTidyScheduled = true
+        DispatchQueue.main.async { [weak self, weak textView, weak coordinator] in
+            guard let self else { return }
+            self.isTidyScheduled = false
+            guard let textView, let coordinator else { return }
+            self.tidy(in: textView, coordinator: coordinator)
+        }
+    }
+
+    /// Whether the Formatting voice plays in this editor: not for Slack (the Chat voice's), and in
+    /// Source view only when turned on, since there the Markdown is what the person is looking at.
+    private func isFormattingOn(_ coordinator: SwashTextView.Coordinator) -> Bool {
+        coordinator.parent.flavor != .slack
+            && (coordinator.parent.isStyled || WritingPartnerDefaults.formattingInSource(defaults))
+    }
+
+    /// Tidies the blocks the person changed and has since left. The block the caret is in waits.
+    private func tidy(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        let mode = WritingPartnerDefaults.mode(defaults)
+        guard !formattingDirty.isEmpty, fixInFlight == nil, pendingBoundaries.isEmpty, !isScheduled,
+              mode != .off, !isPaused, !hasActiveIntroduction, !textView.hasMarkedText(),
+              textView.window != nil, textView.isEditable else { return }
+        guard isFormattingOn(coordinator) else { formattingDirty = []; return }
+        let raw = coordinator.rawText(of: textView)
+        let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        guard selection.length == 0 else { return }
+        let document = coordinator.formatting(for: raw).document
+        // What touches the caret's block waits; the rest is tidied now
+        let caretSpan = FormattingVoice.caretSpan(text: raw, document: document, caret: selection.location)
+        let waiting = formattingDirty.filter { dirty in
+            guard let caretSpan else { return false }
+            return dirty.location <= NSMaxRange(caretSpan) && NSMaxRange(dirty) >= caretSpan.location
+        }
+        let ready = formattingDirty.filter { dirty in !waiting.contains { NSEqualRanges($0, dirty) } }
+        formattingDirty = waiting
+        guard !ready.isEmpty else { return }
+        let stats = WritingPartnerStats.load(defaults, voice: .punctuate)
+        let isActive: (PunctuationRule) -> Bool = { rule in
+            WritingPartnerDefaults.isRuleEnabled(rule, self.defaults) && stats.isActive(rule)
+        }
+        let fixes = FormattingVoice.edits(text: raw, document: document, flavor: coordinator.parent.flavor,
+                                          regions: ready, caret: selection.location, isActive: isActive)
+        guard !fixes.isEmpty else { return }
+        let ns = raw as NSString
+        let edits = fixes.map { fix -> PartnerEdit in
+            let original = ns.substring(with: fix.range)
+            return PartnerEdit(range: fix.range, original: original, replacement: fix.replacement, rules: fix.rules,
+                               spellingWords: [], actionName: WritingPartnerDefaults.formattingActionName,
+                               playsInstantly: original.contains("\n") || fix.replacement.contains("\n") || fix.replacement.isEmpty)
+        }
+        if mode == .suggest {
+            offer(edits, triggerEnd: selection.location, in: textView, coordinator: coordinator)
+        } else {
+            play(Fix(remaining: edits, boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
         }
     }
 
@@ -876,7 +964,7 @@ final class WritingPartnerSession {
                 return
             }
             pendingStep = edit
-            let animate = !WritingPartnerOverlay.reduceMotion && textView.window != nil
+            let animate = !WritingPartnerOverlay.reduceMotion && textView.window != nil && !edit.playsInstantly
             let actionName = edit.actionName ?? WritingPartnerDefaults.actionName
             do {
                 try await director.perform(AgentTextEdit(from: edit.range.location, to: NSMaxRange(edit.range), text: edit.replacement),
@@ -934,6 +1022,7 @@ final class WritingPartnerSession {
         }
         let move = { (location: Int) -> Int in location >= NSMaxRange(range) ? location + delta : location }
         pendingBoundaries = pendingBoundaries.map { (move($0.location), $0.enterEndedLine) }
+        formattingDirty = Self.move(ranges: formattingDirty, through: range, replacement: text)
         if var fix = fixInFlight {
             fix.boundaries = fix.boundaries.map { (move($0.location), $0.enterEndedLine) }
             fix.remaining = fix.remaining.map { var edit = $0; edit.range.location = move(edit.range.location); return edit }
@@ -1025,7 +1114,13 @@ final class WritingPartnerSession {
     private func finish() {
         fixInFlight = nil
         player = nil
-        if let textView, let coordinator, !pendingBoundaries.isEmpty { didChange(in: textView, coordinator: coordinator) }
+        if let textView, let coordinator {
+            if !pendingBoundaries.isEmpty {
+                didChange(in: textView, coordinator: coordinator)
+            } else {
+                scheduleTidy(in: textView, coordinator: coordinator)
+            }
+        }
     }
 
     /// Stops the fix being played (undo, redo, the partner turned off); nothing partial is left.
@@ -1046,6 +1141,22 @@ final class WritingPartnerSession {
         return boundaries.compactMap { pending in
             if pending.location >= NSMaxRange(range) { return (pending.location + delta, pending.enterEndedLine) }
             return pending.location < range.location ? pending : nil
+        }
+    }
+
+    /// `ranges` after `range` was replaced by `replacement`: later ones move, overlapping ones grow
+    /// to cover what replaced them.
+    static func move(ranges: [NSRange], through range: NSRange, replacement: String) -> [NSRange] {
+        let length = (replacement as NSString).length
+        let delta = length - range.length
+        return ranges.map { r in
+            if r.location >= NSMaxRange(range), range.length > 0 || r.location > range.location {
+                return NSRange(location: r.location + delta, length: r.length)
+            }
+            if NSMaxRange(r) < range.location { return r }
+            let start = min(r.location, range.location)
+            let end = max(NSMaxRange(r) >= NSMaxRange(range) ? NSMaxRange(r) + delta : 0, range.location + length)
+            return NSRange(location: start, length: max(0, end - start))
         }
     }
 
@@ -1318,6 +1429,7 @@ final class WritingPartnerSession {
         ) { [weak self] notification in
             let redoName = (notification.object as? UndoManager)?.redoActionName
             let isPartnerStep = redoName == WritingPartnerDefaults.actionName || redoName == WritingPartnerDefaults.suggestionActionName
+                || redoName == WritingPartnerDefaults.formattingActionName
             self?.didUndo(isPartnerStep: isPartnerStep)
         }
     }
