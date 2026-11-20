@@ -1,10 +1,10 @@
 # Swash
 
-> Swash is a free, open-source, agent-native Markdown editor for the Mac (iPhone and iPad are coming). Its writing partner follows behind you as you type and fixes spelling, capitals, apostrophes and end punctuation, so you can write without going back.
+> Swash is a free, open-source, agent-native Markdown editor for the Mac (iPhone and iPad are coming). Its writing partner follows behind you as you type and fixes spelling, capitals, apostrophes, end punctuation and Markdown formatting, so you can write without going back.
 
 ## What it does
 
-- Writing partner: on from the start with the rules that run on the device. Fixes typos, capitalises sentences and the pronoun "I", adds apostrophes to contractions, and ends paragraphs with a full stop or question mark. Each fix is its own undo step, each rule learns from what you undo, and code, math, HTML, links, front matter and tables are never touched. Pause it for the current document with ⌥⌘P, or switch to Suggest or Off in Settings › Writing. Grammar, formatting and smart typography are planned.
+- Writing partner: on from the start with the rules that run on the device. Fixes typos, capitalises sentences and the pronoun "I", adds apostrophes to contractions, and ends paragraphs with a full stop or question mark. Its Formatting voice tidies Markdown in blocks you've edited once you move on: list numbering and bullets, heading syntax, blank lines and stray spaces, emphasis markers that split a word, task boxes, table columns and bare links. Each fix is its own undo step, each rule learns from what you undo, and code, math, HTML, links, front matter and tables are never touched. Pause it for the current document with ⌥⌘P, or switch to Suggest or Off in Settings › Writing. Grammar and smart typography are planned.
 - Editor: Formatted, Source and Split views of plain Markdown files; editable tables, clickable to-dos, an outline, Focus Mode and Typewriter Scrolling; KaTeX math and Mermaid diagrams rendered offline; CommonMark, GitHub and Slack flavours.
 - Agent tools: an AI agent can read and edit the open document over the Model Context Protocol (get_text, find_text, insert_text, replace_text, replace_range, replace_selection, set_selection, format_text, set_block_type). Off by default; Mac only.
 - Mac integration: Quick Note, Quick Look, Shortcuts, Services, import from Word/RTF/HTML/ODT, export to PDF/HTML/rich text, Apple Intelligence Writing Tools.
