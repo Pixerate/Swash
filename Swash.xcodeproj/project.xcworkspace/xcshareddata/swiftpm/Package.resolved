@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Pixerate/PixerateAccount",
       "state" : {
-        "revision" : "e9f4c2bf30e3be2bcec24687c9ceb0b6d52d02cd",
-        "version" : "0.2.0"
+        "revision" : "4b2cc613ae708c15987092289bae126dda063cb5",
+        "version" : "0.3.0"
       }
     },
     {

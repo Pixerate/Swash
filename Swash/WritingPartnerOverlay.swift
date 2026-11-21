@@ -1041,9 +1041,9 @@ final class WritingPartnerStylePreviewView: NSView {
 final class PartnerIntroductionView: NSView {
     static let noteText = "Swash can tidy up behind you as you type"
     nonisolated static let privacyText = "Punctuation and spelling rules run on your Mac and never leave this device."
-    /// Signed in, the pause tier sends the paragraph to Pixerate (docs/writing-partner-privacy.md),
+    /// With Swash Pro, the pause tier sends the paragraph to Pixerate (docs/writing-partner-privacy.md),
     /// so the introduction says so before the person chooses.
-    nonisolated static let signedInPrivacyText = "Fixes as you type run on your Mac. Because you're signed in, the paragraph you pause on is also sent to Pixerate for suggestions."
+    nonisolated static let signedInPrivacyText = "Fixes as you type run on your Mac. With Swash Pro, the paragraph you pause on is also sent to Pixerate for suggestions."
 
     nonisolated static func privacyText(signedIn: Bool) -> String {
         signedIn ? signedInPrivacyText : privacyText

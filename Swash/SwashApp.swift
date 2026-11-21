@@ -22,7 +22,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.appearance = NSAppearance(named: name == "dark" ? .darkAqua : .aqua)
         }
         GlobalHotKey.shared.register(QuickCaptureShortcut.current)
-        PixerateStore.startIfSignedIn()
+        PixerateAccess.startAtLaunch()
         PixerateAccess.shared.isFeatureEnabled = {
             WritingPartnerDefaults.mode() != .off || WritingPartnerDefaults.quickNoteTidy()
         }

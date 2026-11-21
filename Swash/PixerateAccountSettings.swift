@@ -2,29 +2,163 @@
 //  PixerateAccountSettings.swift
 //  Swash
 //
-//  The Pixerate account sections of Settings, shared by the Mac's Account tab and the iOS
-//  Settings sheet (#60).
+//  The Swash Pro, Support ID, and optional Pixerate account sections of Settings, shared by the
+//  Mac's Account tab and the iOS Settings sheet (#60, #149).
 //
 
 import SwiftUI
 import PixerateAccount
+import PixerateStore
 import StoreKit
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct PixerateAccountSections: View {
     var access: PixerateAccess = .shared
-    var store: PixerateStore = .shared
-    @Environment(\.openURL) private var openURL
+    var store: PixerateStore?
+    /// Preview override for displaying the signed-in state without a live token exchange.
+    var previewSignedInUser: AuthUser?
+    var previewSignedInTeams: [Team] = []
 
+    @Environment(\.openURL) private var openURL
+    @State private var showMovePurchaseAlert = false
+    @State private var linkError: String?
+
+    private var activeStore: PixerateStore { store ?? access.store }
     private var account: PixerateAccountClient { access.account }
+    private var isSignedIn: Bool { account.isAuthenticated || previewSignedInUser != nil }
+    private var displayedUser: AuthUser? { account.user ?? previewSignedInUser }
+    private var displayedTeams: [Team] { account.teams.isEmpty ? previewSignedInTeams : account.teams }
 
     var body: some View {
+        swashProSection
+        if activeStore.supportId != nil {
+            Section("Support") {
+                PixerateSupportIDRow(supportId: activeStore.supportId)
+            }
+        }
+        pixerateAccountSection
+        privacySection
+    }
+
+    // MARK: - Swash Pro Section
+
+    @ViewBuilder private var swashProSection: some View {
         Section {
-            if account.isAuthenticated {
+            if let source = activeStore.proSource {
+                LabeledContent("Status") {
+                    Text(Self.statusText(for: source))
+                        .foregroundStyle(Color.accentColor)
+                }
+                if source == .complimentary, let expiresAt = complimentaryExpiresAt {
+                    Text("Pixerate has given you Pro until \(expiresAt, style: .date).")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if case .appStore = source {
+                    Button("Manage Subscription…") {
+                        manageSubscriptions()
+                    }
+                }
+                if activeStore.canPurchase {
+                    Button("Restore Purchases") {
+                        Task { await activeStore.restore() }
+                    }
+                    .disabled(activeStore.isPurchasing)
+                }
+                if let error = activeStore.lastError?.errorDescription {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            } else if activeStore.distribution == .appStore {
+                PixerateProPaywall(
+                    store: activeStore,
+                    title: "Swash Pro",
+                    features: [
+                        "Paragraph structure and grammar suggestions when you pause",
+                        "Quick Note tidy-up on pause or save",
+                        "Personal vocabulary and house style across devices"
+                    ],
+                    termsURL: PixerateAccess.termsURL,
+                    privacyURL: PixerateAccess.privacyURL,
+                    directMessage: "Sign in to use Pixerate Pro or a complimentary subscription."
+                )
+            } else {
+                Text("Sign in to use Pixerate Pro or a complimentary subscription.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if let error = activeStore.lastError?.errorDescription {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+            if let until = access.pausedUntil, until > .now {
+                Text("Pixerate asked Swash to wait. The writing partner resumes \(until, style: .relative).")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Swash Pro")
+        }
+    }
+
+    static func statusText(for source: PixerateProSource) -> String {
+        switch source {
+        case .appStore(familyShared: false):
+            return "Swash Pro"
+        case .appStore(familyShared: true):
+            return "Swash Pro, shared by your family"
+        case .pixeratePro:
+            return "Included with Pixerate Pro"
+        case .complimentary:
+            return "Complimentary"
+        case .plan, .offline:
+            return "Swash Pro"
+        }
+    }
+
+    private var complimentaryExpiresAt: Date? {
+        if let grantExpiry = activeStore.grants.first(where: \.isComplimentary)?.expiresAt {
+            return grantExpiry
+        }
+        return account.activeTeam?.complimentary?.expiresAtDate
+    }
+
+    private func manageSubscriptions() {
+        #if os(iOS)
+        Task {
+            if let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive })
+                ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+                do {
+                    try await AppStore.showManageSubscriptions(in: scene)
+                    return
+                } catch {
+                    openURL(PixerateAccess.manageSubscriptionsURL)
+                }
+            } else {
+                openURL(PixerateAccess.manageSubscriptionsURL)
+            }
+        }
+        #else
+        openURL(PixerateAccess.manageSubscriptionsURL)
+        #endif
+    }
+
+    // MARK: - Pixerate Account Section
+
+    @ViewBuilder private var pixerateAccountSection: some View {
+        Section {
+            if isSignedIn {
                 signedIn
             } else {
                 signedOut
             }
-            if let error = account.error {
+            if let error = linkError ?? account.error {
                 Text(error)
                     .font(.footnote)
                     .foregroundStyle(.red)
@@ -33,23 +167,24 @@ struct PixerateAccountSections: View {
         } header: {
             Text("Pixerate Account")
         } footer: {
-            Text("Swash works fully without an account. With Pixerate Pro, the writing partner uses Pixerate's model when you pause.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            if isSignedIn {
+                Text("Optional: sign in or create a free Pixerate account to manage your subscription on the web. Deleting your Pixerate account doesn't cancel an App Store subscription.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Optional: sign in or create a free Pixerate account to manage your subscription on the web.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
-
-        Section {
-            Label("None of your writing is sent unless you're signed in to Pixerate Pro and the writing partner is on.", systemImage: "lock")
-            Label("Swash sends only the paragraph you're writing and a little context around it, never the whole document, and never code blocks, math or tables.", systemImage: "text.alignleft")
-            Label("Pixerate doesn't keep your text. It learns only which suggestions you kept or undid.", systemImage: "hand.raised")
-            Label("The writing partner is part of Pixerate Pro. Everything else in Swash is free.", systemImage: "sparkles")
-        } header: {
-            Text("Privacy")
-        }
-        .font(.callout)
-        .task {
-            await access.refresh()
-            if account.isAuthenticated { await store.start() }
+        .alert(
+            "This App Store purchase is linked to another Pixerate account. Move it to this account?",
+            isPresented: $showMovePurchaseAlert
+        ) {
+            Button("Move to This Account") {
+                Task { await confirmMoveLink() }
+            }
+            Button("Cancel", role: .cancel) {}
         }
     }
 
@@ -67,7 +202,7 @@ struct PixerateAccountSections: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Sign In with Pixerate…") {
-                    Task { await access.signIn() }
+                    Task { await signInAndLink() }
                 }
             }
         }
@@ -75,86 +210,210 @@ struct PixerateAccountSections: View {
 
     @ViewBuilder private var signedIn: some View {
         LabeledContent("Signed in as") {
-            Text(account.user?.displayName ?? account.user?.email ?? "Pixerate account")
+            Text(displayedUser?.displayName ?? displayedUser?.email ?? "Pixerate account")
                 .textSelection(.enabled)
         }
-        if account.teams.count > 1 {
+        if displayedTeams.count > 1 {
             Picker("Team", selection: Binding(
-                get: { account.activeTeam?.id ?? "" },
-                set: { account.selectTeam($0) }
+                get: { account.activeTeam?.id ?? displayedTeams.first?.id ?? "" },
+                set: { access.selectTeam($0) }
             )) {
-                ForEach(account.teams) { team in
+                ForEach(displayedTeams) { team in
                     Text(team.name).tag(team.id)
                 }
             }
-        } else if let team = account.activeTeam {
+        } else if let team = account.activeTeam ?? displayedTeams.first {
             LabeledContent("Team", value: team.name)
         }
-        LabeledContent("Plan") {
-            Text(access.planName)
-                .foregroundStyle(access.isSubscribed ? Color.accentColor : Color.secondary)
-        }
-        if let grant = account.activeTeam?.complimentary, PixerateAccess.planSource(of: account.activeTeam) == .complimentary {
-            if let end = grant.expiresAtDate {
-                Text("Pixerate has given you Pro until \(end, style: .date).")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-        } else if access.isSubscribed {
-            Button("Manage Subscription…") { openURL(PixerateStore.manageSubscriptionsURL) }
-        } else {
-            Text("You're on the Basic plan: everything in Swash except the writing partner. Pixerate Pro adds it.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            upgrade
-        }
-        if let message = store.message {
-            Text(message)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-        if let until = access.pausedUntil, until > .now {
-            Text("Pixerate asked Swash to wait. The writing partner resumes \(until, style: .relative).")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
         HStack {
-            Button("Open pixerate.com") { openURL(account.baseURL) }
+            Button("Manage account") {
+                openURL(PixerateAccess.manageAccountURL)
+            }
+            Button("Delete account…") {
+                openURL(PixerateAccess.deleteAccountURL)
+            }
             Spacer()
-            Button("Sign Out", role: .destructive) { access.signOut() }
+            Button("Sign Out", role: .destructive) {
+                linkError = nil
+                access.signOut()
+            }
         }
     }
 
-    @ViewBuilder private var upgrade: some View {
-        if store.products.isEmpty {
-            if store.isBusy {
-                ProgressView().controlSize(.small)
-            } else {
-                Text("Pixerate Pro isn't available from the App Store right now.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-        } else {
-            ForEach(store.products) { product in
-                Button("Upgrade to Pro: \(product.displayPrice) \(Self.period(of: product))") {
-                    Task { await store.buy(product) }
-                }
-                .disabled(store.isBusy)
-            }
+    private func signInAndLink() async {
+        linkError = nil
+        await access.signIn()
+        guard account.isAuthenticated, activeStore.distribution == .appStore else { return }
+        do {
+            try await activeStore.link()
+        } catch PixerateStoreError.linkedElsewhere {
+            showMovePurchaseAlert = true
+        } catch PixerateStoreError.unauthenticated {
+            // No App Store customer session to link yet; ignore quietly.
+        } catch {
+            linkError = error.localizedDescription
         }
-        Button("Restore Purchases") { Task { await store.restore() } }
-            .disabled(store.isBusy)
     }
 
-    private static func period(of product: Product) -> String {
-        if product.id.hasSuffix(".yearly") { return "a year" }
-        if product.id.hasSuffix(".monthly") { return "a month" }
-        return ""
+    private func confirmMoveLink() async {
+        linkError = nil
+        do {
+            try await activeStore.link(confirmMove: true)
+        } catch {
+            linkError = error.localizedDescription
+        }
+    }
+
+    // MARK: - Privacy Section
+
+    @ViewBuilder private var privacySection: some View {
+        Section {
+            Label("None of your writing is sent unless you have Swash Pro and the writing partner is on.", systemImage: "lock")
+            Label("Swash sends only the paragraph you're writing and a little context around it, never the whole document, and never code blocks, math or tables.", systemImage: "text.alignleft")
+            Label("Pixerate doesn't keep your text. It learns only which suggestions you kept or undid.", systemImage: "hand.raised")
+            Label("The writing partner is part of Swash Pro. Everything else in Swash is free.", systemImage: "sparkles")
+        } header: {
+            Text("Privacy")
+        }
+        .font(.callout)
+        .task {
+            guard !access.isPreview else { return }
+            await access.start()
+        }
     }
 }
 
 // MARK: - Previews
 
-#Preview("Pixerate Account Sections", traits: .sectionContainer) {
-    PixerateAccountSections()
+#Preview("Free (App Store)", traits: .sectionContainer) {
+    PixerateAccountSections(
+        access: .preview(
+            distribution: .appStore,
+            entitlements: PixerateEntitlements(supportId: "SWSH-4X9Q")
+        )
+    )
+}
+
+#Preview("Swash Pro (App Store)", traits: .sectionContainer) {
+    PixerateAccountSections(
+        access: .preview(
+            distribution: .appStore,
+            entitlements: PixerateEntitlements(
+                entitlements: [PixerateEntitlement.swashPro],
+                grants: [
+                    PixerateEntitlementGrant(
+                        entitlement: PixerateEntitlement.swashPro,
+                        source: "app_store",
+                        via: "customer",
+                        productId: "com.pixerate.swash.pro.monthly",
+                        ownership: "PURCHASED"
+                    )
+                ],
+                supportId: "SWSH-4X9Q"
+            )
+        )
+    )
+}
+
+#Preview("Family-Shared", traits: .sectionContainer) {
+    PixerateAccountSections(
+        access: .preview(
+            distribution: .appStore,
+            entitlements: PixerateEntitlements(
+                entitlements: [PixerateEntitlement.swashPro],
+                grants: [
+                    PixerateEntitlementGrant(
+                        entitlement: PixerateEntitlement.swashPro,
+                        source: "app_store",
+                        via: "customer",
+                        productId: "com.pixerate.swash.pro.yearly",
+                        ownership: "FAMILY_SHARED"
+                    )
+                ],
+                supportId: "SWSH-8M2P"
+            )
+        )
+    )
+}
+
+#Preview("Pixerate Pro", traits: .sectionContainer) {
+    PixerateAccountSections(
+        access: .preview(
+            distribution: .appStore,
+            entitlements: PixerateEntitlements(
+                entitlements: [PixerateEntitlement.pixeratePro, PixerateEntitlement.swashPro],
+                grants: [
+                    PixerateEntitlementGrant(
+                        entitlement: PixerateEntitlement.pixeratePro,
+                        source: "plan",
+                        via: "team",
+                        teamId: "team_demo"
+                    )
+                ],
+                supportId: "SWSH-4X9Q"
+            ),
+            signedIn: true
+        ),
+        previewSignedInUser: AuthUser(id: "user_demo", email: "writer@example.com", displayName: "Demo Writer"),
+        previewSignedInTeams: [Team(id: "team_demo", name: "Personal", ownerId: "user_demo", planId: "pro")]
+    )
+}
+
+#Preview("Complimentary", traits: .sectionContainer) {
+    PixerateAccountSections(
+        access: .preview(
+            distribution: .direct,
+            entitlements: PixerateEntitlements(
+                entitlements: [PixerateEntitlement.swashPro],
+                grants: [
+                    PixerateEntitlementGrant(
+                        entitlement: PixerateEntitlement.swashPro,
+                        source: "complimentary",
+                        via: "team",
+                        teamId: "team_demo",
+                        expiresAt: Date(timeIntervalSince1970: 1_900_000_000)
+                    )
+                ]
+            ),
+            signedIn: true
+        ),
+        previewSignedInUser: AuthUser(id: "user_demo", email: "writer@example.com", displayName: "Demo Writer"),
+        previewSignedInTeams: [Team(id: "team_demo", name: "Personal", ownerId: "user_demo", planId: "free")]
+    )
+}
+
+#Preview("Direct Download", traits: .sectionContainer) {
+    PixerateAccountSections(
+        access: .preview(
+            distribution: .direct,
+            entitlements: PixerateEntitlements()
+        )
+    )
+}
+
+#Preview("Signed In", traits: .sectionContainer) {
+    PixerateAccountSections(
+        access: .preview(
+            distribution: .appStore,
+            entitlements: PixerateEntitlements(
+                entitlements: [PixerateEntitlement.swashPro],
+                grants: [
+                    PixerateEntitlementGrant(
+                        entitlement: PixerateEntitlement.swashPro,
+                        source: "app_store",
+                        via: "customer",
+                        productId: "com.pixerate.swash.pro.monthly",
+                        ownership: "PURCHASED"
+                    )
+                ],
+                supportId: "SWSH-4X9Q"
+            ),
+            signedIn: true
+        ),
+        previewSignedInUser: AuthUser(id: "user_demo", email: "writer@example.com", displayName: "Demo Writer"),
+        previewSignedInTeams: [
+            Team(id: "team_demo", name: "Personal", ownerId: "user_demo", planId: "pro"),
+            Team(id: "team_studio", name: "Studio", ownerId: "user_other", planId: "free")
+        ]
+    )
 }

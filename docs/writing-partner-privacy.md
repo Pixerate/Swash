@@ -1,44 +1,44 @@
 # What the writing partner sends
 
-Swash's writing partner works in tiers. This page lists, for each one, what leaves your Mac, when, and what is kept. The request format is public: [Pixerate/schemas](https://github.com/Pixerate/schemas), the `jazz` text-lead types.
+Swash's writing partner works in tiers. This page lists, for each one, what leaves your Mac, iPhone or iPad, when, and what is kept. The request format is public: [Pixerate/schemas](https://github.com/Pixerate/schemas), the `jazz` text-lead types.
 
-On a new install the partner is on (Automatically), but it does nothing until you answer the introduction it shows the first time you edit a document: Automatically, Suggest, or Not now (which turns it off). If you're signed in, the introduction says that the paragraph you pause on is sent to Pixerate. Upgrading keeps the setting you had, and a partner that was off stays off.
+## As you type: nothing leaves your device
 
-## As you type: nothing leaves your Mac
-
-The fixes made while you type all run on your Mac, with or without an account. These are capital I, apostrophes, sentence capitals, full stops and question marks, `OK`, commas before "but", and spelling. The rules come from Pixerate's open editor package (`TextMechanics`). Spelling uses macOS's own spell checker, in place of its autocorrect.
+The fixes made while you type all run on your device, with or without Swash Pro or an account. These are capital I, apostrophes, sentence capitals, full stops and question marks, `OK`, commas before "but", and spelling. The rules come from Pixerate's open editor package (`TextMechanics`). Spelling uses the system spell checker, in place of its autocorrect.
 
 ## When you pause, on your Mac (macOS 26 and later)
 
 With Apple Intelligence available, the on-device tier reads the paragraph you just finished with Apple's on-device model. It fixes spelling and wrong words from context, tells a poem or list apart from prose, and suggests simple structure. **Nothing is sent anywhere**: the model runs on your Mac, and it reads only that paragraph. It keeps no memory between paragraphs.
 
-## When you pause, through Pixerate (signed in)
+## When you pause, through Pixerate (Swash Pro)
 
-Swash sends a request to Pixerate only when **all** of these are true:
+Swash sends a writing-partner request to Pixerate only when **all** of these are true:
 
-- you're signed in to a Pixerate account (Settings › Account);
-- the writing partner is on (Settings › Writing; on by default for new installs, once you've answered its introduction) and not paused for the document;
-- you've paused after finishing a sentence or leaving a paragraph;
-- your team has Fuel or a plan that covers it.
+- you have **Swash Pro** (bought in the App Store, shared through Family Sharing, or unlocked by signing in to an optional Pixerate account with Pixerate Pro or a complimentary grant);
+- the writing partner is on (Settings › Writing);
+- you've paused after finishing a sentence or leaving a paragraph.
 
-**What's sent:**
+**No Pixerate account is required.** In the App Store version of Swash, StoreKit's signed `AppTransaction` and subscription transaction JWS (`signedTransactionInfo`) are verified with Pixerate to mint an App Store customer session (`X-Pixerate-App-Store-Customer`) and assign the short Support ID shown in Settings › Account.
+
+**What's sent on pause:**
 
 - the paragraph you're writing, as Markdown;
 - a little context around it, such as the previous heading and paragraph;
 - the document's Markdown flavour (GitHub, CommonMark or Slack);
 - which of the partner's rules are on, with how often you kept or undid them;
-- your team's id.
+- your App Store customer session header (`X-Pixerate-App-Store-Customer`, when installed from the App Store), and—only if you've optionally signed in to a Pixerate account—your account's bearer key and active `teamId`.
 
 **What's never sent:**
 
 - the rest of the document;
-- code blocks, inline code, math and tables. They're replaced by placeholders before anything leaves your Mac;
+- code blocks, inline code, math and tables. They're replaced by placeholders before anything leaves your device;
 - the document's name, its folder, or other files.
 
 **What Pixerate keeps:**
 
 - **Your text isn't kept.** It's used to answer the request, then discarded.
-- **What you did with each suggestion is kept** (accepted, edited, dismissed, undone). That's how the partner learns your style across devices. It's tied to your account and team, not to the text.
+- **Your App Store transaction identifiers and Support ID** are kept so your subscription and Family Sharing status work across your devices and so you can quote your Support ID if you contact support.
+- **What you did with each suggestion is kept** (accepted, edited, dismissed, undone). That's how the partner learns your style across devices.
 
 ## In Quick Notes
 
@@ -46,9 +46,8 @@ Quick Note tidy-up uses the Pixerate tier above, with the same rules. It sends t
 
 ## Turning it off
 
-- **Edit › Pause Writing Partner (⌥⌘P)** pauses the partner for the current document, until you resume it or close the window.
 - **Settings › Writing › Writing partner › Off** stops everything above.
-- **Signing out** stops everything sent to Pixerate. The on-device and as-you-type tiers keep working.
+- If you signed in to a Pixerate account, **Sign Out** in Settings › Account removes the account key from this device.
 
 ## For developers
 

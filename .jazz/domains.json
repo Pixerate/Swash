@@ -69,7 +69,7 @@
         "Swash/PixerateWritingBandleader.swift",
         "Swash/PixerateAccess.swift",
         "Swash/PixerateAccountSettings.swift",
-        "Swash/PixerateStore.swift"
+        "Swash/Swash.storekit"
       ],
       "docs": [
         "docs/writing-partner-privacy.md"

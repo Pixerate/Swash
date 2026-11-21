@@ -113,6 +113,6 @@ nonisolated final class PixerateWritingBandleader: WritingBandleader, @unchecked
 extension WritingBandleaderFactory {
     static func installPixerateBandleader() {
         makePixerateBandleader = { PixerateWritingBandleader() }
-        isPixerateAvailable = { MainActor.assumeIsolated { !PixerateAccess.shared.isSignedOut && PixerateAccess.shared.isSubscribed } }
+        isPixerateAvailable = { MainActor.assumeIsolated { PixerateAccess.shared.isSubscribed } }
     }
 }
