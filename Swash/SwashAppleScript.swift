@@ -44,10 +44,7 @@ final class SwashQuickNoteCommand: NSScriptCommand {
 final class SwashCountWordsCommand: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         let text = (directParameter as? String) ?? ""
-        let words = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
-        let chars = text.count
-        let lines = text.components(separatedBy: .newlines).count
-        return "\(words) words, \(chars) characters, \(lines) lines"
+        return SwashShortcutsEngine.calculateStatistics(for: text).summaryString
     }
 }
 
@@ -64,6 +61,117 @@ final class SwashFormatMarkdownCommand: NSScriptCommand {
         default:
             return "```\n\(text)\n```"
         }
+    }
+}
+
+@objc(SwashAppendToNoteCommand)
+final class SwashAppendToNoteCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        let entry = (directParameter as? String) ?? ""
+        let pathOrTitle = (evaluatedArguments?["path"] as? String) ?? "Inbox.md"
+        let heading = (evaluatedArguments?["heading"] as? String) ?? ""
+        let rawStyle = ((evaluatedArguments?["style"] as? String) ?? "plain").lowercased()
+
+        let style: SwashAppendStyle
+        switch rawStyle {
+        case "bullet", "list": style = .bullet
+        case "todo", "to-do", "task": style = .todo
+        case "timestamped bullet", "timestamp bullet": style = .timestampedBullet
+        case "timestamped todo", "timestamped to-do", "timestamp todo": style = .timestampedTodo
+        default: style = .plain
+        }
+
+        let position: SwashInsertPosition = heading.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .end : .underHeading
+        do {
+            let (url, _) = try SwashShortcutsEngine.findOrCreateDocument(pathOrTitle: pathOrTitle)
+            let existing = (try? SwashShortcutsEngine.readText(at: url)) ?? ""
+            let updated = SwashShortcutsEngine.insert(entry, into: existing, position: position, heading: heading, style: style)
+            try SwashShortcutsEngine.writeText(updated, to: url)
+            return url.path
+        } catch {
+            scriptErrorNumber = NSInternalScriptError
+            scriptErrorString = error.localizedDescription
+            return nil
+        }
+    }
+}
+
+@objc(SwashGetNoteContentsCommand)
+final class SwashGetNoteContentsCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        let pathOrTitle = (directParameter as? String) ?? ""
+        let rawFormat = ((evaluatedArguments?["format"] as? String) ?? "markdown").lowercased()
+        let format: SwashContentFormat
+        switch rawFormat {
+        case "plain", "plain text", "text": format = .plainText
+        case "html": format = .html
+        case "standalone html": format = .standaloneHTML
+        default: format = .markdown
+        }
+
+        guard let url = SwashShortcutsEngine.resolveExistingDocument(pathOrTitle: pathOrTitle) else {
+            scriptErrorNumber = NSInternalScriptError
+            scriptErrorString = SwashShortcutsError.documentNotFound(pathOrTitle).localizedDescription
+            return nil
+        }
+        do {
+            let text = try SwashShortcutsEngine.readText(at: url)
+            return SwashShortcutsEngine.convertMarkdown(text, to: format, title: url.deletingPathExtension().lastPathComponent)
+        } catch {
+            scriptErrorNumber = NSInternalScriptError
+            scriptErrorString = error.localizedDescription
+            return nil
+        }
+    }
+}
+
+@objc(SwashFindNotesCommand)
+final class SwashFindNotesCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        let query = (directParameter as? String) ?? ""
+        let folderPath = evaluatedArguments?["folder"] as? String
+        let roots = folderPath.map { [URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)] }
+        let matches = SwashShortcutsEngine.findDocuments(query: query, scope: .nameAndContent, in: roots)
+        return matches.map(\.url.path).joined(separator: "\n")
+    }
+}
+
+@objc(SwashGetTodosCommand)
+final class SwashGetTodosCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        let pathOrTitle = evaluatedArguments?["path"] as? String
+        let rawStatus = ((evaluatedArguments?["status"] as? String) ?? "open").lowercased()
+        let status: SwashTodoStatusFilter
+        switch rawStatus {
+        case "completed", "done", "checked": status = .completed
+        case "all": status = .all
+        default: status = .open
+        }
+
+        if let pathOrTitle, !pathOrTitle.isEmpty {
+            let expanded = (pathOrTitle as NSString).expandingTildeInPath
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir), isDir.boolValue {
+                let files = SwashShortcutsEngine.discoverFiles(in: [URL(fileURLWithPath: expanded)])
+                return SwashShortcutsEngine.extractTodos(in: files, status: status).map(\.text).joined(separator: "\n")
+            }
+            if let url = SwashShortcutsEngine.resolveExistingDocument(pathOrTitle: pathOrTitle),
+               let text = try? SwashShortcutsEngine.readText(at: url) {
+                return SwashShortcutsEngine.extractTodos(from: text, status: status, file: url).map(\.text).joined(separator: "\n")
+            }
+        }
+        let files = SwashShortcutsEngine.discoverFiles()
+        return SwashShortcutsEngine.extractTodos(in: files, status: status).map(\.text).joined(separator: "\n")
+    }
+}
+
+@objc(SwashConvertHTMLCommand)
+final class SwashConvertHTMLCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        let html = (directParameter as? String) ?? ""
+        let urlString = evaluatedArguments?["sourceURL"] as? String
+        let sourceURL = urlString.flatMap { URL(string: $0) }
+        return SwashShortcutsEngine.convertHTMLToMarkdown(html, sourceURL: sourceURL, includeSourceLink: sourceURL != nil)
     }
 }
 #endif
