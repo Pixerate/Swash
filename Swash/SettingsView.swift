@@ -285,6 +285,8 @@ private struct WritingPartnerSettingsView: View {
     @AppStorage(WritingPartnerDefaults.agreementAndTense) private var agreementAndTense = true
     @AppStorage(WritingPartnerDefaults.missingWords) private var missingWords = true
     @AppStorage(WritingPartnerDefaults.quickNoteTidy) private var quickNoteTidy = true
+    @AppStorage(WritingPartnerDefaults.markUncertain) private var markUncertain = true
+    @AppStorage(WritingPartnerDefaults.announceMarks) private var announceMarks = false
     @State private var showLearnedRules = false
 
     private var provider: WritingPartnerProvider {
@@ -338,6 +340,12 @@ private struct WritingPartnerSettingsView: View {
                     set: { UserDefaults.standard.set($0, forKey: WritingPartnerDefaults.spelling); spellingOn = $0 }
                 ))
                 .disabled(mode == .off)
+                // In Suggest mode everything is already offered, so the switch does nothing there (#128)
+                Toggle("Mark what it isn't sure about", isOn: $markUncertain)
+                    .disabled(mode != .automatic)
+                    .help("Leaves a faint dotted underline instead of guessing. Review them with ⌥⌘' or the count in the status bar.")
+                Toggle("Announce marks with VoiceOver", isOn: $announceMarks)
+                    .disabled(mode != .automatic || !markUncertain)
                 LabeledContent("Voice") {
                     Text(WritingPartnerVoice.summary(for: flavor))
                         .foregroundStyle(.secondary)

@@ -192,6 +192,8 @@ final class WritingPartnerSession {
         var edit: PartnerEdit
         /// Raw-Markdown offset just after the boundary that offered this fix.
         var triggerEnd: Int
+        /// The mark this shows a candidate for (#128): settled, not dismissed, and never by typing past.
+        var markID: Int? = nil
     }
 
     /// How far (UTF-16 units) the person can type past a suggestion before ignoring it counts as dismissing it.
@@ -209,6 +211,20 @@ final class WritingPartnerSession {
     private(set) var isPaused = false
     /// Called when `isPaused` changes so the document window can update its status bar and menu item.
     var onPauseChange: ((Bool) -> Void)?
+
+    // MARK: - Marks (#128)
+    /// What the partner isn't sure about, in document order. Never written into the Markdown.
+    private(set) var marks: [PartnerUncertainMark] = []
+    private var nextMarkID = 1
+    /// Words and phrases the person kept as written: not marked again in this document.
+    private var keptMarks: Set<String> = []
+    /// The mark whose candidate is shown in place (review, or the caret in it), and which candidate.
+    private(set) var activeMarkID: Int?
+    private var activeCandidate = 0
+    /// Whether the person is stepping through the marks.
+    private(set) var isReviewing = false
+    /// Called with the number of marks, for the status bar.
+    var onMarksChange: ((Int) -> Void)?
 
     // MARK: - Bandleader & Pause Tier (#101, #120)
     private var testingBandleader: (any WritingBandleader)?
@@ -429,6 +445,11 @@ final class WritingPartnerSession {
     func willType(_ string: String?, in range: NSRange, textView: NSTextView, coordinator: SwashTextView.Coordinator) {
         self.textView = textView
         self.coordinator = coordinator
+        if !marks.isEmpty {
+            let raw = coordinator.rawRange(forStorage: range, in: textView)
+            let isUndo = textView.undoManager.map { $0.isUndoing || $0.isRedoing } ?? false
+            moveMarks(through: raw, replacement: string ?? "", byPerson: !isUndo, in: textView, coordinator: coordinator)
+        }
         if hasActiveUndoReminder {
             dismissUndoReminder(in: textView)
         }
@@ -493,6 +514,11 @@ final class WritingPartnerSession {
                     suggestion.triggerEnd += delta
                     return suggestion
                 }
+                if suggestion.markID != nil {
+                    // A mark's candidate stays shown only while the caret is in the mark or a review
+                    // is on; typing elsewhere hides it and leaves the mark (#128)
+                    return nil
+                }
                 if raw.location >= NSMaxRange(suggestion.edit.range) {
                     // Typing on after a suggestion keeps it on offer. Finishing the line, or typing
                     // well past it, without accepting it dismisses it and counts against its rules
@@ -520,6 +546,10 @@ final class WritingPartnerSession {
                     ))
                 }
                 return nil
+            }
+            if activeMarkID != nil, !suggestions.contains(where: { $0.markID != nil }) {
+                activeMarkID = nil
+                isReviewing = false
             }
             refreshSuggestions(in: textView, coordinator: coordinator)
         }
@@ -556,7 +586,7 @@ final class WritingPartnerSession {
         } else if mode != .suggest, !suggestions.isEmpty {
             // In Automatic mode, keep lower-confidence bandleader suggestions that were offered
             // as underlined suggestions (#120) until accepted, edited, or dismissed.
-            suggestions.removeAll { $0.edit.bandleaderSuggestionId == nil }
+            suggestions.removeAll { $0.edit.bandleaderSuggestionId == nil && $0.markID == nil }
             refreshSuggestions(in: textView, coordinator: coordinator)
         }
         // macOS's inline predictions and autocorrect also write at the caret, and the two together
@@ -746,6 +776,8 @@ final class WritingPartnerSession {
 
     /// The caret moved: a block it left may be ready to tidy.
     func selectionDidChange(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        // A caret in one of the partner's marks shows its candidate (#128)
+        caretMovedForMarks(in: textView, coordinator: coordinator)
         guard !formattingDirty.isEmpty else { return }
         scheduleTidy(in: textView, coordinator: coordinator)
     }
@@ -808,6 +840,184 @@ final class WritingPartnerSession {
         } else {
             play(Fix(remaining: edits, boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
         }
+    }
+
+    // MARK: Marks (#128)
+
+    /// Marks `edits` (fixes the partner isn't sure of) instead of making or offering them.
+    private func addMarks(_ edits: [PartnerEdit], in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        let text = coordinator.rawText(of: textView) as NSString
+        let new = edits.map { edit -> PartnerUncertainMark in
+            defer { nextMarkID += 1 }
+            return PartnerUncertainMark(id: nextMarkID, edit: edit, candidates: [edit.replacement] + edit.alternatives)
+        }
+        let before = marks.count
+        marks = PartnerMarks.adding(new, to: marks, kept: keptMarks, in: text)
+        refreshMarks(in: textView, coordinator: coordinator)
+        if marks.count > before, WritingPartnerDefaults.announceMarks(defaults) {
+            announce("\(marks.count) to check", in: textView)
+        }
+    }
+
+    /// Moves the marks through an edit. A mark the person edits is settled their way: it goes, and
+    /// isn't made again here. One the partner's own edit replaced (an accepted candidate) just goes.
+    private func moveMarks(through range: NSRange, replacement: String, byPerson: Bool,
+                           in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        let (moved, edited) = PartnerMarks.moved(marks, through: range, replacement: replacement)
+        marks = moved
+        if byPerson { for mark in edited { keptMarks.insert(PartnerMarks.key(mark.original)) } }
+        if let active = activeMarkID, edited.contains(where: { $0.id == active }) {
+            activeMarkID = nil
+            suggestions.removeAll { $0.markID == active }
+        }
+        // A shown candidate moves with its mark
+        suggestions = suggestions.compactMap { suggestion in
+            guard let id = suggestion.markID else { return suggestion }
+            guard let mark = marks.first(where: { $0.id == id }) else { return nil }
+            var moved = suggestion
+            moved.edit.range = mark.range
+            moved.triggerEnd = NSMaxRange(mark.range)
+            return moved
+        }
+        if marks.isEmpty { isReviewing = false }
+        DispatchQueue.main.async { [weak self, weak textView, weak coordinator] in
+            guard let self, let textView, let coordinator else { return }
+            self.refreshMarks(in: textView, coordinator: coordinator)
+        }
+    }
+
+    /// Redraws the marks (not the one shown as a candidate) and reports their number.
+    func refreshMarks(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        let overlay = WritingPartnerOverlay.overlay(for: textView)
+        let rects = marks.filter { $0.id != activeMarkID }.flatMap {
+            WritingPartnerOverlay.rects(for: coordinator.storageRange(forRaw: $0.range, in: textView), in: textView)
+        }
+        overlay.showMarks(rects)
+        onMarksChange?(marks.count)
+    }
+
+    /// Shows the mark at `index` with its candidate in place, in the manner of Suggest mode, and puts
+    /// the caret just after it, so Tab or ⌥⏎ accepts and Esc keeps the text as written.
+    private func showMark(at index: Int?, candidate: Int = 0, moveCaret: Bool = true,
+                          in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        suggestions.removeAll { $0.markID != nil }
+        guard let index, marks.indices.contains(index) else {
+            activeMarkID = nil
+            if isReviewing { announce("Nothing left to check", in: textView) }
+            isReviewing = false
+            refreshSuggestions(in: textView, coordinator: coordinator)
+            refreshMarks(in: textView, coordinator: coordinator)
+            return
+        }
+        let mark = marks[index]
+        activeMarkID = mark.id
+        activeCandidate = min(candidate, mark.candidates.count - 1)
+        suggestions.append(Suggestion(edit: mark.edit(choosing: activeCandidate), triggerEnd: NSMaxRange(mark.range), markID: mark.id))
+        suggestions.sort { $0.edit.range.location < $1.edit.range.location }
+        if moveCaret {
+            let storage = coordinator.storageRange(forRaw: NSRange(location: NSMaxRange(mark.range), length: 0), in: textView)
+            isMovingCaretToMark = true
+            textView.setSelectedRange(storage)
+            isMovingCaretToMark = false
+            textView.scrollRangeToVisible(storage)
+        }
+        refreshSuggestions(in: textView, coordinator: coordinator)
+        refreshMarks(in: textView, coordinator: coordinator)
+        let position = isReviewing ? "\(index + 1) of \(marks.count): " : ""
+        let choice = mark.candidates.count > 1 ? " Showing “\(mark.candidates[activeCandidate])”." : ""
+        announce("To check \(position)\(mark.label).\(choice) Tab to accept, Escape to keep as written.", in: textView)
+    }
+
+    private var isMovingCaretToMark = false
+
+    /// Starts stepping through the marks from the first, in document order.
+    @discardableResult
+    func reviewMarks(in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+        guard !marks.isEmpty, fixInFlight == nil else { return false }
+        isReviewing = true
+        showMark(at: 0, in: textView, coordinator: coordinator)
+        return true
+    }
+
+    /// Moves the review to the next (or previous) mark.
+    @discardableResult
+    func stepMarks(by offset: Int, in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+        guard !marks.isEmpty, fixInFlight == nil else { return false }
+        isReviewing = true
+        let current = activeMarkID.flatMap { id in marks.firstIndex { $0.id == id } }
+        showMark(at: PartnerMarks.step(from: current, by: offset, count: marks.count), in: textView, coordinator: coordinator)
+        return true
+    }
+
+    /// Shows the shown mark's next candidate.
+    @discardableResult
+    func nextCandidate(in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+        guard let id = activeMarkID, let index = marks.firstIndex(where: { $0.id == id }), marks[index].candidates.count > 1 else { return false }
+        showMark(at: index, candidate: (activeCandidate + 1) % marks[index].candidates.count, moveCaret: false,
+                 in: textView, coordinator: coordinator)
+        return true
+    }
+
+    /// Accepts `candidate` for the mark with `id` (from the context menu).
+    @discardableResult
+    func acceptMark(id: Int, candidate: Int, in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+        guard let index = marks.firstIndex(where: { $0.id == id }), fixInFlight == nil else { return false }
+        showMark(at: index, candidate: candidate, moveCaret: false, in: textView, coordinator: coordinator)
+        guard let shown = suggestions.first(where: { $0.markID == id }) else { return false }
+        suggestions.removeAll { $0.markID == id }
+        refreshSuggestions(in: textView, coordinator: coordinator)
+        activeMarkID = nil
+        play(Fix(remaining: [shown.edit], boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
+        return true
+    }
+
+    /// Keeps the text as written for the mark with `id`: it goes, the same word or phrase isn't
+    /// marked again in this document, and the rule that made it is less eager (as an undo is).
+    func keep(markID id: Int, alreadyPenalized: Bool = false, in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        guard let mark = marks.first(where: { $0.id == id }) else { return }
+        suggestions.removeAll { $0.markID == id }
+        if !alreadyPenalized { penalize(mark.edit, in: textView) }
+        keptMarks.insert(PartnerMarks.key(mark.original))
+        marks.removeAll { $0.id == id }
+        let wasActive = activeMarkID == id
+        if wasActive { activeMarkID = nil }
+        if isReviewing, wasActive {
+            let next = marks.firstIndex { $0.range.location >= mark.range.location }
+            showMark(at: next ?? (marks.isEmpty ? nil : 0), in: textView, coordinator: coordinator)
+        } else {
+            refreshSuggestions(in: textView, coordinator: coordinator)
+            refreshMarks(in: textView, coordinator: coordinator)
+        }
+    }
+
+    /// The mark under `point` (text view coordinates).
+    func mark(at point: NSPoint, in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> PartnerUncertainMark? {
+        marks.first { mark in
+            WritingPartnerOverlay.rects(for: coordinator.storageRange(forRaw: mark.range, in: textView), in: textView)
+                .contains { $0.insetBy(dx: -2, dy: -3).contains(point) }
+        }
+    }
+
+    /// The caret moved: in a mark, its candidate is shown to settle on its own; out of it, hidden.
+    private func caretMovedForMarks(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+        guard !marks.isEmpty, !isMovingCaretToMark, fixInFlight == nil else { return }
+        let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        let inside = selection.length == 0 ? PartnerMarks.index(at: selection.location, in: marks) : nil
+        if let inside {
+            if marks[inside].id != activeMarkID { showMark(at: inside, moveCaret: false, in: textView, coordinator: coordinator) }
+        } else if activeMarkID != nil {
+            activeMarkID = nil
+            isReviewing = false
+            suggestions.removeAll { $0.markID != nil }
+            refreshSuggestions(in: textView, coordinator: coordinator)
+            refreshMarks(in: textView, coordinator: coordinator)
+        }
+    }
+
+    private func announce(_ text: String, in textView: NSTextView) {
+        lastAnnouncement = text
+        NSAccessibility.post(element: textView, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
     }
 
     // MARK: Suggestions (#103)
@@ -904,6 +1114,7 @@ final class WritingPartnerSession {
     private func accept(_ chosen: [Suggestion], in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
         guard !chosen.isEmpty, fixInFlight == nil else { return false }
         suggestions.removeAll { chosen.contains($0) }
+        if let active = activeMarkID, chosen.contains(where: { $0.markID == active }) { activeMarkID = nil }
         refreshSuggestions(in: textView, coordinator: coordinator)
         play(Fix(remaining: chosen.map(\.edit), boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
         return true
@@ -918,6 +1129,8 @@ final class WritingPartnerSession {
         suggestions.removeAll { toDismiss.contains($0) }
         for item in toDismiss { penalize(item.edit, in: textView) }
         refreshSuggestions(in: textView, coordinator: coordinator)
+        // Keeping a mark's text as written settles it, teaches the partner, and moves the review on
+        for item in toDismiss { if let id = item.markID { keep(markID: id, alreadyPenalized: true, in: textView, coordinator: coordinator) } }
         return true
     }
 
@@ -1020,6 +1233,9 @@ final class WritingPartnerSession {
                 ))
             }
         }
+        if !marks.isEmpty, let textView, let coordinator {
+            moveMarks(through: range, replacement: text, byPerson: false, in: textView, coordinator: coordinator)
+        }
         let move = { (location: Int) -> Int in location >= NSMaxRange(range) ? location + delta : location }
         pendingBoundaries = pendingBoundaries.map { (move($0.location), $0.enterEndedLine) }
         formattingDirty = Self.move(ranges: formattingDirty, through: range, replacement: text)
@@ -1114,6 +1330,9 @@ final class WritingPartnerSession {
     private func finish() {
         fixInFlight = nil
         player = nil
+        if isReviewing, activeMarkID == nil, let textView, let coordinator {
+            showMark(at: PartnerMarks.step(from: nil, by: 1, count: marks.count), in: textView, coordinator: coordinator)
+        }
         if let textView, let coordinator {
             if !pendingBoundaries.isEmpty {
                 didChange(in: textView, coordinator: coordinator)
@@ -1348,9 +1567,20 @@ final class WritingPartnerSession {
         let offeredEdits = (plan.offeredEdits + grammarOffered).sorted { $0.range.location < $1.range.location }
         let automaticEdits = (plan.automaticEdits + grammarAutomatic).sorted { $0.range.location < $1.range.location }
 
-        // Offer uncertain / Suggest-mode inline suggestions as underlines (#103, #120).
+        // In Automatically, what the partner isn't sure about is marked, to settle later (#128);
+        // otherwise uncertain / Suggest-mode inline suggestions are offered as underlines (#103, #120).
+        let marking = mode == .automatic && WritingPartnerDefaults.markUncertain(defaults)
+        if !automaticEdits.isEmpty, !marks.isEmpty {
+            // The partner became sure: its fix replaces the mark
+            marks.removeAll { mark in automaticEdits.contains { NSIntersectionRange($0.range, mark.range).length > 0 } }
+            refreshMarks(in: textView, coordinator: coordinator)
+        }
         if !offeredEdits.isEmpty {
-            offer(offeredEdits, triggerEnd: selection.location, in: textView, coordinator: coordinator)
+            if marking {
+                addMarks(offeredEdits, in: textView, coordinator: coordinator)
+            } else {
+                offer(offeredEdits, triggerEnd: selection.location, in: textView, coordinator: coordinator)
+            }
         }
 
         // Apply high-confidence inline suggestions at once through the partner's cursor (#120).
@@ -1365,6 +1595,21 @@ final class WritingPartnerSession {
 
         // Show a structural block suggestion prompt if present and no inline cursor edit is running.
         guard let suggestion = plan.structuralSuggestion else { return }
+
+        // A structure change it isn't sure of is marked rather than prompted for (#128)
+        if marking, let confidence = suggestion.confidence, confidence < GrammarVoice.autoConfidenceThreshold {
+            let local = NSRange(location: suggestion.range.start, length: max(0, suggestion.range.end - suggestion.range.start))
+            let paragraphNS = paragraph as NSString
+            if NSMaxRange(local) <= paragraphNS.length {
+                let raw = NSRange(location: paragraphRange.location + local.location, length: local.length)
+                let edit = PartnerEdit(range: raw, original: paragraphNS.substring(with: local), replacement: suggestion.replacement,
+                                       rules: [], spellingWords: [], actionName: WritingPartnerDefaults.suggestionActionName,
+                                       bandleaderSuggestionId: suggestion.effectiveId, bandleaderSuggestionKind: suggestion.kind,
+                                       bandleaderCheckId: suggestion.checkId, confidence: confidence)
+                addMarks([edit], in: textView, coordinator: coordinator)
+            }
+            return
+        }
 
         self.activeSuggestion = (suggestion: suggestion, paragraph: paragraph, paragraphRange: paragraphRange)
 

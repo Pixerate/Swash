@@ -152,11 +152,13 @@ nonisolated struct OnDeviceSpellingCorrection: Codable, Sendable, Equatable {
     var kind: OnDeviceSpellingKind
     var original: String
     var replacement: String
+    /// Other words it could be, when more than one fits the sentence (#128).
+    var alternatives: [String]
     var confidence: Double
 
     var candidate: ContextSpellingCandidate {
         ContextSpellingCandidate(kind: kind.toJazzTextSuggestionKind, original: original, replacement: replacement,
-                                 confidence: confidence)
+                                 confidence: confidence, alternatives: alternatives)
     }
 }
 
@@ -280,8 +282,8 @@ nonisolated final class OnDeviceWritingBandleader: WritingBandleader, @unchecked
     in doubt. Fourth, find spelling the system spell checker misses: a misspelt word whose fix \
     depends on the sentence, and a real word used wrongly (form for from, their or they're for \
     there, loose for lose, then for than). For each, give the word exactly as written in the \
-    paragraph, the word it should be, whether it is a misspelling or a wrong word, and your \
-    confidence (0.0 to 1.0). Never change names, product names, code, capitals or a word the \
+    paragraph, the word it should be, any other word it could as well be, whether it is a \
+    misspelling or a wrong word, and your confidence (0.0 to 1.0). Never change names, product names, code, capitals or a word the \
     writer uses more than once. Give a short reason. Do nothing else.
     """
 

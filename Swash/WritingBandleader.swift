@@ -253,6 +253,9 @@ nonisolated struct JazzTextSuggestion: Codable, Sendable, Equatable {
     var confidence: Double?
     var applyAtOnce: Bool?
     var checkId: String?
+    /// Other replacements that fit as well (#128). A suggestion with alternatives is never applied
+    /// at once: the person chooses.
+    var alternatives: [String]?
 
     init(
         id: String? = nil,
@@ -262,7 +265,8 @@ nonisolated struct JazzTextSuggestion: Codable, Sendable, Equatable {
         why: String,
         confidence: Double? = nil,
         applyAtOnce: Bool? = nil,
-        checkId: String? = nil
+        checkId: String? = nil,
+        alternatives: [String]? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -272,6 +276,7 @@ nonisolated struct JazzTextSuggestion: Codable, Sendable, Equatable {
         self.confidence = confidence
         self.applyAtOnce = applyAtOnce
         self.checkId = checkId
+        self.alternatives = alternatives
     }
 
     enum CodingKeys: String, CodingKey {
@@ -283,6 +288,7 @@ nonisolated struct JazzTextSuggestion: Codable, Sendable, Equatable {
         case confidence
         case applyAtOnce
         case checkId
+        case alternatives
     }
 
     init(from decoder: Decoder) throws {
@@ -295,6 +301,7 @@ nonisolated struct JazzTextSuggestion: Codable, Sendable, Equatable {
         self.confidence = try container.decodeIfPresent(Double.self, forKey: .confidence)
         self.applyAtOnce = try container.decodeIfPresent(Bool.self, forKey: .applyAtOnce)
         self.checkId = try container.decodeIfPresent(String.self, forKey: .checkId)
+        self.alternatives = try container.decodeIfPresent([String].self, forKey: .alternatives)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -307,6 +314,7 @@ nonisolated struct JazzTextSuggestion: Codable, Sendable, Equatable {
         try container.encodeIfPresent(confidence, forKey: .confidence)
         try container.encodeIfPresent(applyAtOnce, forKey: .applyAtOnce)
         try container.encodeIfPresent(checkId, forKey: .checkId)
+        if let alternatives, !alternatives.isEmpty { try container.encode(alternatives, forKey: .alternatives) }
     }
 
     /// Stable identifier used when reporting feedback (`Pixerate/schemas#87`) even if the server omitted `id`.
@@ -317,7 +325,7 @@ nonisolated struct JazzTextSuggestion: Codable, Sendable, Equatable {
     /// Certain inline suggestions apply at once through the partner's cursor in Automatic mode;
     /// lower-confidence or ambiguous ones are offered as underlined suggestions (#103, #120).
     var shouldApplyAtOnce: Bool {
-        guard kind.isInlineEdit else { return false }
+        guard kind.isInlineEdit, alternatives?.isEmpty ?? true else { return false }
         if let applyAtOnce { return applyAtOnce }
         if let confidence { return confidence >= 0.85 }
         return true
@@ -1377,6 +1385,8 @@ nonisolated struct ContextSpellingCandidate: Sendable, Equatable {
     var replacement: String
     var confidence: Double
     var why: String?
+    /// Other words it could be, when more than one fits (#128).
+    var alternatives: [String] = []
 }
 
 nonisolated enum ContextSpelling {
@@ -1405,10 +1415,20 @@ nonisolated enum ContextSpelling {
                   original != replacement, original.lowercased() != replacement.lowercased(),
                   wordCount(original) <= maxWords, wordCount(replacement) <= maxWords,
                   replacement.rangeOfCharacter(from: .newlines) == nil else { continue }
-            if candidate.kind == .spelling {
+            func fits(_ word: String) -> Bool {
+                guard word != original, word.lowercased() != original.lowercased(), wordCount(word) <= maxWords,
+                      word.rangeOfCharacter(from: .newlines) == nil else { return false }
                 // A misspelling is close to the word it should be
-                let a = original.lowercased(), b = replacement.lowercased()
-                guard editDistance(a, b) <= max(2, max(a.count, b.count) / 3) else { continue }
+                guard candidate.kind == .spelling else { return true }
+                let a = original.lowercased(), b = word.lowercased()
+                return editDistance(a, b) <= max(2, max(a.count, b.count) / 3)
+            }
+            guard fits(replacement) else { continue }
+            var alternatives: [String] = []
+            for alternative in candidate.alternatives.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+            where fits(alternative) && alternative.lowercased() != replacement.lowercased()
+                && !alternatives.contains(where: { $0.lowercased() == alternative.lowercased() }) {
+                alternatives.append(alternative)
             }
             let ranges = wholeWordRanges(of: original, in: ns)
             guard ranges.count == 1, let range = ranges.first,
@@ -1421,7 +1441,8 @@ nonisolated enum ContextSpelling {
                 replacement: replacement,
                 why: candidate.why ?? candidate.kind.title,
                 confidence: confidence,
-                applyAtOnce: confidence >= applyThreshold
+                applyAtOnce: alternatives.isEmpty && confidence >= applyThreshold,
+                alternatives: alternatives.isEmpty ? nil : alternatives
             ))
         }
         return out
@@ -1603,7 +1624,9 @@ nonisolated enum BandleaderSuggestionPlanner {
                 actionName: WritingPartnerDefaults.actionName,
                 bandleaderSuggestionId: suggestion.effectiveId,
                 bandleaderSuggestionKind: suggestion.kind,
-                bandleaderCheckId: suggestion.checkId
+                bandleaderCheckId: suggestion.checkId,
+                alternatives: (suggestion.alternatives ?? []).filter { $0 != suggestion.replacement && $0 != original },
+                confidence: suggestion.confidence
             )
 
             if mode == .automatic && suggestion.shouldApplyAtOnce {
@@ -2455,7 +2478,8 @@ nonisolated extension GrammarVoice {
                 original: widenedOriginal,
                 replacement: widenedReplacement,
                 rules: [rule],
-                spellingWords: []
+                spellingWords: [],
+                confidence: item.confidence
             )
 
             lastEnd = end

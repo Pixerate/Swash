@@ -274,6 +274,33 @@ final class SwashEditorController {
         return !coordinator.writingPartner.suggestions.isEmpty
     }
 
+    // MARK: Marks (#128)
+
+    /// Called with the number of the partner's marks, for the status bar's "3 to check".
+    var onPartnerMarksChange: ((Int) -> Void)?
+    private(set) var partnerMarkCount = 0
+
+    func partnerMarksDidChange(_ count: Int) {
+        guard count != partnerMarkCount else { return }
+        partnerMarkCount = count
+        onPartnerMarksChange?(count)
+    }
+
+    /// Starts stepping through what the partner isn't sure about.
+    @discardableResult
+    func reviewPartnerMarks() -> Bool {
+        guard let textView = textView, let coordinator = coordinator else { return false }
+        textView.window?.makeFirstResponder(textView)
+        return coordinator.writingPartner.reviewMarks(in: textView, coordinator: coordinator)
+    }
+
+    /// Moves the review to the next (1) or previous (-1) mark.
+    @discardableResult
+    func stepPartnerMarks(by offset: Int) -> Bool {
+        guard let textView = textView, let coordinator = coordinator else { return false }
+        return coordinator.writingPartner.stepMarks(by: offset, in: textView, coordinator: coordinator)
+    }
+
     /// Whether the writing partner is paused for this document (#112).
     var isPartnerPaused: Bool {
         coordinator?.writingPartner.isPaused ?? false
@@ -686,6 +713,7 @@ class SwashNSTextView: NSTextView {
             case .links: return NSAccessibilityCustomRotor(rotorType: .link, itemSearchDelegate: delegate)
             case .tables: return NSAccessibilityCustomRotor(rotorType: .table, itemSearchDelegate: delegate)
             case .suggestions: return NSAccessibilityCustomRotor(label: "Suggestions", itemSearchDelegate: delegate)
+            case .marks: return NSAccessibilityCustomRotor(label: "To Check", itemSearchDelegate: delegate)
             }
         }
     }
@@ -764,16 +792,73 @@ class SwashNSTextView: NSTextView {
         _ = coordinator.writingPartner.togglePaused(in: self)
     }
 
+    // Marks (#128): review, step, choose another candidate, settle from the context menu
+    @objc func reviewPartnerMarks(_ sender: Any?) {
+        guard let coordinator = delegate as? SwashTextView.Coordinator else { return }
+        if !coordinator.writingPartner.reviewMarks(in: self, coordinator: coordinator) { NSSound.beep() }
+    }
+
+    @objc func nextPartnerMark(_ sender: Any?) {
+        guard let coordinator = delegate as? SwashTextView.Coordinator else { return }
+        if !coordinator.writingPartner.stepMarks(by: 1, in: self, coordinator: coordinator) { NSSound.beep() }
+    }
+
+    @objc func previousPartnerMark(_ sender: Any?) {
+        guard let coordinator = delegate as? SwashTextView.Coordinator else { return }
+        if !coordinator.writingPartner.stepMarks(by: -1, in: self, coordinator: coordinator) { NSSound.beep() }
+    }
+
+    @objc func nextMarkCandidate(_ sender: Any?) {
+        guard let coordinator = delegate as? SwashTextView.Coordinator else { return }
+        if !coordinator.writingPartner.nextCandidate(in: self, coordinator: coordinator) { NSSound.beep() }
+    }
+
+    @objc private func acceptMarkCandidate(_ sender: NSMenuItem) {
+        guard let coordinator = delegate as? SwashTextView.Coordinator, let choice = sender.representedObject as? [Int] else { return }
+        coordinator.writingPartner.acceptMark(id: choice[0], candidate: choice[1], in: self, coordinator: coordinator)
+    }
+
+    @objc private func keepMarkAsWritten(_ sender: NSMenuItem) {
+        guard let coordinator = delegate as? SwashTextView.Coordinator, let id = sender.representedObject as? Int else { return }
+        coordinator.writingPartner.keep(markID: id, in: self, coordinator: coordinator)
+    }
+
     override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
         if item.action == #selector(acceptSuggestion(_:)) || item.action == #selector(dismissSuggestion(_:)) {
             guard let coordinator = delegate as? SwashTextView.Coordinator else { return false }
             return !coordinator.writingPartner.suggestions.isEmpty
+        }
+        if item.action == #selector(reviewPartnerMarks(_:)) || item.action == #selector(nextPartnerMark(_:))
+            || item.action == #selector(previousPartnerMark(_:)) {
+            guard let coordinator = delegate as? SwashTextView.Coordinator else { return false }
+            return !coordinator.writingPartner.marks.isEmpty
+        }
+        if item.action == #selector(nextMarkCandidate(_:)) {
+            guard let coordinator = delegate as? SwashTextView.Coordinator,
+                  let id = coordinator.writingPartner.activeMarkID else { return false }
+            return (coordinator.writingPartner.marks.first { $0.id == id }?.candidates.count ?? 0) > 1
         }
         return super.validateUserInterfaceItem(item)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = super.menu(for: event)
+        // A mark: each candidate, and keeping the text as written (#128)
+        if let coordinator = delegate as? SwashTextView.Coordinator,
+           let mark = coordinator.writingPartner.mark(at: convert(event.locationInWindow, from: nil), in: self, coordinator: coordinator) {
+            let keep = NSMenuItem(title: "Keep “\(mark.original)”", action: #selector(keepMarkAsWritten(_:)), keyEquivalent: "")
+            keep.target = self
+            keep.representedObject = mark.id
+            menu?.insertItem(.separator(), at: 0)
+            menu?.insertItem(keep, at: 0)
+            for (index, candidate) in mark.candidates.enumerated().reversed() {
+                let item = NSMenuItem(title: "Use “\(candidate)”", action: #selector(acceptMarkCandidate(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = [mark.id, index]
+                menu?.insertItem(item, at: 0)
+            }
+            return menu
+        }
         if let coordinator = delegate as? SwashTextView.Coordinator,
            let suggestion = coordinator.writingPartner.suggestion(at: convert(event.locationInWindow, from: nil), in: self, coordinator: coordinator)
                ?? coordinator.writingPartner.suggestionsForCaret(in: self, coordinator: coordinator).last
@@ -1091,7 +1176,7 @@ class SwashNSTextView: NSTextView {
 
 /// Finds the next or previous heading, link, table or writing-partner suggestion for a VoiceOver custom rotor.
 final class MarkdownRotorDelegate: NSObject, NSAccessibilityCustomRotorItemSearchDelegate {
-    enum Kind: CaseIterable { case headings, links, tables, suggestions }
+    enum Kind: CaseIterable { case headings, links, tables, suggestions, marks }
 
     let kind: Kind
     weak var textView: NSTextView?
@@ -1375,6 +1460,7 @@ struct SwashTextView: NSViewRepresentable {
         
         context.coordinator.applyWritingOptions(writingOptions, in: textView)
         context.coordinator.writingPartner.onPauseChange = onPartnerPauseChange
+        context.coordinator.writingPartner.onMarksChange = { [weak controller] count in controller?.partnerMarksDidChange(count) }
         if context.coordinator.writingPartner.isPaused != isPartnerPaused {
             context.coordinator.writingPartner.setPaused(isPartnerPaused, in: textView)
         }
@@ -1734,6 +1820,9 @@ struct SwashTextView: NSViewRepresentable {
                     (storageRange(forRaw: $0.edit.range, in: textView), "\($0.edit.original) → \($0.edit.replacement)")
                 }
             }
+            if kind == .marks {
+                return writingPartner.marks.map { (storageRange(forRaw: $0.range, in: textView), $0.label) }
+            }
             let text = parent.text
             let document = parent.controller?.formatting(for: text).document ?? MarkdownDocument.parse(text, flavor: parent.flavor)
             var items: [(NSRange, String)] = []
@@ -1758,7 +1847,7 @@ struct SwashTextView: NSViewRepresentable {
                         items.append((node.range, header.isEmpty ? "Table \(index)" : "Table \(index): \(header)"))
                     }
                 }
-            case .suggestions:
+            case .suggestions, .marks:
                 break
             }
             return items.map { (storageRange(forRaw: $0.0, in: textView), $0.1) }
