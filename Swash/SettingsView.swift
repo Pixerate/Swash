@@ -7,6 +7,7 @@
 import SwiftUI
 import MacAppKitExtras
 import PixerateCore
+import PixerateStore
 
 struct SettingsView: View {
     private enum Tab: Hashable {
@@ -278,7 +279,7 @@ private struct WritingPartnerSettingsView: View {
     @State private var proseStats = WritingPartnerStats.load(voice: .punctuate)
     @State private var chatStats = WritingPartnerStats.load(voice: .chat)
     @State private var spellingOn = WritingPartnerDefaults.spelling()
-    private var access: PixerateAccess = .shared
+    var access: PixerateAccess = .shared
     @AppStorage(WritingPartnerDefaults.curlyQuotes) private var curlyQuotes = false
     @AppStorage(WritingPartnerDefaults.doubledWords) private var doubledWords = true
     @AppStorage(WritingPartnerDefaults.aAndAn) private var aAndAn = true
@@ -363,27 +364,37 @@ private struct WritingPartnerSettingsView: View {
 
             Section {
                 LabeledContent("When you pause") {
-                    if WritingPartnerDefaults.provider() == .onDevice {
+                    if access.isSubscribed {
+                        if let until = access.pausedUntil, until > .now {
+                            Text("Paused until \(until, style: .time)").foregroundStyle(.secondary)
+                        } else {
+                            Text("Pixerate")
+                        }
+                    } else if WritingPartnerDefaults.provider() == .onDevice {
                         Text("On this Mac (Apple Intelligence)").foregroundStyle(.secondary)
-                    } else if access.isSignedOut {
-                        Text("Basic fixes only").foregroundStyle(.secondary)
-                    } else if !access.isSubscribed {
-                        Text("Basic plan: fixes as you type only").foregroundStyle(.secondary)
-                    } else if let until = access.pausedUntil, until > .now {
-                        Text("Paused until \(until, style: .time)").foregroundStyle(.secondary)
                     } else {
-                        Text("Pixerate")
+                        Text("Basic fixes only").foregroundStyle(.secondary)
                     }
                 }
                 .disabled(mode == .off)
                 Toggle("Tidy Quick Notes on pause or save", isOn: $quickNoteTidy)
-                    .disabled(WritingPartnerDefaults.provider() != .pixerate)
+                    .disabled(!access.isSubscribed && WritingPartnerDefaults.provider() != .pixerate)
+                if !access.isSubscribed {
+                    PixerateProPaywall(
+                        store: access.store,
+                        title: "Swash Pro",
+                        features: [
+                            "Paragraph structure and grammar suggestions when you pause",
+                            "Quick Note tidy-up on pause or save"
+                        ],
+                        termsURL: PixerateAccess.termsURL,
+                        privacyURL: PixerateAccess.privacyURL,
+                        directMessage: "Sign in to use Pixerate Pro or a complimentary subscription."
+                    )
+                }
             } footer: {
-                if access.isSignedOut {
-                    Text("Sign in to Pixerate (Account) for paragraph structure suggestions on pause. On-device fixes work without an account.")
-                        .settingsFooterStyle()
-                } else if !access.isSubscribed {
-                    Text("Paragraph structure suggestions on pause require Pixerate Pro (Account). On-device fixes work on the Basic plan.")
+                if !access.isSubscribed {
+                    Text("On-device fixes work without Swash Pro.")
                         .settingsFooterStyle()
                 } else {
                     Text("Sends the paragraph you just wrote to Pixerate on pause for structure suggestions. Code, math, and tables are never sent.")
@@ -615,11 +626,13 @@ private struct AgentSettingsView: View {
 
 // MARK: - Account
 
-/// The opt-in Pixerate account for the writing partner's server features (#60).
+/// The Swash Pro and optional Pixerate account settings (#60, #149).
 private struct AccountSettingsView: View {
+    var access: PixerateAccess = .shared
+
     var body: some View {
         Form {
-            PixerateAccountSections()
+            PixerateAccountSections(access: access)
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
@@ -656,8 +669,38 @@ private extension View {
     UpdatesSettingsView()
 }
 
-#Preview("Writing Partner Settings", traits: .sectionContainer) {
-    WritingPartnerSettingsView()
+#Preview("Writing Partner Settings (Free)", traits: .sectionContainer) {
+    WritingPartnerSettingsView(access: .preview(distribution: .appStore))
+}
+
+#Preview("Writing Partner Settings (Swash Pro)", traits: .sectionContainer) {
+    WritingPartnerSettingsView(
+        access: .preview(
+            distribution: .appStore,
+            entitlements: PixerateEntitlements(
+                entitlements: [PixerateEntitlement.swashPro],
+                grants: [
+                    PixerateEntitlementGrant(
+                        entitlement: PixerateEntitlement.swashPro,
+                        source: "app_store",
+                        via: "customer",
+                        productId: "com.pixerate.swash.pro.monthly",
+                        ownership: "PURCHASED"
+                    )
+                ],
+                supportId: "SWSH-4X9Q"
+            )
+        )
+    )
+}
+
+#Preview("Writing Partner Settings (Direct Download)", traits: .sectionContainer) {
+    WritingPartnerSettingsView(
+        access: .preview(
+            distribution: .direct,
+            entitlements: PixerateEntitlements()
+        )
+    )
 }
 
 #Preview("Formatting Settings", traits: .sectionContainer) {
@@ -672,6 +715,6 @@ private extension View {
 }
 
 #Preview("Account Settings", traits: .sectionContainer) {
-    AccountSettingsView()
+    AccountSettingsView(access: .preview(distribution: .appStore))
 }
 #endif
