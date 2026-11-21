@@ -11,7 +11,10 @@ import PixerateStore
 
 struct SettingsView: View {
     private enum Tab: Hashable {
-        case general, appearance, writing, agents, account, updates
+        case general, appearance, writing, agents, account
+        #if !APP_STORE
+        case updates
+        #endif
     }
 
     @State private var selection: Tab = .general
@@ -38,9 +41,11 @@ struct SettingsView: View {
                 .tabItem { Label("Account", systemImage: "person.crop.circle") }
                 .tag(Tab.account)
 
+            #if !APP_STORE
             UpdatesSettingsView()
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
                 .tag(Tab.updates)
+            #endif
         }
         .frame(width: 500)
         .scenePadding(.minimum, edges: .vertical)
@@ -233,6 +238,7 @@ private struct AppearanceSettingsView: View {
 
 // MARK: - Updates
 
+#if !APP_STORE
 private struct UpdatesSettingsView: View {
     @ObservedObject private var sparkleUpdater = SparkleUpdater.shared
 
@@ -268,6 +274,7 @@ private struct UpdatesSettingsView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 }
+#endif
 
 // MARK: - Writing partner
 
@@ -665,9 +672,11 @@ private extension View {
     AppearanceSettingsView()
 }
 
+#if !APP_STORE
 #Preview("Updates Settings", traits: .sectionContainer) {
     UpdatesSettingsView()
 }
+#endif
 
 #Preview("Writing Partner Settings (Free)", traits: .sectionContainer) {
     WritingPartnerSettingsView(access: .preview(distribution: .appStore))
