@@ -84,7 +84,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct SwashApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    #if !APP_STORE
     @StateObject private var sparkleUpdater = SparkleUpdater.shared
+    #endif
     @AppStorage("showMenuBarExtra") private var showMenuBarExtra = false
     
     var body: some Scene {
@@ -95,12 +97,14 @@ struct SwashApp: App {
         .defaultSize(width: 800, height: 750)
         .handlesExternalEvents(matching: ["*"])
         .commands {
+            #if !APP_STORE
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates...") {
                     sparkleUpdater.checkForUpdates()
                 }
                 .disabled(!sparkleUpdater.canCheckForUpdates)
             }
+            #endif
             FormatMenuCommands()
             DocumentMenuCommands()
             FileMenuCommands()

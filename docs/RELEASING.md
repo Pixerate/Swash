@@ -42,6 +42,30 @@ To turn on TestFlight uploads:
 
 All four must be set; with any missing, the build stays unsigned.
 
+## Mac App Store (Universal Purchase)
+
+Swash supports Universal Purchase on the App Store under bundle identifier `com.pixerate.Swash`, sharing the same app record and subscription with the iOS app (iPhone and iPad).
+
+### Direct Distribution vs. Mac App Store Distribution
+- **Direct Distribution** (`Release` configuration, scheme `Swash`): Uses Sparkle for background updates and automatic update checks. Its keys (`SUFeedURL`, `SUPublicEDKey`, `SUEnableAutomaticChecks`) are in `Swash/Info.plist`.
+- **Mac App Store** (`Release-AppStore` configuration, scheme `Swash (App Store)`): Updates are delivered through the Mac App Store. The configuration leaves out `SparkleUpdater.swift` and the Sparkle package (not linked or embedded), the Updates settings tab and the Check for Updates… menu item, and Sparkle's Mach lookup exception entitlements. A build phase deletes Sparkle's Info.plist keys.
+
+### Archiving and Uploading
+To archive the macOS app for Mac App Store distribution:
+```bash
+xcodebuild archive \
+  -scheme "Swash (App Store)" \
+  -configuration Release-AppStore \
+  -archivePath build/Swash-macOS.xcarchive
+```
+
+Export it with `xcodebuild -exportArchive` (method `app-store-connect`), then validate and upload it with Xcode Organizer, Transporter or `xcrun altool --upload-app`, using the same App Store Connect API keys as iOS (`APP_STORE_CONNECT_API_KEY`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`). App Store builds aren't notarized: `notarytool` is only for direct distribution.
+
+To verify an App Store build locally before submission:
+```bash
+scripts/verify_app_store_build.sh path/to/Swash.app
+```
+
 ## Stickers (official builds)
 
 `Packages/PixerateStickers` is an open-source stub with no artwork, so anyone can build Swash. Official builds swap in the private [Pixerate/stickers](https://github.com/Pixerate/stickers) package (#62), which adds the sticker sets and the iMessage sticker pack. To turn this on, add a `PIXERATE_PACKAGES_TOKEN` repository secret: a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) (or a GitHub App token) with **read-only Contents** access to `Pixerate/stickers` only. Without it, releases keep the stub. The workflow pins the stickers release in the "Inject Proprietary Stickers" step.
