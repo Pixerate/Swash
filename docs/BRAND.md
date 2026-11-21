@@ -15,7 +15,7 @@ A calligraphic serif **S** with a looping **swash** flourish that breaks up into
 | App icon, avatar, marketing | Neon: glossy pink → fuchsia → violet → indigo glow on a dark obsidian-violet background. |
 | Stickers (`art/swash/`) | Ink and parchment: midnight-plum lines and burnished gold on cream by day, gold on slate by night. Calligraphic swash tails and ink speckles. |
 
-The sticker guide still says the icon is "a serif S… on warm parchment". That describes an older icon. Use the neon palette for UI chrome, and keep ink and parchment for sticker art.
+Use the neon palette for UI chrome, and keep ink and parchment for sticker art. The sticker guide's section "Relationship to the Swash brand" says what the two share: the swash stroke, the pixel square (stickers may use it as a speckle), and tintable flourishes taking the Swash accent inside the app.
 
 ## Palette for UI elements
 
@@ -32,7 +32,7 @@ The sticker guide still says the icon is "a serif S… on warm parchment". That 
 
 - **Pixel square:** a rounded square whose corner radius is about 28% of its side, the same shape as the pixels in the icon. It is Swash's base shape for small markers.
 - **Swash stroke:** a calligraphic stroke that is thin on one side and thick on the other, with tapered ends. Use it for ticks and flourishes, not for outlines.
-- **Speckles:** tiny round dots. Decoration for art and empty states only, never for inline text markers.
+- **Speckles:** tiny round dots or pixel squares. Decoration for art and empty states only, never for inline text markers.
 
 ## Inline Markdown markers
 
