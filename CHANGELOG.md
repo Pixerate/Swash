@@ -1,5 +1,11 @@
 # swash
 
+## 1.39.0
+
+### Minor Changes
+
+- 7f4f352: Writing partner: marks what it isn't sure about, to settle when you've finished typing (#128). In Automatically, a correction below its confidence threshold, or with more than one candidate (such as "form" → "from" or "for"), now changes nothing: it leaves a faint dotted underline in the partner's colour, and the status bar shows how many are left ("2 to check"). Typing past a mark neither dismisses it nor counts against it. Review them with Edit › Review What to Check (⌥⌘') or by clicking the count: each shows its candidate in place, Tab or ⌥⏎ accepts it as one undo step, Esc keeps the text as written (and the same word isn't marked again in the document), ⌥⌘] and ⌥⌘[ step between marks and ⇧⌥⌘' shows the other choice. A single mark can be settled by putting the caret in it, from its context menu, or by editing it yourself. Marks come from the on-device and Pixerate spelling (#98, #120), pause-tier grammar (#111) and structure suggestions it isn't sure of (#101), are at most three per paragraph, are never written into the Markdown, and are listed in a "To Check" VoiceOver rotor. Settings › Writing has "Mark what it isn't sure about" (on) and "Announce marks with VoiceOver" (off).
+
 ## 1.38.0
 
 ### Minor Changes
