@@ -38,7 +38,7 @@ struct SwashApp: App {
 final class SwashAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-        PixerateStore.startIfSignedIn()
+        PixerateAccess.startAtLaunch()
         return true
     }
 
