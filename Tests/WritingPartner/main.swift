@@ -1779,6 +1779,63 @@ do {
     check(edits.contains(where: { $0.replacement == "don't" && $0.rules.contains(.contraction) }), "WritingPartner protocol edits computes contraction replacement")
 }
 
+
+// Context-aware spelling on device (#98): what ContextSpelling keeps of the model's corrections
+do {
+    let paragraph = "I came form the shop and their was a liek on the post."
+    let found = ContextSpelling.suggestions(from: [
+        ContextSpellingCandidate(kind: .wrongWord, original: "form", replacement: "from", confidence: 0.95),
+        ContextSpellingCandidate(kind: .wrongWord, original: "their", replacement: "there", confidence: 0.7),
+        ContextSpellingCandidate(kind: .spelling, original: "liek", replacement: "like", confidence: 0.4),
+        ContextSpellingCandidate(kind: .spelling, original: "shop", replacement: "Shop", confidence: 0.99),
+        ContextSpellingCandidate(kind: .wrongWord, original: "the post", replacement: "a letter in the box", confidence: 0.99),
+        ContextSpellingCandidate(kind: .spelling, original: "post", replacement: "parcel", confidence: 0.99),
+        ContextSpellingCandidate(kind: .spelling, original: "teh", replacement: "the", confidence: 0.99),
+    ], paragraph: paragraph)
+    check(found.map(\.replacement) == ["from", "there"], "Context spelling keeps confident fixes and drops low confidence, case-only, rewrites, far-off and missing words: \(found.map(\.replacement))")
+    let ns = paragraph as NSString
+    check(found.first.map { ns.substring(with: NSRange(location: $0.range.start, length: $0.range.end - $0.range.start)) } == "form",
+          "Context spelling finds the word as written")
+    check(found.first?.shouldApplyAtOnce == true, "A confident correction is made")
+    check(found.last?.shouldApplyAtOnce == false, "A less confident correction is offered, not made")
+    check(found.allSatisfy { $0.kind.isSpellingKind }, "Context spelling corrections are spelling kinds, so undo ignores the word")
+    let twice = ContextSpelling.suggestions(from: [
+        ContextSpellingCandidate(kind: .wrongWord, original: "form", replacement: "from", confidence: 0.95),
+    ], paragraph: "Fill in the form form the office.")
+    check(twice.isEmpty, "A word written twice in the paragraph is ambiguous and left alone")
+    let inWord = ContextSpelling.suggestions(from: [
+        ContextSpellingCandidate(kind: .wrongWord, original: "then", replacement: "than", confidence: 0.95),
+    ], paragraph: "Better thenceforth then ever.")
+    check(inWord.count == 1 && inWord[0].range.start == 19, "A word is found whole, not inside a longer one")
+    check(ContextSpelling.editDistance("teh", "the") == 1, "A swapped pair of letters is one change")
+    check(ContextSpelling.recurs("colur", in: "The colur, the Colur." as NSString), "A word used twice recurs")
+    check(!ContextSpelling.recurs("colur", in: "The colur, the colours." as NSString), "A longer word isn't a recurrence")
+
+    // The planner leaves a recurring misspelling alone, makes the confident fix and offers the other
+    let doc = "Send it form home so we dont loose the colur, and the colur."
+    let response = JazzTextLeadResponse(
+        genre: .prose, palette: [JazzTextVoice(voice: .punctuate, strength: 1)],
+        suggestions: ContextSpelling.suggestions(from: [
+            ContextSpellingCandidate(kind: .wrongWord, original: "form", replacement: "from", confidence: 0.95),
+            ContextSpellingCandidate(kind: .wrongWord, original: "loose", replacement: "lose", confidence: 0.6),
+            ContextSpellingCandidate(kind: .spelling, original: "colur", replacement: "colour", confidence: 0.9),
+        ], paragraph: doc),
+        why: "test")
+    let plan = BandleaderSuggestionPlanner.plan(response: response, paragraph: doc,
+                                                paragraphRange: NSRange(location: 0, length: (doc as NSString).length),
+                                                documentText: doc, memory: BandleaderSessionMemory())
+    check(plan.automaticEdits.map(\.replacement) == ["from"], "On-device context spelling: the confident fix is made")
+    check(plan.offeredEdits.map(\.replacement) == ["lose"], "On-device context spelling: the unsure fix is offered")
+    let suggestPlan = BandleaderSuggestionPlanner.plan(response: response, paragraph: doc,
+                                                       paragraphRange: NSRange(location: 0, length: (doc as NSString).length),
+                                                       documentText: doc, mode: .suggest, memory: BandleaderSessionMemory())
+    check(suggestPlan.automaticEdits.isEmpty && suggestPlan.offeredEdits.count == 2, "In Suggest mode every context spelling fix is offered")
+    let off = BandleaderSuggestionPlanner.plan(response: response, paragraph: doc,
+                                               paragraphRange: NSRange(location: 0, length: (doc as NSString).length),
+                                               documentText: doc, spellingEnabled: false, memory: BandleaderSessionMemory())
+    check(off.automaticEdits.isEmpty && off.offeredEdits.isEmpty, "With spelling off, no context spelling")
+    check(OnDeviceWritingBandleader.instructions.contains("real word used wrongly"), "The on-device instructions ask for context spelling")
+}
 runFormattingTests()
 
 print("\(passes) passed, \(failures) failed")
