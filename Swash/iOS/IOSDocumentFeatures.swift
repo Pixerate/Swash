@@ -27,6 +27,7 @@ struct IOSTypographySettings: DynamicProperty {
     @AppStorage(WritingDefaults.focusMode) private var focusMode = false
     @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
     @AppStorage(WritingDefaults.typewriterScrolling) private var typewriterScrolling = false
+    @AppStorage(WritingDefaults.emptyLineInsertAffordance) var emptyLineInsertAffordance = true
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     /// The saved settings, without Dynamic Type.
@@ -68,13 +69,14 @@ struct IOSTypographySettingsSections: View {
     @AppStorage(WritingDefaults.focusMode) private var focusMode = false
     @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
     @AppStorage(WritingDefaults.typewriterScrolling) private var typewriterScrolling = false
+    @AppStorage(WritingDefaults.emptyLineInsertAffordance) private var emptyLineInsertAffordance = true
 
     private var typography: EditorTypography {
         EditorTypography(font: font, textSize: EditorTypography.clampedSize(textSize), lineWidth: lineWidth, theme: theme)
     }
 
     private var isDefault: Bool {
-        typography == EditorTypography() && !focusMode && focusUnit == .paragraph && !typewriterScrolling
+        typography == EditorTypography() && !focusMode && focusUnit == .paragraph && !typewriterScrolling && emptyLineInsertAffordance
     }
 
     /// Text size relative to the default, as the reader sees it ("100%").
@@ -114,10 +116,11 @@ struct IOSTypographySettingsSections: View {
                 }
             }
             Toggle("Typewriter Scrolling", isOn: $typewriterScrolling)
+            Toggle("Empty-Line Insert Button", isOn: $emptyLineInsertAffordance)
         } header: {
             Text("Writing")
         } footer: {
-            Text("Focus Mode dims everything outside the current paragraph or sentence. Typewriter Scrolling keeps the line you’re typing centred on the screen.")
+            Text("Focus Mode dims everything outside the current paragraph or sentence. Typewriter Scrolling keeps the line you’re typing centred on the screen. The empty-line insert button reveals a + button after a short pause on an empty line.")
         }
 
         Section {
@@ -149,6 +152,7 @@ struct IOSTypographySettingsSections: View {
                 focusMode = false
                 focusUnit = .paragraph
                 typewriterScrolling = false
+                emptyLineInsertAffordance = true
             }
             .disabled(isDefault)
         }
@@ -459,11 +463,13 @@ struct IOSDocumentToolbar: ToolbarContent {
                 .accessibilityHint("Shows the list of headings")
             }
         }
-        ToolbarItem(placement: .secondaryAction) {
-            Button {
-                model.showInfo(text: text, editor: editor)
-            } label: {
-                Label("Document Info", systemImage: "info.circle")
+        if !regularWidth {
+            ToolbarItem(placement: .secondaryAction) {
+                Button {
+                    model.showInfo(text: text, editor: editor)
+                } label: {
+                    Label("Document Info", systemImage: "info.circle")
+                }
             }
         }
         ToolbarItem(placement: .secondaryAction) {
@@ -589,6 +595,9 @@ struct IOSOutlineSidebar: View {
     let editor: IOSEditorController
     let isVisible: Bool
     var fileURL: URL? = nil
+    var flavor: Binding<MarkdownFlavor>? = nil
+    var showInfo: (() -> Void)? = nil
+    var showSettings: (() -> Void)? = nil
 
     enum Mode: String, CaseIterable {
         case outline = "Outline"
@@ -619,6 +628,9 @@ struct IOSOutlineSidebar: View {
                 .padding(.vertical, 8)
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            sidebarFooter
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(mode.rawValue)
         .task(id: isVisible ? text : nil) {
@@ -626,6 +638,55 @@ struct IOSOutlineSidebar: View {
             try? await Task.sleep(for: .milliseconds(model.outline.headings.isEmpty ? 0 : 300))
             guard !Task.isCancelled else { return }
             model.refreshOutline(text: text, editor: editor)
+        }
+    }
+
+    @ViewBuilder
+    private var sidebarFooter: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 16) {
+                if let flavor {
+                    Menu {
+                        Picker("Markdown Flavor", selection: flavor) {
+                            ForEach(MarkdownFlavor.allCases) { item in
+                                Text(item.rawValue).tag(item)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "textformat")
+                            Text(flavor.wrappedValue.rawValue)
+                        }
+                        .font(.subheadline)
+                    }
+                    .accessibilityLabel("Markdown Flavor")
+                    .accessibilityValue(flavor.wrappedValue.rawValue)
+                }
+                Spacer()
+                HStack(spacing: 16) {
+                    Button {
+                        if let showInfo {
+                            showInfo()
+                        } else {
+                            model.showInfo(text: text, editor: editor)
+                        }
+                    } label: {
+                        Label("Document Info", systemImage: "info.circle")
+                    }
+                    Button {
+                        showSettings?()
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                }
+                .labelStyle(.iconOnly)
+            }
+            .font(.body)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.bar)
         }
     }
 }
@@ -807,6 +868,27 @@ extension View {
         currentIndex: nil,
         select: { _ in }
     )
+}
+
+#Preview("iOS Outline Sidebar") {
+    @Previewable @State var model = IOSDocumentFeaturesModel()
+    @Previewable @State var flavor = MarkdownFlavor.github
+    NavigationStack {
+        IOSOutlineSidebar(
+            model: model,
+            text: """
+            # Swash iOS
+            ## Introduction
+            ### Navigation
+            ## Settings
+            """,
+            editor: IOSEditorController(),
+            isVisible: true,
+            flavor: $flavor,
+            showInfo: {},
+            showSettings: {}
+        )
+    }
 }
 
 #Preview("iOS Document Info") {
