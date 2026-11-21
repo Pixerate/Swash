@@ -73,14 +73,82 @@ enum DocumentOpener {
     }
 
     /// Opens `url` in the document browser, retrying briefly while the app finishes launching.
+    /// Any open document is saved before the new document is picked, so unsaved edits are never lost.
     static func open(_ url: URL, attempts: Int = 10) {
+        if let current = openDocuments().first, current.fileURL.standardizedFileURL == url.standardizedFileURL {
+            return
+        }
+
         guard let browser = documentBrowser() else {
             if attempts > 0 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { open(url, attempts: attempts - 1) }
             }
             return
         }
-        reveal(url, in: browser)
+        Task { @MainActor in
+            await saveOpenDocuments()
+            reveal(url, in: browser)
+        }
+    }
+
+    /// Finds all open `UIDocument`s in the given view controller hierarchy.
+    static func findOpenDocuments(in controller: UIViewController?, into documents: inout [UIDocument]) {
+        guard let controller = controller else { return }
+        if let documentController = controller as? UIDocumentViewController,
+           let document = documentController.document {
+            if !documents.contains(where: { $0 === document }) {
+                documents.append(document)
+            }
+        }
+        for child in controller.children {
+            findOpenDocuments(in: child, into: &documents)
+        }
+        if let presented = controller.presentedViewController, presented.presentingViewController === controller {
+            findOpenDocuments(in: presented, into: &documents)
+        }
+    }
+
+    /// Finds all open `UIDocument`s across all connected window scenes.
+    static func openDocuments() -> [UIDocument] {
+        var documents: [UIDocument] = []
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        for scene in scenes {
+            for window in scene.windows {
+                findOpenDocuments(in: window.rootViewController, into: &documents)
+            }
+        }
+        return documents
+    }
+
+    /// Saves all open documents across all connected window scenes.
+    @discardableResult
+    static func saveOpenDocuments() async -> Bool {
+        let docs = openDocuments().filter { !$0.documentState.contains(.closed) }
+        guard !docs.isEmpty else { return true }
+        var allSucceeded = true
+        for document in docs {
+            let success = await document.save(to: document.fileURL, for: .forOverwriting)
+            if !success { allSucceeded = false }
+        }
+        return allSucceeded
+    }
+
+    /// Saves all open documents on scene backgrounding or deactivation, requesting background execution time.
+    static func saveOpenDocumentsOnBackground() {
+        var taskID: UIBackgroundTaskIdentifier = .invalid
+        taskID = UIApplication.shared.beginBackgroundTask(withName: "SwashSaveOpenDocuments") {
+            if taskID != .invalid {
+                UIApplication.shared.endBackgroundTask(taskID)
+                taskID = .invalid
+            }
+        }
+        Task { @MainActor in
+            await saveOpenDocuments()
+            if taskID != .invalid {
+                UIApplication.shared.endBackgroundTask(taskID)
+                taskID = .invalid
+            }
+        }
     }
 
     /// Hands `url` to the browser as if the user had picked it. Files outside the app's own folder
