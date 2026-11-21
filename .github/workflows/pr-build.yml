@@ -41,6 +41,17 @@ jobs:
             -derivedDataPath build \
             CODE_SIGN_IDENTITY="-"
 
+      - name: Build Mac App Store (Release-AppStore, ad-hoc signed)
+        run: |
+          xcodebuild -scheme "Swash (App Store)" \
+            -destination 'generic/platform=macOS' \
+            -configuration Release-AppStore \
+            -derivedDataPath build-appstore \
+            CODE_SIGN_IDENTITY="-"
+
+      - name: Verify Mac App Store build (Sparkle isolation)
+        run: scripts/verify_app_store_build.sh build-appstore/Build/Products/Release-AppStore/Swash.app
+
       - name: Math and Mermaid rendering tests
         run: scripts/run_rich_render_tests.sh
 
@@ -91,6 +102,14 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -configuration Release \
             -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Build iOS App Store (Release-AppStore, iOS Simulator, unsigned)
+        run: |
+          xcodebuild -scheme "Swash (App Store)" \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Release-AppStore \
+            -derivedDataPath build-appstore-ios \
             CODE_SIGNING_ALLOWED=NO
 
       # The Edit Text editor tests (Tests/SwashiOSTests), hosted by the app on an iPhone simulator
