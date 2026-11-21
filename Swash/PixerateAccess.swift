@@ -371,7 +371,10 @@ final class PixerateAccess {
     /// (when available) and the Pixerate account bearer key (when signed in), and returns the
     /// response body. Throws `PixerateRefusal`, without sending anything to `path`, when
     /// unauthenticated, when the feature is off, without Swash Pro, or while rate-limited.
-    func post(path: String, body: Data) async throws -> Data {
+    /// `timeout` caps how long the request may take (default: the session's). The writing partner's
+    /// pause tier passes a short one so a dropped connection falls back to the on-device partner
+    /// at once rather than after a minute (#109).
+    func post(path: String, body: Data, timeout: TimeInterval? = nil) async throws -> Data {
         guard isFeatureEnabled() else { throw PixerateRefusal.featureOff }
         guard (try? store.authorizedRequest(path: path, method: "POST", body: body)) != nil else {
             throw PixerateRefusal.signedOut
@@ -392,12 +395,13 @@ final class PixerateAccess {
             self.pausedUntil = nil
         }
 
-        let request: URLRequest
+        var request: URLRequest
         do {
             request = try store.authorizedRequest(path: path, method: "POST", body: body)
         } catch {
             throw PixerateRefusal.signedOut
         }
+        if let timeout { request.timeoutInterval = timeout }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw PixerateRefusal.failed(status: 0, message: nil)
