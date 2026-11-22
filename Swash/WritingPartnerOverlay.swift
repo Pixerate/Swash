@@ -552,12 +552,12 @@ final class WritingPartnerOverlay: NSView {
         renderer.clear()
         renderer.behindLayer.removeFromSuperlayer()
         renderer.aboveLayer.removeFromSuperlayer()
-        if let textView = target?.textView ?? (superview as? NSTextView) { redrawUnderText([], in: textView) }
+        if let textView = (target?.host as? MacWritingPartnerHost)?.textView ?? (superview as? NSTextView) { redrawUnderText([], in: textView) }
     }
 
     /// One frame: the plan of every stage at this moment, drawn by Flair's renderer.
     private func draw() {
-        guard let textView = target?.textView ?? (superview as? NSTextView) else { return }
+        guard let textView = (target?.host as? MacWritingPartnerHost)?.textView ?? (superview as? NSTextView) else { return }
         // Colours are read in the text view's own appearance. A system colour (the text's, the
         // page's, the partner's tint) read from a timer resolves in whatever appearance happens to
         // be current, which is not the window's: in Light Mode the old word was then covered in
@@ -581,7 +581,7 @@ final class WritingPartnerOverlay: NSView {
             caretStart = nil
             selectStart = nil
             typingStart = nil
-        } else if let target, let coordinator = target.coordinator {
+        } else if let target, let coordinator = (target.host as? MacWritingPartnerHost)?.coordinator {
             caretStart = caretStart ?? now
             let storage = { (agent: NSRange) -> NSRange in
                 coordinator.storageRange(forRaw: target.realRange(forAgent: agent), in: textView)
@@ -1039,14 +1039,12 @@ final class WritingPartnerStylePreviewView: NSView {
 /// plainly that default rules run on the device, and offers Automatically, Suggest, and Not now.
 @MainActor
 final class PartnerIntroductionView: NSView {
-    static let noteText = "Swash can tidy up behind you as you type"
-    nonisolated static let privacyText = "Punctuation and spelling rules run on your Mac and never leave this device."
-    /// With Swash Pro, the pause tier sends the paragraph to Pixerate (docs/writing-partner-privacy.md),
-    /// so the introduction says so before the person chooses.
-    nonisolated static let signedInPrivacyText = "Fixes as you type run on your Mac. With Swash Pro, the paragraph you pause on is also sent to Pixerate for suggestions."
+    static let noteText = WritingPartnerCopy.introduction
+    nonisolated static let privacyText = WritingPartnerCopy.privacy
+    nonisolated static let signedInPrivacyText = WritingPartnerCopy.signedInPrivacy
 
     nonisolated static func privacyText(signedIn: Bool) -> String {
-        signedIn ? signedInPrivacyText : privacyText
+        WritingPartnerCopy.privacy(signedIn: signedIn)
     }
 
     static let preferredSize = NSSize(width: 420, height: 146)

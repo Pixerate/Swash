@@ -25,6 +25,7 @@ struct IOSContentView: View {
     @State private var scrollSync = ScrollSync()
     @State private var showingSettings = false
     @State private var distractionFree = false
+    @State private var partnerPaused = false
     @State private var conflictCount = 0
     @State private var showingConflictSheet = false
     @State private var conflictError: String?
@@ -99,15 +100,17 @@ struct IOSContentView: View {
             Button("Cancel", role: .cancel) {}
         }
         .focusedSceneValue(\.formatCommandHandler, { handleFormatCommand($0) })
-        .focusedSceneValue(\.insertBlockHandler, { handleInsertItem($0) })
         .focusedSceneValue(\.distractionFreeToggle, DistractionFreeToggle(isOn: distractionFree, toggle: {
             withAnimation(.easeInOut(duration: 0.2)) {
                 distractionFree.toggle()
             }
         }))
+        .onChange(of: partnerPaused) { _, paused in
+            editor.setPartnerPaused(paused)
+        }
         .onAppear {
+            editor.onPartnerPauseChange = { partnerPaused = $0 }
             editor.onFormatCommand = { handleFormatCommand($0) }
-            editor.onInsertBlock = { handleInsertItem($0) }
             editor.flavor = document.flavor
             refreshConflicts()
         }
@@ -196,29 +199,26 @@ struct IOSContentView: View {
     /// bar's (and banner's) height, which they apply as a content inset.
     @ViewBuilder
     private func content(topInset: CGFloat) -> some View {
-        let options = typography.writingOptions(distractionFree: distractionFree)
-        let affordanceEnabled = !distractionFree && options.focus == nil && typography.emptyLineInsertAffordance
         switch effectiveMode {
         case .edit:
-            sourceEditor(topInset: topInset, insertAffordanceEnabled: affordanceEnabled)
+            sourceEditor(topInset: topInset)
         case .preview:
             // Edit Text for every flavour: Slack mrkdwn is parsed onto the same model (SlackMarkdown)
             StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL,
                            formattingEnabled: !distractionFree, topInset: topInset,
-                           writingOptions: options,
-                           insertAffordanceEnabled: affordanceEnabled,
+                           writingOptions: typography.writingOptions(distractionFree: distractionFree),
                            typography: typography.scaled)
                 .id(folderAccessManager.accessGrantedTrigger)
         case .split:
             HStack(spacing: 0) {
-                sourceEditor(topInset: topInset, insertAffordanceEnabled: affordanceEnabled)
+                sourceEditor(topInset: topInset)
                 Divider()
                 preview(topInset: topInset)
             }
         }
     }
 
-    private func sourceEditor(topInset: CGFloat, insertAffordanceEnabled: Bool) -> some View {
+    private func sourceEditor(topInset: CGFloat) -> some View {
         SourceTextView(
             text: $document.text,
             controller: editor,
@@ -227,8 +227,7 @@ struct IOSContentView: View {
             topInset: topInset,
             flavor: document.flavor,
             baseURL: fileURL,
-            textSize: typography.stored.textSize,
-            insertAffordanceEnabled: insertAffordanceEnabled
+            textSize: typography.stored.textSize
         )
     }
 
@@ -249,7 +248,8 @@ struct IOSContentView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .secondaryAction) {
+        // In the centre group on iPad; on iPhone the overflow would hide its one-tap switch
+        ToolbarItem(placement: horizontalSizeClass == .regular ? .secondaryAction : .primaryAction) {
             // A glyph button, not a segmented control: iOS 26 toolbars squeeze segmented
             // controls into one glass circle. Tap switches Source and Formatted; hold for every mode.
             Menu {
@@ -270,7 +270,7 @@ struct IOSContentView: View {
         }
         IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
                            editor: editor, regularWidth: horizontalSizeClass == .regular,
-                           distractionFree: $distractionFree)
+                           distractionFree: $distractionFree, partnerPaused: $partnerPaused)
         if horizontalSizeClass != .regular {
             ToolbarItem(placement: .secondaryAction) {
                 // A submenu, so the editor toolbar on iPad shows an icon, not the bare flavour name
@@ -415,22 +415,6 @@ struct IOSContentView: View {
         }
         guard let edit = FormatCommandEdits.edit(for: command, text: document.text, selection: selection, flavor: document.flavor) else { return }
         commit(edit, actionName: command.actionName)
-    }
-
-    private func handleInsertItem(_ item: InsertItem) {
-        if editor.isAttached {
-            editor.insert(item)
-            if let text = editor.textView?.markdownText {
-                document.text = text
-            }
-            if item != .image {
-                editor.focus()
-            }
-            return
-        }
-        let location = (document.text as NSString).length
-        guard let edit = MarkdownEditingCommands.insertBlock(item, text: document.text, at: location) else { return }
-        document.text = edit.text
     }
 
     private func applyLink(_ url: String?, selection: NSRange) {
