@@ -491,7 +491,7 @@ struct SwashMenuBarMenu: View {
 #Preview("Quick Capture Panel") {
     QuickCaptureView(
         targetTitle: "My Notes.md",
-        session: QuickNoteTidySession(),
+        session: QuickNoteTidySession(draftKey: nil),
         onCreate: { _ in },
         onAppend: { _ in },
         onCancel: {}
