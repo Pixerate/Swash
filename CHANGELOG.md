@@ -1,5 +1,32 @@
 # swash
 
+## 1.43.0
+
+### Minor Changes
+
+- f8894eb: iOS: Hide top navigation and toolbar items when Focus Mode is active, showing a compact floating focus control in the top-trailing corner, and hiding the iPad outline sidebar.
+- 524f3cb: Add quick-access Markdown character strip (`#`, `*`, `_`, `` ` ``, `>`, `-`, `[`, `]`, `(`, `)`, `|`, `!`, `~`) to the iOS keyboard accessory bar with long-press variants and VoiceOver labels (#191).
+- 5e3bb4d: Show the most recently used format commands on the iOS keyboard bar with active selection state, and include all iOS-available format commands in the Aa format panel.
+- 04a7ef2: Suggest document titles from headings or first lines when renaming on iPad/iOS and creating notes.
+- 32ddc2a: Fold iOS Export menu actions (Export as PDF, Export as HTML, Copy as Rich Text, Copy HTML, and Print) into the document share sheet and remove the separate Export toolbar menu on iPhone and iPad.
+- 2c12031: Expand Apple Shortcuts, Siri, Spotlight, Focus Filter, and AppleScript automation with `SwashDocumentEntity` and actions for finding or creating notes, templates, appending under headings or as to-dos, full-text search, HTML and flavor conversion, PDF export, task roll-ups, outlines, and document statistics.
+
+### Patch Changes
+
+- 0ea03a1: Context-spelling eval: list the on-device model's suggestion and confidence for each injected word and for words that weren't injected, and add `--all-candidates` to include corrections below the offer threshold, so the thresholds can be checked against a run (#167).
+- 11df6ce: Fix the iPad Swash Pro paywall showing "cancelled" and errors from background refreshes, and say that Quick Note tidy-up is on the Mac.
+- 65c0899: Display release version and build number in iOS Settings and keep project MARKETING_VERSION synchronized on release
+- 82dae5d: Resolve external file conflicts in folder windows by detecting disk modifications prior to saving and presenting Keep Mine, Keep Theirs, or Save Mine as a Copy options.
+- d0b0489: Prevent dropping unsaved edits when saving fails while switching files or renaming in folder windows
+- 75ef911: Preserve unsaved edits in folder windows when the selected file is renamed, moved, or deleted externally, tracking renames across the workspace using file resource identifiers and saving unsaved edits back to disk rather than discarding them.
+- 4401fc4: iOS and macOS: copy writes semantic HTML and RTF for lists, to-dos, and tables.
+- 535319d: Fix iOS insertion cursor collapsing to a dot or stretching unpredictably next to hidden Markdown syntax and headings
+- 56b9dee: Ensure unsaved edits in an open iOS document are saved before opening a note from the share extension or external URL, and flush all open documents to disk when the app becomes inactive or enters the background.
+- 6bd6ec7: Reorganize iPad document toolbar and sidebar: move Document Info, Settings, and Markdown flavour picker to the sidebar footer, place View Mode in the centre group, and remove the extra trailing Share button.
+- 9486b1b: Persist Quick Note drafts to UserDefaults across panel dismissals and app restarts, clearing only upon successful creation or appending.
+- a4d3148: Keep source formatting as Markdown when sharing into Swash from Safari, Notes, or Notion.
+- 4a6f234: Flush uncommitted Writing Tools edits on window close, app termination, and view dismantle, and clear Writing Tools state that's stuck after AppKit reports the session over.
+
 ## 1.42.1
 
 ### Patch Changes
