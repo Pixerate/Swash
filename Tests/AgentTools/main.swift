@@ -672,10 +672,15 @@ func run() async {
         session.applyEdit = { newText, _, _ in docText = newText }
         _ = await session.registry.callTool("insert_text", ["text": "x", "at": 0], actor: ToolActor(id: "a", name: "A"))
         check(!(session.carets.caret("a")?.changed.isEmpty ?? true), "the change is tinted")
-        try? await Task.sleep(for: .milliseconds(40))
-        check(session.carets.caret("a")?.changed.isEmpty ?? false, "the tint clears after changedTintMs")
-        try? await Task.sleep(for: .milliseconds(60))
-        check(session.carets.caret("a") == nil, "the idle caret clears after caretIdleMs")
+        // Wait for each expiry with a deadline rather than a fixed sleep: a busy CI runner can run
+        // the expiry task well after its delay.
+        func eventually(_ condition: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(2)
+            while !condition() && Date() < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+            return condition()
+        }
+        check(await eventually { session.carets.caret("a")?.changed.isEmpty ?? true }, "the tint clears after changedTintMs")
+        check(await eventually { session.carets.caret("a") == nil }, "the idle caret clears after caretIdleMs")
     }
 }
 

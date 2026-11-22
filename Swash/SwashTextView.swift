@@ -1819,17 +1819,12 @@ struct SwashTextView: NSViewRepresentable {
             textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
         }
 
-        /// Safety net: clears hung Writing Tools state if AppKit reports it is no longer active
-        /// or if the user resumes typing via a key event.
+        /// Safety net: clears hung Writing Tools state when AppKit reports the session is over but
+        /// `textViewWritingToolsDidEnd` never came. Not on a key press: Writing Tools has its own
+        /// text fields, and typing in them mid-session must not end it (GOTCHAS #29).
         func verifyWritingToolsState(in textView: NSTextView) {
             guard isWritingToolsActive else { return }
-            if #available(macOS 15.0, *) {
-                if !textView.isWritingToolsActive {
-                    flushWritingToolsChanges(in: textView)
-                    return
-                }
-            }
-            if NSApp.currentEvent?.type == .keyDown {
+            if #available(macOS 15.0, *), !textView.isWritingToolsActive {
                 flushWritingToolsChanges(in: textView)
             }
         }

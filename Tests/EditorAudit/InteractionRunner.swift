@@ -1430,24 +1430,6 @@ struct InteractionRunner {
                     expect: "Dismantle test dismantled")
             }
 
-            // 5. Keystroke safety net clears hung isWritingToolsActive
-            let b4 = TextBox("Safety net test")
-            let tv4 = makeEditor(b4)
-            let coord4 = tv4.delegate as! SwashTextView.Coordinator
-            (tv4 as? SwashNSTextView)?.writingToolsActiveOverride = true
-            if #available(macOS 15.0, *) {
-                coord4.textViewWritingToolsWillBegin(tv4)
-            }
-            // User resumes typing via keyDown
-            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: tv4.window?.windowNumber ?? 0, context: nil, characters: "x", charactersIgnoringModifiers: "x", isARepeat: false, keyCode: 7)!
-            tv4.keyDown(with: event)
-            tv4.insertText(" typed", replacementRange: NSRange(location: (tv4.string as NSString).length, length: 0))
-            pump(0.1)
-            log("writing-tools-keystroke-safety-net", "Safety net test",
-                "active=\(coord4.isWritingToolsActive) text=\(b4.text)",
-                "keystroke safety net clears isWritingToolsActive and flushes",
-                expect: "active=false text=Safety net testx typed")
-
             // 6. AppKit isWritingToolsActive == false safety net
             let b5 = TextBox("AppKit safety net")
             let tv5 = makeEditor(b5)
