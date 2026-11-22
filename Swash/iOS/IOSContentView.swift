@@ -461,6 +461,7 @@ struct IOSContentView: View {
     /// Formatting writes the document's flavour: Slack mrkdwn gets `*bold*`, `_italic_`, `~strike~`
     /// and `<url|text>` links (SlackMarkdown.swift).
     private func handleFormatCommand(_ command: FormatCommand) {
+        RecentFormatCommands.shared.record(command)
         let selection = editor.isAttached ? editor.selection : NSRange(location: (document.text as NSString).length, length: 0)
         if command == .link {
             let current = FormatCommandEdits.activeLink(text: document.text, selection: selection, flavor: document.flavor)

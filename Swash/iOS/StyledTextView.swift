@@ -360,6 +360,7 @@ struct StyledTextView: UIViewRepresentable {
             if let styled = textView as? StyledUITextView {
                 applyFocus(in: styled)
                 centerCaret(in: styled)
+                styled.refreshFormattingBarState()
                 // The Formatting voice tidies a block once the caret has left it (#113)
                 if !styled.isApplyingEdit, let host = partnerHost { writingPartner.selectionDidChange(in: host) }
             }
@@ -661,6 +662,7 @@ struct StyledTextView: UIViewRepresentable {
                 textView.contentOffset = savedOffset
             }
             textView.setNeedsOverlayLayout()
+            textView.refreshFormattingBarState()
             lastStyledText = rawText
             lastFlavor = parent.flavor
             lastBaseURL = parent.baseURL
