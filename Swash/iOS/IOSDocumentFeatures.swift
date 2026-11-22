@@ -338,6 +338,9 @@ final class IOSDocumentFeaturesModel {
     var exporting: String?
     var exportError: String?
 
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+    nonisolated deinit {}
+
     struct InfoSnapshot: Identifiable {
         let id = UUID()
         let document: MarkdownStatistics
@@ -441,6 +444,9 @@ struct IOSDocumentToolbar: ToolbarContent {
     let editor: IOSEditorController
     let regularWidth: Bool
     var distractionFree: Binding<Bool>? = nil
+    /// Pauses the writing partner for this document (#109).
+    var partnerPaused: Binding<Bool>? = nil
+    @AppStorage(WritingPartnerDefaults.mode) private var partnerMode: WritingPartnerMode = .automatic
 
     @AppStorage(WritingDefaults.focusMode) private var focusMode = false
     @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
@@ -473,6 +479,9 @@ struct IOSDocumentToolbar: ToolbarContent {
                     }
                 }
                 Toggle("Typewriter Scrolling", systemImage: "arrow.up.and.down.text.horizontal", isOn: $typewriterScrolling)
+                if let partnerPaused, partnerMode != .off {
+                    Toggle("Pause Writing Partner", systemImage: "pause.circle", isOn: partnerPaused)
+                }
                 if let distractionFree {
                     Divider()
                     Button {

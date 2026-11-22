@@ -10,7 +10,7 @@
 		0460136230045F6A00853817 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = 0460136130045F6A00853817 /* Sparkle */; };
 		046013C230045F6A00853817 /* PixerateMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C130045F6A00853817 /* PixerateMarkdown */; };
 		046013C430045F6A00853817 /* PixerateMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C330045F6A00853817 /* PixerateMarkdown */; };
-		046013C630045F6A00853817 /* PixerateCore in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = 046013C530045F6A00853817 /* PixerateCore */; };
+		046013C630045F6A00853817 /* PixerateCore in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C530045F6A00853817 /* PixerateCore */; };
 		046013C830045F6A00853817 /* PixerateCore in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C730045F6A00853817 /* PixerateCore */; };
 		0460F1A630045F6A00853817 /* FlairEffects in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = 0460F1A530045F6A00853817 /* FlairEffects */; };
 		0460F1A830045F6A00853817 /* FlairEffects in Frameworks */ = {isa = PBXBuildFile; productRef = 0460F1A730045F6A00853817 /* FlairEffects */; };

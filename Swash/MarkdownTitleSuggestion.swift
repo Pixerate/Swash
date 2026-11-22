@@ -23,10 +23,15 @@ import ObjectiveC
 /// - Collapses whitespace.
 /// - Trimmed to about 60 characters on a word boundary.
 public enum MarkdownTitleSuggestion {
+    /// How much of the document `suggest(from:)` reads.
+    static let maxScannedCharacters = 4000
 
     /// Suggests a document title from the given Markdown text. Returns nil if empty.
     public static func suggest(from text: String) -> String? {
-        let rawLines = text.components(separatedBy: .newlines)
+        // Only the start matters (front matter, then the first ~20 lines), and this runs as the
+        // person types: split just the first few thousand characters, not the whole document
+        let head = text.count > maxScannedCharacters ? String(text.prefix(maxScannedCharacters)) : text
+        let rawLines = head.components(separatedBy: .newlines)
 
         // 1. Check YAML front matter at the start of the document
         var startIndex = 0
