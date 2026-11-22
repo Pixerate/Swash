@@ -412,8 +412,13 @@ struct InteractionRunner {
              let host = NSHostingView(rootView: MarkdownPreviewView(text: md, flavor: .github).frame(width: 500, height: 600))
              host.frame = NSRect(x: 0, y: 0, width: 500, height: 600)
              let win = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
-             win.contentView = host; windows.append(win); pump(0.3)
+             win.contentView = host; windows.append(win)
              func allScrollViews(in v: NSView) -> [NSScrollView] { ((v as? NSScrollView).map { [$0] } ?? []) + v.subviews.flatMap(allScrollViews) }
+             // Wait for the preview, its code block and its table to lay out (about 0.3–0.5 s on a busy
+             // Mac) rather than a fixed time: until then the outer document is 0 pt tall
+             let laidOut = Date().addingTimeInterval(3)
+             repeat { pump(0.05) } while Date() < laidOut && !(allScrollViews(in: host).count >= 3
+                 && allScrollViews(in: host).contains { ($0.documentView?.frame.height ?? 0) > host.frame.height })
              let all = allScrollViews(in: host)
              let outer = all.max { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) }!
              let nested = all.filter { $0 !== outer && $0.isDescendant(of: outer) }
