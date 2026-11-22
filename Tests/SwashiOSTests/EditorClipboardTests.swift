@@ -88,16 +88,71 @@ final class EditorClipboardTests: XCTestCase {
         XCTAssertTrue(attributed.string.contains("one") && attributed.string.contains("two"))
     }
 
-    func testCopyOfATableWritesItsSourceAndTabSeparatedText() throws {
+    func testCopyOfATableWritesItsSourceAndSemanticHTMLAndRTF() throws {
         let markdown = "| A | B |\n|---|---|\n| 1 | 2 |"
         let e = try editor(markdown)
         XCTAssertEqual(e.attachments().count, 1)
         EditorClipboard.copy(NSRange(location: 0, length: e.storage.length), from: e.storage, to: pasteboard)
         XCTAssertEqual(string(EditorClipboard.swashMarkdownType), markdown)
+        XCTAssertEqual(pasteboard.string, markdown)
+        let html = try XCTUnwrap(string(UTType.html.identifier))
+        XCTAssertTrue(html.contains("<table>"))
+        XCTAssertTrue(html.contains("<th>A</th>"))
+        XCTAssertTrue(html.contains("<th>B</th>"))
+        XCTAssertTrue(html.contains("<td>1</td>"))
+        XCTAssertTrue(html.contains("<td>2</td>"))
         let rtf = try XCTUnwrap(pasteboard.data(forPasteboardType: UTType.rtf.identifier))
         let attributed = try NSAttributedString(data: rtf, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
-        XCTAssertTrue(attributed.string.contains("A\tB"), attributed.string.debugDescription)
-        XCTAssertTrue(attributed.string.contains("1\t2"), attributed.string.debugDescription)
+        XCTAssertTrue(attributed.string.contains("A") && attributed.string.contains("B"), attributed.string.debugDescription)
+        XCTAssertTrue(attributed.string.contains("1") && attributed.string.contains("2"), attributed.string.debugDescription)
+    }
+
+    func testCopyOfToDosBulletsAndTableGeneratesSemanticHTMLAndRTF() throws {
+        let markdown = """
+        - [ ] unchecked
+        - [x] checked
+        - bullet item
+
+        | Col 1 | Col 2 |
+        |---|---|
+        | Val 1 | Val 2 |
+        """
+        let e = try editor(markdown)
+        EditorClipboard.copy(NSRange(location: 0, length: e.storage.length), from: e.storage, to: pasteboard)
+
+        // 1. Lossless Swash-to-Swash
+        XCTAssertEqual(string(EditorClipboard.swashMarkdownType), markdown)
+
+        // 2. Plain text is raw Markdown (for Notion/Obsidian blocks)
+        XCTAssertEqual(pasteboard.string, markdown)
+
+        // 3. Semantic HTML
+        let html = try XCTUnwrap(string(UTType.html.identifier))
+        XCTAssertTrue(html.contains("<li class=\"task-list-item\"><input type=\"checkbox\" disabled=\"\" /> unchecked</li>"), "task list unchecked: \(html)")
+        XCTAssertTrue(html.contains("<li class=\"task-list-item\"><input type=\"checkbox\" checked=\"\" disabled=\"\" /> checked</li>"), "task list checked: \(html)")
+        XCTAssertTrue(html.contains("<li>bullet item</li>"), "bullet item: \(html)")
+        XCTAssertTrue(html.contains("<table>"), "table: \(html)")
+        XCTAssertTrue(html.contains("<th>Col 1</th>"), "table header: \(html)")
+        XCTAssertTrue(html.contains("<td>Val 1</td>"), "table cell: \(html)")
+
+        // 4. RTF data exists and converts cleanly
+        let rtf = try XCTUnwrap(pasteboard.data(forPasteboardType: UTType.rtf.identifier))
+        let attributed = try NSAttributedString(data: rtf, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+        XCTAssertTrue(attributed.string.contains("unchecked"))
+        XCTAssertTrue(attributed.string.contains("checked"))
+        XCTAssertTrue(attributed.string.contains("bullet item"))
+        XCTAssertTrue(attributed.string.contains("Col 1"))
+        XCTAssertTrue(attributed.string.contains("Val 1"))
+    }
+
+    func testCopyOfSelectedListItemExpandsToWholeLine() throws {
+        let markdown = "- [ ] first to-do\n- [x] second to-do"
+        let e = try editor(markdown)
+        EditorClipboard.copy(NSRange(location: 0, length: e.storage.length), from: e.storage, to: pasteboard)
+        let html = try XCTUnwrap(string(UTType.html.identifier))
+        XCTAssertTrue(html.contains("task-list-item"))
+        XCTAssertTrue(html.contains("first to-do"))
+        XCTAssertTrue(html.contains("second to-do"))
     }
 
     func testEmptySelectionCopiesNothing() throws {

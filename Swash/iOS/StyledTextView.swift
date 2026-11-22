@@ -1003,12 +1003,12 @@ final class StyledUITextView: MarkdownEditingTextView {
     // MARK: Clipboard
 
     override func copy(_ sender: Any?) {
-        EditorClipboard.copy(selectedRange, from: textStorage)
+        EditorClipboard.copy(selectedRange, from: textStorage, flavor: flavor, folder: baseURL)
     }
 
     override func cut(_ sender: Any?) {
         guard selectedRange.length > 0 else { return }
-        EditorClipboard.copy(selectedRange, from: textStorage)
+        EditorClipboard.copy(selectedRange, from: textStorage, flavor: flavor, folder: baseURL)
         coordinator?.replaceSelection(with: "", in: self, actionName: "Cut")
     }
 
