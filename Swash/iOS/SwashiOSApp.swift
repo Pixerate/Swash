@@ -39,6 +39,9 @@ final class SwashAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         PixerateAccess.startAtLaunch()
+        // The writing partner's pause tier: Pixerate with Swash Pro, else Apple Intelligence (#109)
+        WritingBandleaderFactory.installPixerateBandleader()
+        WritingBandleaderFactory.installOnDeviceBandleader()
         return true
     }
 

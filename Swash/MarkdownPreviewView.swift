@@ -225,6 +225,9 @@ struct PreviewScrollView<Content: View>: UIViewRepresentable {
 
     final class Coordinator {
         var host: UIHostingController<Content>?
+
+        /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+        nonisolated deinit {}
     }
 }
 #endif
