@@ -440,7 +440,7 @@ do {
     check(pro.store.supportId == "DEMO-SWSH", "demo-pro has Support ID")
 }
 
-// Background start() and refresh() clear any store.lastError so background failures are not shown.
+// Background start() and refresh() drop a cancellation but keep a real error that was already showing.
 do {
     FakeServer.reset(entitlements: FakeServer.freeEntitlements)
     let access = makeAccess(
@@ -451,11 +451,11 @@ do {
     )
     access.store.lastError = .network("cancelled")
     await access.start()
-    check(access.store.lastError == nil, "start() clears store.lastError from background refresh")
+    check(access.store.lastError == nil, "start() clears a cancelled request's error")
 
     access.store.lastError = .serverRejected(status: 404, code: nil, message: nil)
     await access.refresh()
-    check(access.store.lastError == nil, "refresh() clears store.lastError from background refresh")
+    check(access.store.lastError == .serverRejected(status: 404, code: nil, message: nil), "refresh() keeps an earlier real error")
 }
 
 print("\(passes) passed, \(failures) failed")

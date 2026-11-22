@@ -299,20 +299,13 @@ struct PixerateAccountSections: View {
     }
 
     private var displayedAccountError: String? {
-        if let linkError, !Self.isCancellationMessage(linkError) {
+        if let linkError, !PixerateAccess.isCancellationMessage(linkError) {
             return linkError
         }
-        if let error = account.error, !Self.isCancellationMessage(error) {
+        if let error = account.error, !PixerateAccess.isCancellationMessage(error) {
             return error
         }
         return nil
-    }
-
-    /// A cancelled request (`URLError.cancelled`, a cancelled task) reports just "cancelled". Only
-    /// that is hidden: a real message that mentions a cancelled subscription is still shown.
-    static func isCancellationMessage(_ message: String) -> Bool {
-        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)).lowercased()
-        return trimmed == "cancelled" || trimmed == "canceled"
     }
 
     private var proFeatures: [String] {
@@ -335,148 +328,4 @@ struct PixerateAccountSections: View {
         ]
         #endif
     }
-}
-
-extension PixerateStoreError {
-    var isCancellation: Bool {
-        if case .network(let message) = self {
-            return PixerateAccountSections.isCancellationMessage(message)
-        }
-        return false
-    }
-}
-
-// MARK: - Previews
-
-#Preview("Free (App Store)", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .appStore,
-            entitlements: PixerateEntitlements(supportId: "SWSH-4X9Q")
-        )
-    )
-}
-
-#Preview("Swash Pro (App Store)", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .appStore,
-            entitlements: PixerateEntitlements(
-                entitlements: [PixerateEntitlement.swashPro],
-                grants: [
-                    PixerateEntitlementGrant(
-                        entitlement: PixerateEntitlement.swashPro,
-                        source: "app_store",
-                        via: "customer",
-                        productId: "com.pixerate.swash.pro.monthly",
-                        ownership: "PURCHASED"
-                    )
-                ],
-                supportId: "SWSH-4X9Q"
-            )
-        )
-    )
-}
-
-#Preview("Family-Shared", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .appStore,
-            entitlements: PixerateEntitlements(
-                entitlements: [PixerateEntitlement.swashPro],
-                grants: [
-                    PixerateEntitlementGrant(
-                        entitlement: PixerateEntitlement.swashPro,
-                        source: "app_store",
-                        via: "customer",
-                        productId: "com.pixerate.swash.pro.yearly",
-                        ownership: "FAMILY_SHARED"
-                    )
-                ],
-                supportId: "SWSH-8M2P"
-            )
-        )
-    )
-}
-
-#Preview("Pixerate Pro", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .appStore,
-            entitlements: PixerateEntitlements(
-                entitlements: [PixerateEntitlement.pixeratePro, PixerateEntitlement.swashPro],
-                grants: [
-                    PixerateEntitlementGrant(
-                        entitlement: PixerateEntitlement.pixeratePro,
-                        source: "plan",
-                        via: "team",
-                        teamId: "team_demo"
-                    )
-                ],
-                supportId: "SWSH-4X9Q"
-            ),
-            signedIn: true
-        ),
-        previewSignedInUser: AuthUser(id: "user_demo", email: "writer@example.com", displayName: "Demo Writer"),
-        previewSignedInTeams: [Team(id: "team_demo", name: "Personal", ownerId: "user_demo", planId: "pro")]
-    )
-}
-
-#Preview("Complimentary", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .direct,
-            entitlements: PixerateEntitlements(
-                entitlements: [PixerateEntitlement.swashPro],
-                grants: [
-                    PixerateEntitlementGrant(
-                        entitlement: PixerateEntitlement.swashPro,
-                        source: "complimentary",
-                        via: "team",
-                        teamId: "team_demo",
-                        expiresAt: Date(timeIntervalSince1970: 1_900_000_000)
-                    )
-                ]
-            ),
-            signedIn: true
-        ),
-        previewSignedInUser: AuthUser(id: "user_demo", email: "writer@example.com", displayName: "Demo Writer"),
-        previewSignedInTeams: [Team(id: "team_demo", name: "Personal", ownerId: "user_demo", planId: "free")]
-    )
-}
-
-#Preview("Direct Download", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .direct,
-            entitlements: PixerateEntitlements()
-        )
-    )
-}
-
-#Preview("Signed In", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .appStore,
-            entitlements: PixerateEntitlements(
-                entitlements: [PixerateEntitlement.swashPro],
-                grants: [
-                    PixerateEntitlementGrant(
-                        entitlement: PixerateEntitlement.swashPro,
-                        source: "app_store",
-                        via: "customer",
-                        productId: "com.pixerate.swash.pro.monthly",
-                        ownership: "PURCHASED"
-                    )
-                ],
-                supportId: "SWSH-4X9Q"
-            ),
-            signedIn: true
-        ),
-        previewSignedInUser: AuthUser(id: "user_demo", email: "writer@example.com", displayName: "Demo Writer"),
-        previewSignedInTeams: [
-            Team(id: "team_demo", name: "Personal", ownerId: "user_demo", planId: "pro"),
-            Team(id: "team_studio", name: "Studio", ownerId: "user_other", planId: "free")
-        ]
-    )
 }
