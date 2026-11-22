@@ -440,5 +440,23 @@ do {
     check(pro.store.supportId == "DEMO-SWSH", "demo-pro has Support ID")
 }
 
+// Background start() and refresh() clear any store.lastError so background failures are not shown.
+do {
+    FakeServer.reset(entitlements: FakeServer.freeEntitlements)
+    let access = makeAccess(
+        token: nil,
+        distributionMode: .fixed(.appStore),
+        storeKit: FakeStoreKitClient(appTransaction: "jws_app_tx"),
+        featureOn: true
+    )
+    access.store.lastError = .network("cancelled")
+    await access.start()
+    check(access.store.lastError == nil, "start() clears store.lastError from background refresh")
+
+    access.store.lastError = .serverRejected(status: 404, code: nil, message: nil)
+    await access.refresh()
+    check(access.store.lastError == nil, "refresh() clears store.lastError from background refresh")
+}
+
 print("\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

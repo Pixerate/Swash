@@ -32,14 +32,25 @@ struct PixerateAccountSections: View {
     private var displayedTeams: [Team] { account.teams.isEmpty ? previewSignedInTeams : account.teams }
 
     var body: some View {
-        swashProSection
-        if activeStore.supportId != nil {
-            Section("Support") {
-                PixerateSupportIDRow(supportId: activeStore.supportId)
+        Group {
+            swashProSection
+            if activeStore.supportId != nil {
+                Section("Support") {
+                    PixerateSupportIDRow(supportId: activeStore.supportId)
+                }
+            }
+            pixerateAccountSection
+            privacySection
+        }
+        .onAppear {
+            activeStore.lastError = nil
+            linkError = nil
+        }
+        .onChange(of: activeStore.lastError) { _, newError in
+            if newError?.isCancellation == true {
+                activeStore.lastError = nil
             }
         }
-        pixerateAccountSection
-        privacySection
     }
 
     // MARK: - Swash Pro Section
@@ -67,7 +78,7 @@ struct PixerateAccountSections: View {
                     }
                     .disabled(activeStore.isPurchasing)
                 }
-                if let error = activeStore.lastError?.errorDescription {
+                if let error = displayedStoreError {
                     Text(error)
                         .font(.footnote)
                         .foregroundStyle(.red)
@@ -76,11 +87,7 @@ struct PixerateAccountSections: View {
                 PixerateProPaywall(
                     store: activeStore,
                     title: "Swash Pro",
-                    features: [
-                        "Paragraph structure and grammar suggestions when you pause",
-                        "Quick Note tidy-up on pause or save",
-                        "Personal vocabulary and house style across devices"
-                    ],
+                    features: proFeatures,
                     termsURL: PixerateAccess.termsURL,
                     privacyURL: PixerateAccess.privacyURL,
                     directMessage: "Sign in to use Pixerate Pro or a complimentary subscription."
@@ -89,7 +96,7 @@ struct PixerateAccountSections: View {
                 Text("Sign in to use Pixerate Pro or a complimentary subscription.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                if let error = activeStore.lastError?.errorDescription {
+                if let error = displayedStoreError {
                     Text(error)
                         .font(.footnote)
                         .foregroundStyle(.red)
@@ -158,7 +165,7 @@ struct PixerateAccountSections: View {
             } else {
                 signedOut
             }
-            if let error = linkError ?? account.error {
+            if let error = displayedAccountError {
                 Text(error)
                     .font(.footnote)
                     .foregroundStyle(.red)
@@ -250,6 +257,10 @@ struct PixerateAccountSections: View {
             showMovePurchaseAlert = true
         } catch PixerateStoreError.unauthenticated {
             // No App Store customer session to link yet; ignore quietly.
+        } catch is CancellationError {
+            // Ignore cancellation
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            // Ignore cancellation
         } catch {
             linkError = error.localizedDescription
         }
@@ -259,6 +270,10 @@ struct PixerateAccountSections: View {
         linkError = nil
         do {
             try await activeStore.link(confirmMove: true)
+        } catch is CancellationError {
+            // Ignore cancellation
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            // Ignore cancellation
         } catch {
             linkError = error.localizedDescription
         }
@@ -276,10 +291,56 @@ struct PixerateAccountSections: View {
             Text("Privacy")
         }
         .font(.callout)
-        .task {
-            guard !access.isPreview else { return }
-            await access.start()
+    }
+
+    private var displayedStoreError: String? {
+        guard let error = activeStore.lastError, !error.isCancellation else { return nil }
+        return error.errorDescription
+    }
+
+    private var displayedAccountError: String? {
+        if let linkError, !Self.isCancellationMessage(linkError) {
+            return linkError
         }
+        if let error = account.error, !Self.isCancellationMessage(error) {
+            return error
+        }
+        return nil
+    }
+
+    static func isCancellationMessage(_ message: String) -> Bool {
+        let lower = message.lowercased()
+        return lower.contains("cancelled") || lower.contains("canceled")
+    }
+
+    private var proFeatures: [String] {
+        Self.proFeatures()
+    }
+
+    static func proFeatures(forIdiom idiom: String? = nil) -> [String] {
+        #if os(iOS)
+        let target = idiom ?? (UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone")
+        return [
+            "Paragraph structure and grammar suggestions when you pause (coming to \(target))",
+            "Quick Note tidy-up on pause or save (coming to \(target))",
+            "Personal vocabulary and house style across devices (coming to \(target))"
+        ]
+        #else
+        return [
+            "Paragraph structure and grammar suggestions when you pause",
+            "Quick Note tidy-up on pause or save",
+            "Personal vocabulary and house style across devices"
+        ]
+        #endif
+    }
+}
+
+extension PixerateStoreError {
+    var isCancellation: Bool {
+        if case .network(let message) = self {
+            return PixerateAccountSections.isCancellationMessage(message)
+        }
+        return false
     }
 }
 

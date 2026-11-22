@@ -9,10 +9,12 @@
 #if os(iOS)
 import SwiftUI
 import PixerateStickers
+import PixerateStore
 
 struct IOSSettingsView: View {
     @AppStorage("markdownFlavor") private var markdownFlavor: MarkdownFlavor = .github
     @Environment(\.dismiss) private var dismiss
+    var access: PixerateAccess = .shared
 
     var body: some View {
         NavigationStack {
@@ -25,7 +27,7 @@ struct IOSSettingsView: View {
                     }
                 }
                 IOSTypographySettingsSections()
-                PixerateAccountSections()
+                PixerateAccountSections(access: access)
                 if StickerCatalog.isAvailable {
                     StickerSetsSection()
                 }
@@ -41,6 +43,13 @@ struct IOSSettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+        .task {
+            guard !access.isPreview else { return }
+            await access.start()
+        }
+        .onAppear {
+            access.clearLastError()
         }
     }
 }

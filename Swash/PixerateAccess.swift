@@ -242,6 +242,7 @@ final class PixerateAccess {
         }
         resetRefusals()
         await store.start()
+        store.lastError = nil
         hasLoadedEntitlements = true
     }
 
@@ -277,6 +278,7 @@ final class PixerateAccess {
         }
         resetRefusals()
         await store.refreshEntitlements()
+        store.lastError = nil
         hasLoadedEntitlements = true
     }
 
@@ -286,6 +288,7 @@ final class PixerateAccess {
         guard !isPreview else { return }
         Task {
             await store.accountDidChange()
+            store.lastError = nil
         }
     }
 
@@ -295,6 +298,7 @@ final class PixerateAccess {
         guard !isPreview else { return }
         Task {
             await store.accountDidChange()
+            store.lastError = nil
         }
     }
 
@@ -313,6 +317,11 @@ final class PixerateAccess {
     }
 
     // MARK: Plan & Entitlements
+
+    /// Clears any transient StoreKit / purchase error from the active store.
+    func clearLastError() {
+        store.lastError = nil
+    }
 
     /// Plans that never count as Pixerate Pro.
     nonisolated static let freePlanIds: Set<String> = ["free", ""]
