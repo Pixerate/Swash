@@ -128,7 +128,7 @@ struct StyledTextView: UIViewRepresentable {
             super.init()
         }
 
-        deinit {
+        nonisolated deinit {
             NotificationCenter.default.removeObserver(self)
         }
 

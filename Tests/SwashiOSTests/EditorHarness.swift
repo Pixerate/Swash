@@ -20,6 +20,7 @@ final class EditorHarness {
     final class TextBox {
         var text: String
         init(_ text: String) { self.text = text }
+        nonisolated deinit {}
     }
 
     let box: TextBox
@@ -70,6 +71,8 @@ final class EditorHarness {
         window.isHidden = true
         window.rootViewController = nil
     }
+
+    nonisolated deinit {}
 
     static func find<T: UIView>(_ type: T.Type, in view: UIView) -> T? {
         if let match = view as? T { return match }

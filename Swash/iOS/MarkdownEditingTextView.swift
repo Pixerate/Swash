@@ -43,6 +43,8 @@ final class IOSEditorController {
     func focus() {
         textView?.becomeFirstResponder()
     }
+
+    nonisolated deinit {}
 }
 
 /// A TextKit 1 UITextView (the same text system as the macOS editor) with Markdown editing aids.

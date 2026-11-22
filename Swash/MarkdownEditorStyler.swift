@@ -63,6 +63,8 @@ final class BlockDecoration {
         self.left = left
         self.right = right
     }
+
+    nonisolated deinit {}
 }
 
 extension NSAttributedString.Key {
@@ -260,6 +262,9 @@ final class MarkdownEditorStyler {
         self.storageShift = storageShift
         self.document = document
     }
+
+    // Avoid Swift 6.2 isolated deinit crash on iOS Simulator when SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor.
+    nonisolated deinit {}
     
     /// Applies all styling. The caller has already reset attributes and wraps this in begin/endEditing.
     func style() {
