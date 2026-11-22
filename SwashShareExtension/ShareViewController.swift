@@ -7,6 +7,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import PixerateMarkdown
 
 class ShareViewController: NSViewController {
 
@@ -49,30 +50,14 @@ class ShareViewController: NSViewController {
 
     private func extractSharedContent() {
         guard let items = extensionContext?.inputItems as? [NSExtensionItem] else { return }
-
-        for item in items {
-            guard let attachments = item.attachments else { continue }
-            for provider in attachments {
-                if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-                    provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { [weak self] (data, error) in
-                        if let text = data as? String {
-                            DispatchQueue.main.async {
-                                self?.sharedText = text
-                                self?.reloadHostingView()
-                            }
-                        }
-                    }
-                } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                    provider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { [weak self] (data, error) in
-                        if let url = data as? URL {
-                            let markdownLink = "[\(url.lastPathComponent)](\(url.absoluteString))"
-                            DispatchQueue.main.async {
-                                self?.sharedText = markdownLink
-                                self?.reloadHostingView()
-                            }
-                        }
-                    }
+        Task { [weak self] in
+            let (text, title) = await ShareContentExtractor.extract(from: items)
+            await MainActor.run {
+                self?.sharedText = text
+                if let title = title, !title.isEmpty {
+                    self?.sharedTitle = title
                 }
+                self?.reloadHostingView()
             }
         }
     }
@@ -150,6 +135,7 @@ struct ShareView: View {
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import PixerateMarkdown
 
 /// iOS share extension. Extensions can't open the app, so the note is saved to the App Group
 /// inbox; Swash moves it into its documents and opens it when it next comes to the front.
@@ -161,9 +147,11 @@ class ShareViewController: UIViewController {
         super.viewDidLoad()
         Task { [weak self] in
             guard let self = self else { return }
-            let text = await self.loadSharedText()
+            let items = self.extensionContext?.inputItems as? [NSExtensionItem] ?? []
+            let (text, title) = await ShareContentExtractor.extract(from: items)
             let host = UIHostingController(rootView: ShareNoteView(
                 text: text,
+                initialTitle: title ?? "Shared Note",
                 onCancel: { [weak self] in self?.cancel() },
                 onSave: { [weak self] title, text in self?.save(title: title, text: text) ?? "Swash isn't available." }))
             self.addChild(host)
@@ -200,34 +188,18 @@ class ShareViewController: UIViewController {
         extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
         return nil
     }
-
-    /// Shared text as-is, or a shared web page as a Markdown link.
-    private func loadSharedText() async -> String {
-        let providers = (extensionContext?.inputItems as? [NSExtensionItem] ?? []).flatMap { $0.attachments ?? [] }
-        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-            if let text = try? await provider.loadItem(forTypeIdentifier: UTType.plainText.identifier) as? String {
-                return text
-            }
-        }
-        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-            if let url = try? await provider.loadItem(forTypeIdentifier: UTType.url.identifier) as? URL {
-                let title = url.host() ?? url.lastPathComponent
-                return "[\(title)](\(url.absoluteString))"
-            }
-        }
-        return ""
-    }
 }
 
 struct ShareNoteView: View {
-    @State private var title = "Shared Note"
+    @State private var title: String
     @State private var text: String
     @State private var errorMessage: String?
     var onCancel: () -> Void
     var onSave: (String, String) -> String?
 
-    init(text: String, onCancel: @escaping () -> Void, onSave: @escaping (String, String) -> String?) {
+    init(text: String, initialTitle: String = "Shared Note", onCancel: @escaping () -> Void, onSave: @escaping (String, String) -> String?) {
         _text = State(initialValue: text)
+        _title = State(initialValue: initialTitle)
         self.onCancel = onCancel
         self.onSave = onSave
     }
@@ -240,7 +212,7 @@ struct ShareNoteView: View {
                 }
                 Section("Markdown") {
                     TextEditor(text: $text)
-                        .font(.body.monospaced())
+                        .font(.body)
                         .frame(minHeight: 180)
                 }
                 if let errorMessage = errorMessage {

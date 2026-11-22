@@ -73,6 +73,11 @@ final class FolderWorkspace: ObservableObject {
     private var savedText = ""
     /// The modification date of the selected file when `savedText` was read or saved.
     private var savedModificationDate: Date?
+    /// The disk text of a conflict the person cancelled: autosave doesn't ask again about it
+    /// until the file changes again or they save, switch or rename explicitly.
+    private var dismissedConflictDiskText: String?
+    /// System file resource identifier for the selected file, to track external renames and moves.
+    private var selectedResourceIdentifier: AnyHashable?
     private var pendingSave: DispatchWorkItem?
     private var eventStream: FSEventStreamRef?
     private var scanTask: Task<Void, Never>?
@@ -113,30 +118,34 @@ final class FolderWorkspace: ObservableObject {
 
     /// Saves any pending edit and stops watching the folder.
     func close() {
-        save()
+        saveBeforeClosing()
         scanTask?.cancel()
         searchTask?.cancel()
         stopWatching()
     }
 
     /// Opens `url` in the editor, optionally selecting `range` (raw-Markdown offsets) once it is shown.
-    func select(_ url: URL, revealing range: NSRange? = nil) {
+    /// Returns true if the file was selected, or false if saving the current file or reading the new file failed.
+    @discardableResult
+    func select(_ url: URL, revealing range: NSRange? = nil) -> Bool {
         let url = url.standardizedFileURL
         if url == selectedFile {
             if let range { revealRequest = TextRevealRequest(fileURL: url, range: range) }
-            return
+            return true
         }
-        save()
-        guard activeConflict == nil else { return }
+        guard save() else { return false }
         do {
             let text = try Self.read(url)
             savedText = text
             savedModificationDate = Self.modificationDate(for: url)
             revealRequest = range.map { TextRevealRequest(fileURL: url, range: $0) }
             selectedFile = url
+            selectedResourceIdentifier = Self.resourceIdentifier(for: url)
             document = SwashDocument(text: text)
+            return true
         } catch {
             errorMessage = "“\(url.lastPathComponent)” couldn’t be opened. \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -183,8 +192,7 @@ final class FolderWorkspace: ObservableObject {
             errorMessage = "“\(newName)” already exists."
             return nil
         }
-        save()
-        guard activeConflict == nil else { return nil }
+        guard save() else { return nil }
         do {
             try FileManager.default.moveItem(at: url, to: destination)
         } catch {
@@ -193,6 +201,7 @@ final class FolderWorkspace: ObservableObject {
         }
         if let selected = selectedFile, let moved = FolderScanner.relocate(selected, from: url, to: destination) {
             selectedFile = moved
+            selectedResourceIdentifier = Self.resourceIdentifier(for: moved)
         }
         reloadFiles()
         return destination
@@ -221,18 +230,23 @@ final class FolderWorkspace: ObservableObject {
 
     // MARK: Saving
 
-    /// Writes the selected file if its text has changed.
-    func save() {
+    /// Writes the selected file if its text has changed. Returns true if saving succeeded or wasn't needed;
+    /// false if writing failed or another app changed the file (then `activeConflict` asks what to keep).
+    /// `prompting: false` (autosave) doesn't ask again about a conflict the person cancelled.
+    @discardableResult
+    func save(prompting: Bool = true) -> Bool {
         pendingSave?.cancel()
         pendingSave = nil
-        guard let url = selectedFile, document.text != savedText else { return }
-        guard activeConflict == nil else { return }
+        guard let url = selectedFile, document.text != savedText else { return true }
+        // Unresolved: neither overwrite the other app's change nor drop these edits
+        guard activeConflict == nil else { return false }
 
         let currentModDate = Self.modificationDate(for: url)
         if currentModDate != savedModificationDate {
             if let diskText = try? Self.read(url), diskText != savedText {
+                if !prompting, diskText == dismissedConflictDiskText { return false }
                 activeConflict = FileConflict(file: url, diskText: diskText, localText: document.text)
-                return
+                return false
             }
         }
 
@@ -241,14 +255,18 @@ final class FolderWorkspace: ObservableObject {
             try text.write(to: url, atomically: true, encoding: .utf8)
             savedText = text
             savedModificationDate = Self.modificationDate(for: url)
+            dismissedConflictDiskText = nil
+            selectedResourceIdentifier = Self.resourceIdentifier(for: url)
+            return true
         } catch {
             errorMessage = "“\(url.lastPathComponent)” couldn’t be saved. \(error.localizedDescription)"
+            return false
         }
     }
 
     private func scheduleSave() {
         pendingSave?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.save() }
+        let work = DispatchWorkItem { [weak self] in self?.save(prompting: false) }
         pendingSave = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
     }
@@ -257,8 +275,10 @@ final class FolderWorkspace: ObservableObject {
         pendingSave?.cancel()
         pendingSave = nil
         selectedFile = nil
+        selectedResourceIdentifier = nil
         savedText = ""
         savedModificationDate = nil
+        dismissedConflictDiskText = nil
         activeConflict = nil
         revealRequest = nil
         document = SwashDocument()
@@ -287,15 +307,43 @@ final class FolderWorkspace: ObservableObject {
         if isLoading { isLoading = false }
 
         guard let selected = selectedFile else { return }
-        if !FileManager.default.fileExists(atPath: selected.path) {
-            // The open file was renamed or deleted elsewhere
+
+        if FileManager.default.fileExists(atPath: selected.path) {
+            selectedResourceIdentifier = Self.resourceIdentifier(for: selected)
+            if !hasUnsavedChanges, let text = try? Self.read(selected), text != savedText {
+                // Changed by another app, with no edits here to lose
+                savedText = text
+                savedModificationDate = Self.modificationDate(for: selected)
+                document = SwashDocument(text: text)
+            }
+            return
+        }
+
+        // Gone from its path: find it by its file identifier in case it was renamed or moved
+        // within the folder (only looked up now, as it reads every file's resource values)
+        let renamed: URL? = selectedResourceIdentifier.flatMap { currentID in
+            scan.files.first { Self.resourceIdentifier(for: $0) == currentID }
+        }
+        if let renamed {
+            selectedFile = renamed
+            selectedResourceIdentifier = Self.resourceIdentifier(for: renamed)
+            if !hasUnsavedChanges {
+                if let text = try? Self.read(renamed), text != savedText {
+                    savedText = text
+                    document = SwashDocument(text: text)
+                }
+                savedModificationDate = Self.modificationDate(for: renamed)
+            } else {
+                scheduleSave()
+            }
+        } else if hasUnsavedChanges {
+            // Deleted elsewhere with edits here: write them back to its path rather than lose them.
+            // A failed save (its folder is gone too) keeps the edits and shows the error once;
+            // the next folder event doesn't loop on it, and FSEvents reports a successful write.
+            save()
+        } else {
             clearSelection()
             if let first = files.first { select(first) }
-        } else if !hasUnsavedChanges, let text = try? Self.read(selected), text != savedText {
-            // Changed by another app, with no edits here to lose
-            savedText = text
-            savedModificationDate = Self.modificationDate(for: selected)
-            document = SwashDocument(text: text)
         }
     }
 
@@ -397,6 +445,10 @@ final class FolderWorkspace: ObservableObject {
         return true
     }
 
+    private static func resourceIdentifier(for url: URL) -> AnyHashable? {
+        (try? url.resourceValues(forKeys: [.fileResourceIdentifierKey]))?.fileResourceIdentifier as? AnyHashable
+    }
+
     private static func read(_ url: URL) throws -> String {
         let data = try Data(contentsOf: url)
         guard let text = String(data: data, encoding: .utf8) else {
@@ -446,8 +498,26 @@ final class FolderWorkspace: ObservableObject {
         }
     }
 
+    /// Cancel: the edits stay unsaved here and the file on disk keeps the other app's change.
     func dismissConflict() {
+        dismissedConflictDiskText = activeConflict?.diskText
         activeConflict = nil
+    }
+
+    /// Saves when the window closes or the app quits, when there's no chance to ask: if another
+    /// app changed the file, the edits go to a "(Conflict)" copy beside it instead of being lost.
+    func saveBeforeClosing() {
+        if save(prompting: false) { return }
+        guard let url = selectedFile, document.text != savedText,
+              let diskText = activeConflict?.diskText ?? (try? Self.read(url)), diskText != savedText else { return }
+        let copyURL = conflictCopyURL(for: url)
+        do {
+            try document.text.write(to: copyURL, atomically: true, encoding: .utf8)
+            savedText = document.text
+            activeConflict = nil
+        } catch {
+            errorMessage = "A conflict copy couldn’t be created. \(error.localizedDescription)"
+        }
     }
 
     func conflictCopyURL(for url: URL) -> URL {

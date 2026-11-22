@@ -121,10 +121,10 @@ private struct FolderBrowserView: View {
             selectedResult = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-            workspace.save()
+            workspace.saveBeforeClosing()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { notification in
-            if (notification.object as? NSWindow) === window { workspace.save() }
+            if (notification.object as? NSWindow) === window { workspace.save(prompting: false) }
         }
         .alert("Swash", isPresented: Binding(
             get: { workspace.errorMessage != nil },

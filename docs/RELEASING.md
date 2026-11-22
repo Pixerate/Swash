@@ -66,6 +66,20 @@ To verify an App Store build locally before submission:
 scripts/verify_app_store_build.sh path/to/Swash.app
 ```
 
+### Testing Swash Pro Subscriptions
+
+Testing Swash Pro purchases and entitlement verification requires an App Store environment accepted by the Pixerate server (`Production` or `Sandbox`):
+
+1. **Test on Device via TestFlight (or a Sandbox Development Build)**:
+   - Use an Apple Account configured as a **Sandbox Apple Account** in **Settings › Developer › Sandbox Apple Account** (iOS / iPadOS) or **System Settings › App Store › Sandbox Account** (macOS).
+   - Sign in with the Sandbox tester account when prompted during purchase or restore.
+   - The device receives a real StoreKit JWS transaction signed for the Sandbox environment, which pixerate.com accepts and verifies to unlock Pro.
+
+2. **Xcode `.storekit` Testing Limitation**:
+   - The `Swash` scheme includes `Swash/Swash.storekit` for offline UI testing of StoreKit flows.
+   - However, transactions minted under Xcode testing are signed with a local Xcode test key (`Xcode` environment).
+   - The Pixerate server only accepts `Production` and `Sandbox` environments (`APP_STORE_ENVIRONMENTS`). Consequently, purchases made using Xcode StoreKit configuration cannot be verified on the server and will not unlock Swash Pro until PixerateAccount is updated to trust Xcode-environment transactions locally.
+
 ## Stickers (official builds)
 
 `Packages/PixerateStickers` is an open-source stub with no artwork, so anyone can build Swash. Official builds swap in the private [Pixerate/stickers](https://github.com/Pixerate/stickers) package (#62), which adds the sticker sets and the iMessage sticker pack. To turn this on, add a `PIXERATE_PACKAGES_TOKEN` repository secret: a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) (or a GitHub App token) with **read-only Contents** access to `Pixerate/stickers` only. Without it, releases keep the stub. The workflow pins the stickers release in the "Inject Proprietary Stickers" step.
