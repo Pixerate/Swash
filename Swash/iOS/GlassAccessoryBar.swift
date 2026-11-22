@@ -123,6 +123,45 @@ class GlassAccessoryBar: UIView {
         return button
     }
 
+    /// A compact text button for a Markdown character in the capsule bar (#191).
+    static func characterButton(character: String, label: String, action: UIAction? = nil, variants: [String] = [], onVariant: ((String) -> Void)? = nil) -> UIButton {
+        var configuration = UIButton.Configuration.plain()
+        var title = AttributedString(character)
+        title.font = UIFont.monospacedSystemFont(ofSize: 17, weight: .medium)
+        configuration.attributedTitle = title
+        configuration.baseForegroundColor = .label
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
+        let button = UIButton(configuration: configuration)
+        if let action { button.addAction(action, for: .primaryActionTriggered) }
+        if !variants.isEmpty, let onVariant {
+            let actions = variants.map { variant in
+                UIAction(title: variant) { _ in
+                    onVariant(variant)
+                }
+            }
+            button.menu = UIMenu(title: label, children: actions)
+            button.showsMenuAsPrimaryAction = false
+        }
+        button.accessibilityLabel = label
+        button.largeContentTitle = "\(character) (\(label))"
+        button.showsLargeContentViewer = true
+        button.addInteraction(UILargeContentViewerInteraction())
+        return button
+    }
+
+    /// A vertical divider separating bar groups (e.g. format buttons and Markdown characters).
+    static func separatorView() -> UIView {
+        let view = UIView()
+        view.backgroundColor = .separator.withAlphaComponent(0.4)
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.isAccessibilityElement = false
+        NSLayoutConstraint.activate([
+            view.widthAnchor.constraint(equalToConstant: 1),
+            view.heightAnchor.constraint(equalToConstant: 22),
+        ])
+        return view
+    }
+
     /// The trailing glass circle (Hide Keyboard, Close).
     static func trailingButton(symbol: String, label: String, action: UIAction) -> UIButton {
         var configuration = UIButton.Configuration.glass()
