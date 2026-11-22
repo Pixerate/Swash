@@ -272,6 +272,11 @@ struct IOSContentView: View {
                            editor: editor, regularWidth: horizontalSizeClass == .regular,
                            distractionFree: $distractionFree, partnerPaused: $partnerPaused)
         if horizontalSizeClass != .regular {
+            // iPad shares from the title menu; on iPhone that menu is a tap further away
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+            ToolbarItem(placement: .primaryAction) {
+                shareLink
+            }
             ToolbarItem(placement: .secondaryAction) {
                 // A submenu, so the editor toolbar on iPad shows an icon, not the bare flavour name
                 Menu {
