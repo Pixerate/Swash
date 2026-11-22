@@ -1370,6 +1370,101 @@ struct InteractionRunner {
                 expect: "tags=Claude,Cursor cursorMoved=20 cleared=true")
         }
 
+        // Writing Tools: uncommitted edits on window close, app termination, dismantle, and safety net (SWA-55)
+        do {
+            // 1. Deferred Publication during Writing Tools session
+            let b1 = TextBox("Initial text")
+            let tv1 = makeEditor(b1)
+            let coord1 = tv1.delegate as! SwashTextView.Coordinator
+            (tv1 as? SwashNSTextView)?.writingToolsActiveOverride = true
+            if #available(macOS 15.0, *) {
+                coord1.textViewWritingToolsWillBegin(tv1)
+            }
+            tv1.insertText(" rewritten", replacementRange: NSRange(location: (tv1.string as NSString).length, length: 0))
+            pump(0.1)
+            // While Writing Tools is active, parent.text should still have the old text
+            log("writing-tools-deferred-publication", "Initial text", b1.text,
+                "binding has not updated during active writing tools session",
+                expect: "Initial text")
+
+            // 2. Window close flush
+            if let win1 = tv1.window {
+                NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: win1)
+                pump(0.1)
+                log("writing-tools-window-close-flush", "Initial text", b1.text,
+                    "window close flushes pending writing tools edits",
+                    expect: "Initial text rewritten")
+            }
+
+            // 3. App termination flush
+            let b2 = TextBox("App terminate test")
+            let tv2 = makeEditor(b2)
+            let coord2 = tv2.delegate as! SwashTextView.Coordinator
+            (tv2 as? SwashNSTextView)?.writingToolsActiveOverride = true
+            if #available(macOS 15.0, *) {
+                coord2.textViewWritingToolsWillBegin(tv2)
+            }
+            tv2.insertText(" flushed", replacementRange: NSRange(location: (tv2.string as NSString).length, length: 0))
+            pump(0.1)
+            NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: NSApp)
+            pump(0.1)
+            log("writing-tools-app-terminate-flush", "App terminate test", b2.text,
+                "app termination flushes pending writing tools edits",
+                expect: "App terminate test flushed")
+
+            // 4. Dismantle flush (e.g. view switching / rebuilds)
+            let b3 = TextBox("Dismantle test")
+            let tv3 = makeEditor(b3)
+            let coord3 = tv3.delegate as! SwashTextView.Coordinator
+            (tv3 as? SwashNSTextView)?.writingToolsActiveOverride = true
+            if #available(macOS 15.0, *) {
+                coord3.textViewWritingToolsWillBegin(tv3)
+            }
+            tv3.insertText(" dismantled", replacementRange: NSRange(location: (tv3.string as NSString).length, length: 0))
+            pump(0.1)
+            if let sv3 = tv3.enclosingScrollView {
+                SwashTextView.dismantleNSView(sv3, coordinator: coord3)
+                pump(0.1)
+                log("writing-tools-dismantle-flush", "Dismantle test", b3.text,
+                    "dismantleNSView flushes pending writing tools edits",
+                    expect: "Dismantle test dismantled")
+            }
+
+            // 5. Keystroke safety net clears hung isWritingToolsActive
+            let b4 = TextBox("Safety net test")
+            let tv4 = makeEditor(b4)
+            let coord4 = tv4.delegate as! SwashTextView.Coordinator
+            (tv4 as? SwashNSTextView)?.writingToolsActiveOverride = true
+            if #available(macOS 15.0, *) {
+                coord4.textViewWritingToolsWillBegin(tv4)
+            }
+            // User resumes typing via keyDown
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: tv4.window?.windowNumber ?? 0, context: nil, characters: "x", charactersIgnoringModifiers: "x", isARepeat: false, keyCode: 7)!
+            tv4.keyDown(with: event)
+            tv4.insertText(" typed", replacementRange: NSRange(location: (tv4.string as NSString).length, length: 0))
+            pump(0.1)
+            log("writing-tools-keystroke-safety-net", "Safety net test",
+                "active=\(coord4.isWritingToolsActive) text=\(b4.text)",
+                "keystroke safety net clears isWritingToolsActive and flushes",
+                expect: "active=false text=Safety net testx typed")
+
+            // 6. AppKit isWritingToolsActive == false safety net
+            let b5 = TextBox("AppKit safety net")
+            let tv5 = makeEditor(b5)
+            let coord5 = tv5.delegate as! SwashTextView.Coordinator
+            if #available(macOS 15.0, *) {
+                coord5.textViewWritingToolsWillBegin(tv5)
+            }
+            // Writing Tools ended or crashed without didEnd, so tv5 reports isWritingToolsActive == false
+            (tv5 as? SwashNSTextView)?.writingToolsActiveOverride = false
+            tv5.insertText(" updated", replacementRange: NSRange(location: (tv5.string as NSString).length, length: 0))
+            pump(0.1)
+            log("writing-tools-appkit-state-safety-net", "AppKit safety net",
+                "active=\(coord5.isWritingToolsActive) text=\(b5.text)",
+                "AppKit inactive state clears isWritingToolsActive and flushes",
+                expect: "active=false text=AppKit safety net updated")
+        }
+
         try? out.write(toFile: CommandLine.arguments[1], atomically: true, encoding: .utf8)
         print(out)
         print(failures.isEmpty ? "INTERACTION: all expectations passed" : "INTERACTION FAILURES:\n" + failures.joined(separator: "\n"))

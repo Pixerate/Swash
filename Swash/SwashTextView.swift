@@ -467,6 +467,14 @@ final class SwashLayoutManager: NSLayoutManager {
 
 class SwashNSTextView: NSTextView {
     var isStyled: Bool = true
+    /// Allows test harnesses to simulate an active system Writing Tools session.
+    var writingToolsActiveOverride: Bool? = nil
+
+    @available(macOS 15.0, *)
+    override var isWritingToolsActive: Bool {
+        if let writingToolsActiveOverride { return writingToolsActiveOverride }
+        return super.isWritingToolsActive
+    }
     
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -883,6 +891,9 @@ class SwashNSTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if let coordinator = delegate as? SwashTextView.Coordinator, coordinator.isWritingToolsActive {
+            coordinator.flushWritingToolsChanges(in: self)
+        }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags == .option, (event.keyCode == 36 || event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\n"),
            let coordinator = delegate as? SwashTextView.Coordinator {
@@ -1359,6 +1370,7 @@ struct SwashTextView: NSViewRepresentable {
     
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = nsView.documentView as? SwashNSTextView else { return }
+        context.coordinator.verifyWritingToolsState(in: textView)
         textView.isStyled = isStyled
         textView.flavor = flavor
         if textView.window?.isKeyWindow == true {
@@ -1487,6 +1499,10 @@ struct SwashTextView: NSViewRepresentable {
         }
     }
     
+    static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
+        coordinator.flushWritingToolsChanges(in: nsView.documentView as? NSTextView)
+    }
+    
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
@@ -1561,7 +1577,20 @@ struct SwashTextView: NSViewRepresentable {
             self.parent = parent
             super.init()
             NotificationCenter.default.addObserver(self, selector: #selector(handleRemoveCurrentTable(_:)), name: .removeCurrentTable, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(handleWindowWillClose(_:)), name: NSWindow.willCloseNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(handleAppWillTerminate(_:)), name: NSApplication.willTerminateNotification, object: nil)
             logDebug("[SwashTextView] Coordinator.init called")
+        }
+        
+        @objc private func handleWindowWillClose(_ notification: Notification) {
+            if let closingWindow = notification.object as? NSWindow,
+               closingWindow === currentTextView?.window {
+                flushWritingToolsChanges()
+            }
+        }
+        
+        @objc private func handleAppWillTerminate(_ notification: Notification) {
+            flushWritingToolsChanges()
         }
         
         private func convertTableToPlainText(_ data: MarkdownTableData) -> String {
@@ -1780,6 +1809,31 @@ struct SwashTextView: NSViewRepresentable {
         private(set) var isWritingToolsActive = false
         private var textChangedDuringWritingTools = false
 
+        /// Flushes any pending Writing Tools edits to the document binding and restores regular styling.
+        func flushWritingToolsChanges(in textView: NSTextView? = nil) {
+            guard isWritingToolsActive || textChangedDuringWritingTools else { return }
+            isWritingToolsActive = false
+            guard textChangedDuringWritingTools, let textView = textView ?? currentTextView else { return }
+            textChangedDuringWritingTools = false
+            forceFullRestyle = true
+            textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
+        }
+
+        /// Safety net: clears hung Writing Tools state if AppKit reports it is no longer active
+        /// or if the user resumes typing via a key event.
+        func verifyWritingToolsState(in textView: NSTextView) {
+            guard isWritingToolsActive else { return }
+            if #available(macOS 15.0, *) {
+                if !textView.isWritingToolsActive {
+                    flushWritingToolsChanges(in: textView)
+                    return
+                }
+            }
+            if NSApp.currentEvent?.type == .keyDown {
+                flushWritingToolsChanges(in: textView)
+            }
+        }
+
         @available(macOS 15.0, *)
         func textViewWritingToolsWillBegin(_ textView: NSTextView) {
             isWritingToolsActive = true
@@ -1787,11 +1841,7 @@ struct SwashTextView: NSViewRepresentable {
 
         @available(macOS 15.0, *)
         func textViewWritingToolsDidEnd(_ textView: NSTextView) {
-            isWritingToolsActive = false
-            guard textChangedDuringWritingTools else { return }
-            textChangedDuringWritingTools = false
-            forceFullRestyle = true
-            textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
+            flushWritingToolsChanges(in: textView)
         }
 
         /// Code, math, HTML, front matter, tables and images are left alone by Writing Tools.
@@ -1855,6 +1905,7 @@ struct SwashTextView: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            verifyWritingToolsState(in: textView)
             cachedOffsetMap = nil
             if isWritingToolsActive {
                 textChangedDuringWritingTools = true
@@ -1899,6 +1950,7 @@ struct SwashTextView: NSViewRepresentable {
         
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            verifyWritingToolsState(in: textView)
             if !isHighlighting {
                 applyFocus(in: textView)
                 centerCaret(in: textView)
@@ -2065,6 +2117,7 @@ struct SwashTextView: NSViewRepresentable {
         }
         
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+            verifyWritingToolsState(in: textView)
             if !isApplyingEdit, !isHighlighting, !isUpdatingFromSwiftUI, !isWritingToolsActive {
                 writingPartner.willType(replacementString, in: affectedCharRange, textView: textView, coordinator: self)
             }
