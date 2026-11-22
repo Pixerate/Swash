@@ -219,9 +219,16 @@
 - **Issue**: Every target builds with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`. Closures in a type that isn't marked otherwise are treated as main-actor code, and Swift traps (`EXC_BREAKPOINT`) when a framework calls them off the main thread. The thumbnail extension crashed this way on macOS: Quick Look runs `QLThumbnailReply`'s drawing block on a background queue.
 - **Solution**: Mark extension principal classes whose callbacks arrive on background queues `nonisolated` (as `ThumbnailProvider` is), or mark the specific closures `@Sendable`/`nonisolated`. Check new extension points or framework callbacks for the queue they run on.
 
-## 55. ShareLink in a Collapsed Toolbar Menu Crashes on iPhone
-- **Issue**: A `ShareLink` in a `.secondaryAction` toolbar item, which collapses into the overflow menu on iPhone, presents `UIActivityViewController` as a popover with no source view. UIKit throws an uncaught `NSGenericException`.
-- **Solution**: Keep the document's `ShareLink` in a `.primaryAction` item (`IOSContentView.shareLink`, #73). When a long title squeezes it into the overflow menu on iPhone, it still presents correctly (checked on iOS 26.5); only `.secondaryAction` placement crashed. Share the file URL, not the text, so the sheet shows the document's thumbnail and name. Generated exports still go through `IOSPresenter.share`, which sets `sourceView`/`sourceRect` itself.
+## 55. ShareLink in a Collapsed Toolbar Menu Crashes on iPhone; Sharing to Notes and Notion
+- **Issue**: A `ShareLink` in a `.secondaryAction` toolbar item, which collapses into the overflow menu on iPhone, presents `UIActivityViewController` as a popover with no source view. UIKit throws an uncaught `NSGenericException`. Furthermore, sharing only a `.md` file URL caused Apple Notes and Notion to receive no text (Pixerate/Swash#182 / SWA-60).
+- **Solution**: Keep the document's share action in a `.primaryAction` item (`IOSContentView.shareLink`, #73). To ensure receiving apps get content they understand while preserving file transfers:
+  1. Sharing uses `IOSPresenter.shareDocument` with `DocumentShareItemSource` (`UIActivityItemSource`) and `DocumentShareItem` (`Transferable`).
+  2. For Apple Notes (`com.apple.mobilenotes.SharingExtension`), it returns an `NSAttributedString` parsed from `DocumentExporter.clipboardHTML(for:)`, creating a note with rich-text formatting.
+  3. For Mail (`.mail`) and Messages (`.message`), it returns raw Markdown plain text, and supplies the document title as the subject for Mail.
+  4. For Notion and third-party notes/editor apps, it returns plain text Markdown.
+  5. For AirDrop (`.airDrop`) and Save to Files (`.saveToFiles`), it returns the `.md` file URL so the file is transferred or saved with its original name and extension.
+  6. `LPLinkMetadata` provides the document title and original file icon/thumbnail in the share sheet preview.
+  Tested and verified on device/simulator for Notes (formatted note), Notion (page with text), Mail (text body with title subject), Messages (text), and Files/AirDrop (.md file).
 
 ## 56. Opening Documents From Code on iOS
 - **Issue**: SwiftUI's `openDocument` and `newDocument` environment actions are macOS-only. On iOS, `onOpenURL` on a document view doesn't fire while the document browser is showing, and the browser is a presented card on the launch screen but absent from the hierarchy once a document is open.

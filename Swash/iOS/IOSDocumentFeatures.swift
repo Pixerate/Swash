@@ -13,6 +13,8 @@ import SwiftUI
 import MacAppKitExtras
 import UIKit
 import PixerateMarkdown
+import LinkPresentation
+import UniformTypeIdentifiers
 
 // MARK: - Typography and Writing Options
 
@@ -322,6 +324,149 @@ enum IOSPresenter {
         }
         presenter.present(activity, animated: true)
     }
+
+    /// Presents the system share sheet for sharing a document.
+    /// Provides multiple representations through UIActivityItemSource:
+    /// - AirDrop & Save to Files: the .md file URL
+    /// - Mail & Messages: plain text Markdown (and subject set to document title)
+    /// - Apple Notes: rich text (HTML/NSAttributedString) so formatting is preserved
+    /// - Other targets (e.g. Notion): plain text Markdown
+    static func shareDocument(title: String, text: String, flavor: MarkdownFlavor, fileURL: URL?) {
+        let source = DocumentExporter.Source(text: text, flavor: flavor, fileURL: fileURL, title: title)
+        let html = DocumentExporter.clipboardHTML(for: source)
+        let itemSource = DocumentShareItemSource(title: title, text: text, html: html, fileURL: fileURL)
+        share([itemSource], subject: title)
+    }
+}
+
+// MARK: - Document sharing sources and transferable items
+
+extension UIActivity.ActivityType {
+    static let saveToFiles = UIActivity.ActivityType("com.apple.UIKit.activity.SaveToFiles")
+}
+
+/// An activity item source that shares multiple representations of a Markdown document,
+/// picking the appropriate representation for each activity:
+/// - HTML (`UTType.html`) / rich text for Apple Notes (`com.apple.mobilenotes.SharingExtension`)
+/// - Plain text (`UTType.plainText`) for Messages, Mail, Notion and general text receivers
+/// - The `.md` file URL for AirDrop and Save to Files
+final class DocumentShareItemSource: NSObject, UIActivityItemSource {
+    let title: String
+    let text: String
+    let html: String
+    let fileURL: URL
+
+    init(title: String, text: String, html: String, fileURL: URL?) {
+        self.title = title
+        self.text = text
+        self.html = html
+        if let fileURL {
+            self.fileURL = fileURL
+        } else {
+            let folder = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Shared", isDirectory: true)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let temp = folder.appendingPathComponent(IOSDocumentFeaturesModel.fileName(title)).appendingPathExtension("md")
+            try? text.write(to: temp, atomically: true, encoding: .utf8)
+            self.fileURL = temp
+        }
+        super.init()
+    }
+
+    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
+        fileURL
+    }
+
+    func activityViewController(_ activityViewController: UIActivityViewController, itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
+        if activityType == .airDrop || activityType == .saveToFiles || activityType?.rawValue.contains("SaveToFiles") == true || activityType?.rawValue.contains("CloudDocs") == true {
+            return fileURL
+        }
+        if activityType?.rawValue == "com.apple.mobilenotes.SharingExtension" || activityType?.rawValue.contains("mobilenotes") == true {
+            if let data = html.data(using: .utf8),
+               let attributed = try? NSAttributedString(data: data, options: [
+                   .documentType: NSAttributedString.DocumentType.html,
+                   .characterEncoding: String.Encoding.utf8.rawValue
+               ], documentAttributes: nil) {
+                return attributed
+            }
+            return text
+        }
+        return text
+    }
+
+    func activityViewController(_ activityViewController: UIActivityViewController, subjectForActivityType activityType: UIActivity.ActivityType?) -> String {
+        title
+    }
+
+    func activityViewController(_ activityViewController: UIActivityViewController, dataTypeIdentifierForActivityType activityType: UIActivity.ActivityType?) -> String {
+        if activityType == .airDrop || activityType == .saveToFiles || activityType?.rawValue.contains("SaveToFiles") == true || activityType?.rawValue.contains("CloudDocs") == true {
+            return UTType(filenameExtension: "md")?.identifier ?? UTType.plainText.identifier
+        }
+        if activityType?.rawValue == "com.apple.mobilenotes.SharingExtension" || activityType?.rawValue.contains("mobilenotes") == true {
+            return UTType.html.identifier
+        }
+        return UTType.plainText.identifier
+    }
+
+    func activityViewControllerLinkMetadata(_ activityViewController: UIActivityViewController) -> LPLinkMetadata? {
+        let metadata = LPLinkMetadata()
+        metadata.title = title
+        metadata.originalURL = fileURL
+        metadata.url = fileURL
+        return metadata
+    }
+}
+
+/// A transferable representation of a document for SwiftUI ShareLink, offering HTML, plain text,
+/// and the Markdown file in priority order.
+struct DocumentShareItem: Transferable {
+    let title: String
+    let text: String
+    let html: String
+    let fileURL: URL?
+
+    @MainActor
+    init(title: String, text: String, flavor: MarkdownFlavor, fileURL: URL?) {
+        self.title = title
+        self.text = text
+        let source = DocumentExporter.Source(text: text, flavor: flavor, fileURL: fileURL, title: title)
+        self.html = DocumentExporter.clipboardHTML(for: source)
+        self.fileURL = fileURL
+    }
+
+    init(title: String, text: String, html: String, fileURL: URL?) {
+        self.title = title
+        self.text = text
+        self.html = html
+        self.fileURL = fileURL
+    }
+
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(exportedContentType: .html) { item in
+            Data(item.html.utf8)
+        }
+        .suggestedFileName { item in
+            "\(item.title).html"
+        }
+        DataRepresentation(exportedContentType: .plainText) { item in
+            Data(item.text.utf8)
+        }
+        .suggestedFileName { item in
+            "\(item.title).txt"
+        }
+        FileRepresentation(exportedContentType: UTType(filenameExtension: "md") ?? .plainText) { item in
+            if let fileURL = item.fileURL {
+                return SentTransferredFile(fileURL)
+            } else {
+                let folder = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("Shared", isDirectory: true)
+                try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let temp = folder.appendingPathComponent(IOSDocumentFeaturesModel.fileName(item.title)).appendingPathExtension("md")
+                try? item.text.write(to: temp, atomically: true, encoding: .utf8)
+                return SentTransferredFile(temp)
+            }
+        }
+    }
 }
 
 // MARK: - Toolbar, sheets and the outline column
@@ -428,7 +573,7 @@ final class IOSDocumentFeaturesModel {
     }
 
     /// A file name without characters Files won't accept.
-    static func fileName(_ title: String) -> String {
+    nonisolated static func fileName(_ title: String) -> String {
         let cleaned = title.components(separatedBy: CharacterSet(charactersIn: "/:\\")).joined(separator: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? "Untitled" : cleaned

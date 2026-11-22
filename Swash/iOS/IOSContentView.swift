@@ -288,21 +288,21 @@ struct IOSContentView: View {
         }
     }
 
-    /// Shares the document file, so the share sheet shows its thumbnail and name; an unsaved
-    /// document shares its Markdown. Its own toolbar item, never in the overflow menu, where a
-    /// share sheet has no source view to anchor to.
+    /// Shares the document through the system share sheet (`IOSPresenter.share`), providing
+    /// multiple representations so targets receive the format they understand: formatted text
+    /// for Notes and Notion, plain text for Messages and Mail, and the .md file for AirDrop
+    /// and Save to Files (GOTCHAS #55).
     @ViewBuilder
     private var shareLink: some View {
-        if let fileURL {
-            ShareLink(item: fileURL, subject: Text(documentTitle)) {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-        } else {
-            ShareLink(item: document.text, subject: Text(documentTitle),
-                      preview: SharePreview(documentTitle)) {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
+        Button {
+            presentShareSheet()
+        } label: {
+            Label("Share", systemImage: "square.and.arrow.up")
         }
+    }
+
+    private func presentShareSheet() {
+        IOSPresenter.shareDocument(title: documentTitle, text: document.text, flavor: document.flavor, fileURL: fileURL)
     }
 
     /// Changing flavour converts the text in place, as on the Mac.
