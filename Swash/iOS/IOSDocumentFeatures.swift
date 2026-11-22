@@ -354,6 +354,7 @@ enum IOSPresenter {
             ExportHTMLActivity(source: source, model: model),
             CopyRichTextActivity(source: source),
             CopyHTMLActivity(source: source),
+            PrintDocumentActivity(source: source, model: model),
         ]
     }
 
@@ -362,21 +363,22 @@ enum IOSPresenter {
     /// Includes:
     /// - `DocumentShareItemSource` (formatted rich text for Apple Notes, plain text Markdown for
     ///   Messages/Mail/Notion, and the `.md` file URL for AirDrop and Save to Files)
-    /// - `UIMarkupTextPrintFormatter` so the system **Print** action appears automatically
     /// - `applicationActivities`: `ExportPDFActivity`, `ExportHTMLActivity`,
-    ///   `CopyRichTextActivity`, `CopyHTMLActivity`
+    ///   `CopyRichTextActivity`, `CopyHTMLActivity`, `PrintDocumentActivity`
+    /// The system Print action is excluded: it would print untypeset HTML (no math or diagrams),
+    /// while `PrintDocumentActivity` typesets first, like the Mac.
     static func makeDocumentActivityViewController(
         source: DocumentExporter.Source,
         model: IOSDocumentFeaturesModel? = nil
     ) -> UIActivityViewController {
         let html = DocumentExporter.clipboardHTML(for: source)
         let itemSource = DocumentShareItemSource(source: source, html: html)
-        let printFormatter = UIMarkupTextPrintFormatter(markupText: html)
         let activities = documentActivities(for: source, model: model)
         let controller = UIActivityViewController(
-            activityItems: [itemSource, printFormatter],
+            activityItems: [itemSource],
             applicationActivities: activities
         )
+        controller.excludedActivityTypes = [.print]
         controller.setValue(source.title, forKey: "subject")
         return controller
     }
@@ -408,6 +410,7 @@ extension UIActivity.ActivityType {
     static let exportHTML = UIActivity.ActivityType("com.pixerate.Swash.activity.exportHTML")
     static let copyRichText = UIActivity.ActivityType("com.pixerate.Swash.activity.copyRichText")
     static let copyHTML = UIActivity.ActivityType("com.pixerate.Swash.activity.copyHTML")
+    static let printDocument = UIActivity.ActivityType("com.pixerate.Swash.activity.print")
 }
 
 /// An activity item source that shares multiple representations of a Markdown document,
@@ -721,6 +724,53 @@ final class CopyHTMLActivity: UIActivity {
     }
 }
 
+/// Share sheet action activity that prints the document typeset (math, diagrams) through
+/// `DocumentExporter.print`, instead of the system Print action's untypeset HTML.
+final class PrintDocumentActivity: UIActivity {
+    private var source: DocumentExporter.Source?
+    private weak var model: IOSDocumentFeaturesModel?
+
+    init(source: DocumentExporter.Source? = nil, model: IOSDocumentFeaturesModel? = nil) {
+        self.source = source
+        self.model = model
+        super.init()
+    }
+
+    nonisolated deinit {}
+
+    override class var activityCategory: UIActivity.Category { .action }
+    override var activityType: UIActivity.ActivityType? { .printDocument }
+    override var activityTitle: String? { "Print" }
+    override var activityImage: UIImage? { UIImage(systemName: "printer") }
+
+    override func canPerform(withActivityItems activityItems: [Any]) -> Bool {
+        source != nil || extractExportSource(from: activityItems) != nil
+    }
+
+    override func prepare(withActivityItems activityItems: [Any]) {
+        if source == nil {
+            source = extractExportSource(from: activityItems)
+        }
+    }
+
+    override func perform() {
+        guard let source else {
+            activityDidFinish(false)
+            return
+        }
+        // Finish first: the print sheet can't present while the share sheet is still up
+        activityDidFinish(true)
+        let model = model
+        Task { @MainActor in
+            do {
+                try await DocumentExporter.print(source)
+            } catch {
+                model?.exportError = error.localizedDescription
+            }
+        }
+    }
+}
+
 /// Configures `UINavigationItem.documentProperties.activityViewControllerProvider` on the
 /// enclosing navigation item(s) so the navigation bar's document title menu presents the same
 /// share sheet (with Export as PDF, Export as HTML, Copy as Rich Text, Copy HTML and Print)
@@ -879,6 +929,7 @@ final class IOSDocumentFeaturesModel {
     var exporting: String?
     var exportError: String?
 
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
     nonisolated deinit {}
 
     struct InfoSnapshot: Identifiable {
@@ -990,7 +1041,7 @@ struct IOSDocumentToolbar: ToolbarContent {
     @AppStorage(WritingDefaults.typewriterScrolling) private var typewriterScrolling = false
 
     var body: some ToolbarContent {
-        if !regularWidth {
+        if !regularWidth && !focusMode {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     model.showOutlineSheet(text: text, editor: editor)
@@ -1000,16 +1051,25 @@ struct IOSDocumentToolbar: ToolbarContent {
                 .accessibilityHint("Shows the list of headings")
             }
         }
-        ToolbarItem(placement: .secondaryAction) {
-            Button {
-                model.showInfo(text: text, editor: editor)
-            } label: {
-                Label("Document Info", systemImage: "info.circle")
+        if !regularWidth && !focusMode {
+            ToolbarItem(placement: .secondaryAction) {
+                Button {
+                    model.showInfo(text: text, editor: editor)
+                } label: {
+                    Label("Document Info", systemImage: "info.circle")
+                }
             }
         }
         ToolbarItem(placement: .secondaryAction) {
             Menu {
-                Toggle("Focus Mode", systemImage: "viewfinder", isOn: $focusMode)
+                Toggle("Focus Mode", systemImage: "viewfinder", isOn: Binding(
+                    get: { focusMode },
+                    set: { newValue in
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            focusMode = newValue
+                        }
+                    }
+                ))
                 Picker("Focus On", selection: $focusUnit) {
                     ForEach(FocusUnit.allCases) { unit in
                         Text(unit.title).tag(unit)
@@ -1100,6 +1160,9 @@ struct IOSOutlineSidebar: View {
     let editor: IOSEditorController
     let isVisible: Bool
     var fileURL: URL? = nil
+    var flavor: Binding<MarkdownFlavor>? = nil
+    var showInfo: (() -> Void)? = nil
+    var showSettings: (() -> Void)? = nil
 
     enum Mode: String, CaseIterable {
         case outline = "Outline"
@@ -1130,6 +1193,9 @@ struct IOSOutlineSidebar: View {
                 .padding(.vertical, 8)
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            sidebarFooter
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(mode.rawValue)
         .task(id: isVisible ? text : nil) {
@@ -1137,6 +1203,55 @@ struct IOSOutlineSidebar: View {
             try? await Task.sleep(for: .milliseconds(model.outline.headings.isEmpty ? 0 : 300))
             guard !Task.isCancelled else { return }
             model.refreshOutline(text: text, editor: editor)
+        }
+    }
+
+    @ViewBuilder
+    private var sidebarFooter: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 16) {
+                if let flavor {
+                    Menu {
+                        Picker("Markdown Flavor", selection: flavor) {
+                            ForEach(MarkdownFlavor.allCases) { item in
+                                Text(item.rawValue).tag(item)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "textformat")
+                            Text(flavor.wrappedValue.rawValue)
+                        }
+                        .font(.subheadline)
+                    }
+                    .accessibilityLabel("Markdown Flavor")
+                    .accessibilityValue(flavor.wrappedValue.rawValue)
+                }
+                Spacer()
+                HStack(spacing: 16) {
+                    Button {
+                        if let showInfo {
+                            showInfo()
+                        } else {
+                            model.showInfo(text: text, editor: editor)
+                        }
+                    } label: {
+                        Label("Document Info", systemImage: "info.circle")
+                    }
+                    Button {
+                        showSettings?()
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                }
+                .labelStyle(.iconOnly)
+            }
+            .font(.body)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.bar)
         }
     }
 }
@@ -1318,6 +1433,27 @@ extension View {
         currentIndex: nil,
         select: { _ in }
     )
+}
+
+#Preview("iOS Outline Sidebar") {
+    @Previewable @State var model = IOSDocumentFeaturesModel()
+    @Previewable @State var flavor = MarkdownFlavor.github
+    NavigationStack {
+        IOSOutlineSidebar(
+            model: model,
+            text: """
+            # Swash iOS
+            ## Introduction
+            ### Navigation
+            ## Settings
+            """,
+            editor: IOSEditorController(),
+            isVisible: true,
+            flavor: $flavor,
+            showInfo: {},
+            showSettings: {}
+        )
+    }
 }
 
 #Preview("iOS Document Info") {

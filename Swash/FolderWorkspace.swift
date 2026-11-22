@@ -96,21 +96,25 @@ final class FolderWorkspace: ObservableObject {
     }
 
     /// Opens `url` in the editor, optionally selecting `range` (raw-Markdown offsets) once it is shown.
-    func select(_ url: URL, revealing range: NSRange? = nil) {
+    /// Returns true if the file was selected, or false if saving the current file or reading the new file failed.
+    @discardableResult
+    func select(_ url: URL, revealing range: NSRange? = nil) -> Bool {
         let url = url.standardizedFileURL
         if url == selectedFile {
             if let range { revealRequest = TextRevealRequest(fileURL: url, range: range) }
-            return
+            return true
         }
-        save()
+        guard save() else { return false }
         do {
             let text = try Self.read(url)
             savedText = text
             revealRequest = range.map { TextRevealRequest(fileURL: url, range: $0) }
             selectedFile = url
             document = SwashDocument(text: text)
+            return true
         } catch {
             errorMessage = "“\(url.lastPathComponent)” couldn’t be opened. \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -157,7 +161,7 @@ final class FolderWorkspace: ObservableObject {
             errorMessage = "“\(newName)” already exists."
             return nil
         }
-        save()
+        guard save() else { return nil }
         do {
             try FileManager.default.moveItem(at: url, to: destination)
         } catch {
@@ -193,17 +197,20 @@ final class FolderWorkspace: ObservableObject {
 
     // MARK: Saving
 
-    /// Writes the selected file if its text has changed.
-    func save() {
+    /// Writes the selected file if its text has changed. Returns true if saving succeeded or wasn't needed.
+    @discardableResult
+    func save() -> Bool {
         pendingSave?.cancel()
         pendingSave = nil
-        guard let url = selectedFile, document.text != savedText else { return }
+        guard let url = selectedFile, document.text != savedText else { return true }
         let text = document.text
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             savedText = text
+            return true
         } catch {
             errorMessage = "“\(url.lastPathComponent)” couldn’t be saved. \(error.localizedDescription)"
+            return false
         }
     }
 

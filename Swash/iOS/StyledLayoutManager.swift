@@ -16,6 +16,9 @@ final class StyledLayoutManager: NSLayoutManager {
     var focusedCharacterRange: NSRange?
     static let unfocusedAlpha: CGFloat = 0.3
 
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+    nonisolated deinit {}
+
     func focusAlpha(for characterIndex: Int) -> CGFloat {
         guard let focused = focusedCharacterRange else { return 1 }
         return NSLocationInRange(characterIndex, focused) ? 1 : Self.unfocusedAlpha

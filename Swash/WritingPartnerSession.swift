@@ -62,6 +62,9 @@ final class WritingPartnerTarget: AgentTextTarget {
         self.host = host
     }
 
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+    nonisolated deinit {}
+
     /// The raw Markdown as it is in the editor.
     var realText: String {
         host?.partnerRawText ?? ""
@@ -172,7 +175,8 @@ final class WritingPartnerSession {
     private var applied: [Step] = []
     /// The editor the partner last worked in.
     private weak var currentHost: (any WritingPartnerHost)?
-    private var undoObserver: NSObjectProtocol?
+    /// Read by the nonisolated deinit (GOTCHAS #103); set and cleared on the main thread only.
+    nonisolated(unsafe) private var undoObserver: NSObjectProtocol?
     private weak var observedUndoManager: UndoManager?
     private let defaults: UserDefaults
 
@@ -273,7 +277,8 @@ final class WritingPartnerSession {
         self.defaults = defaults
     }
 
-    deinit {
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+    nonisolated deinit {
         if let undoObserver { NotificationCenter.default.removeObserver(undoObserver) }
     }
 

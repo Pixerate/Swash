@@ -467,6 +467,14 @@ final class SwashLayoutManager: NSLayoutManager {
 
 class SwashNSTextView: NSTextView {
     var isStyled: Bool = true
+    /// Allows test harnesses to simulate an active system Writing Tools session.
+    var writingToolsActiveOverride: Bool? = nil
+
+    @available(macOS 15.0, *)
+    override var isWritingToolsActive: Bool {
+        if let writingToolsActiveOverride { return writingToolsActiveOverride }
+        return super.isWritingToolsActive
+    }
     
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -883,6 +891,10 @@ class SwashNSTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if let coordinator = delegate as? SwashTextView.Coordinator, coordinator.isWritingToolsActive {
+            // Only clears hung state AppKit already reports as over; a key press alone never ends a session.
+            coordinator.verifyWritingToolsState(in: self)
+        }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags == .option, (event.keyCode == 36 || event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\n"),
            let coordinator = delegate as? SwashTextView.Coordinator {
@@ -1024,153 +1036,29 @@ class SwashNSTextView: NSTextView {
         pasteboard.clearContents()
         
         let item = NSPasteboardItem()
-        
-        // 1. Clean Formatted AttributedString (Rich Text) - Set FIRST so rich text types are prioritized
-        let cleanFormattedAttrString = createCleanFormattedAttributedString(from: textStorage, range: range)
-        let fullCleanRange = NSRange(location: 0, length: cleanFormattedAttrString.length)
-        
-        if fullCleanRange.length > 0 {
-            // RTF
-            if let rtfData = try? cleanFormattedAttrString.data(from: fullCleanRange, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
+        // Plain text and Markdown are exactly the selection; the rich copy widens to whole list
+        // items and table rows so they paste as real lists and tables.
+        let rawMarkdown = swashRawMarkdown(from: textStorage.attributedSubstring(from: range))
+        let richRange = expandedRangeForClipboardCopy(in: textStorage, range: range)
+        let richMarkdown = richRange == range ? rawMarkdown : swashRawMarkdown(from: textStorage.attributedSubstring(from: richRange))
+
+        let winURL = self.window?.representedURL ?? (self.window.flatMap { NSDocumentController.shared.document(for: $0)?.fileURL })
+        let html = DocumentExporter.clipboardHTML(for: DocumentExporter.Source(text: richMarkdown, flavor: flavor, fileURL: winURL, title: ""))
+
+        item.setString(html, forType: .html)
+        if let attributed = DocumentExporter.attributedString(fromHTML: html) {
+            if let rtfData = DocumentExporter.rtfData(from: attributed) {
                 item.setData(rtfData, forType: .rtf)
             }
-            
-            // RTFD if attachments are present
-            if cleanFormattedAttrString.containsAttachments(in: fullCleanRange) {
-                if let rtfdData = try? cleanFormattedAttrString.data(from: fullCleanRange, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd]) {
-                    item.setData(rtfdData, forType: .rtfd)
-                }
-            }
-            
-            // HTML
-            if let htmlData = try? cleanFormattedAttrString.data(from: fullCleanRange, documentAttributes: [.documentType: NSAttributedString.DocumentType.html]) {
-                item.setData(htmlData, forType: .html)
+            if let rtfdData = DocumentExporter.rtfdData(from: attributed) {
+                item.setData(rtfdData, forType: .rtfd)
             }
         }
-        
-        // 2. Raw Markdown string (Fallback for plain-text applications) - Set LAST as fallback
-        let rawMarkdown = buildRawMarkdownSubstring(from: textStorage, range: range)
+
         item.setString(rawMarkdown, forType: .swashMarkdown)
         item.setString(rawMarkdown, forType: .string)
         
         return pasteboard.writeObjects([item])
-    }
-    
-    private func buildRawMarkdownSubstring(from textStorage: NSTextStorage, range: NSRange) -> String {
-        let selectedSubstring = textStorage.attributedSubstring(from: range)
-        let result = NSMutableString(string: selectedSubstring.string)
-        let fullRange = NSRange(location: 0, length: selectedSubstring.length)
-        
-        selectedSubstring.enumerateAttribute(.attachment, in: fullRange, options: .reverse) { value, attRange, _ in
-            if let markdown = swashRawMarkdown(for: value) {
-                result.replaceCharacters(in: attRange, with: markdown)
-            }
-        }
-        return result as String
-    }
-    
-    private func createCleanFormattedAttributedString(from textStorage: NSTextStorage, range: NSRange) -> NSAttributedString {
-        let subAttrString = textStorage.attributedSubstring(from: range)
-        let result = NSMutableAttributedString()
-        let fullRange = NSRange(location: 0, length: subAttrString.length)
-        
-        let allowedKeys: Set<NSAttributedString.Key> = [
-            .font,
-            .foregroundColor,
-            .backgroundColor,
-            .underlineStyle,
-            .underlineColor,
-            .strikethroughStyle,
-            .strikethroughColor,
-            .link,
-            .paragraphStyle,
-            .attachment
-        ]
-        
-        subAttrString.enumerateAttributes(in: fullRange, options: []) { attrs, runRange, _ in
-            var isHiddenTag = false
-            if let font = attrs[.font] as? NSFont, font.pointSize < 1.0 {
-                isHiddenTag = true
-            }
-            if let color = attrs[.foregroundColor] as? NSColor, color == .clear {
-                isHiddenTag = true
-            }
-            
-            if !isHiddenTag {
-                if let attachment = attrs[.attachment] as? TableTextAttachment {
-                    let tableText = convertTableToFormattedText(attachment.tableData)
-                    let tableAttr = NSAttributedString(string: tableText, attributes: [
-                        .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-                    ])
-                    result.append(tableAttr)
-                } else if let attachment = attrs[.attachment] as? ImageTextAttachment {
-                    let imageAttr = NSAttributedString(attachment: attachment)
-                    result.append(imageAttr)
-                } else {
-                    let chunk = subAttrString.attributedSubstring(from: runRange)
-                    let mutableChunk = NSMutableAttributedString(attributedString: chunk)
-                    
-                    let chunkRange = NSRange(location: 0, length: mutableChunk.length)
-                    
-                    // Strip non-standard / custom attributes (e.g. .listMarker) that break RTF serialization
-                    mutableChunk.enumerateAttributes(in: chunkRange, options: []) { chunkAttrs, subRange, _ in
-                        for key in chunkAttrs.keys {
-                            if !allowedKeys.contains(key) {
-                                mutableChunk.removeAttribute(key, range: subRange)
-                            }
-                        }
-                    }
-                    
-                    // Remove default text colors so pasted text adapts cleanly to target apps
-                    mutableChunk.enumerateAttribute(.foregroundColor, in: chunkRange, options: []) { colorValue, attrRange, _ in
-                        if let color = colorValue as? NSColor {
-                            if color == NSColor.textColor || color == NSColor.labelColor || color == NSColor.clear {
-                                mutableChunk.removeAttribute(.foregroundColor, range: attrRange)
-                            }
-                        }
-                    }
-                    
-                    // Strip textBlocks from paragraphStyle so code blocks don't export as RTF table cells in target apps
-                    mutableChunk.enumerateAttribute(.paragraphStyle, in: chunkRange, options: []) { paraValue, subRange, _ in
-                        if let para = paraValue as? NSParagraphStyle, !para.textBlocks.isEmpty {
-                            let mutablePara = para.mutableCopy() as! NSMutableParagraphStyle
-                            mutablePara.textBlocks = []
-                            mutableChunk.addAttribute(.paragraphStyle, value: mutablePara, range: subRange)
-                            
-                            // Apply subtle background color fill for code blocks in rich text exports
-                            if mutableChunk.attribute(.backgroundColor, at: subRange.location, effectiveRange: nil) == nil {
-                                let codeBg = NSColor.textColor.withAlphaComponent(0.04)
-                                mutableChunk.addAttribute(.backgroundColor, value: codeBg, range: subRange)
-                            }
-                        }
-                    }
-                    
-                    result.append(mutableChunk)
-                }
-            } else {
-                if let markerInfo = attrs[.listMarker] as? ListMarkerInfo {
-                    let markerStr = "\(markerInfo.text) "
-                    let font = NSFont.systemFont(ofSize: 14, weight: .bold)
-                    let markerAttr = NSAttributedString(string: markerStr, attributes: [.font: font])
-                    result.append(markerAttr)
-                }
-            }
-        }
-        
-        return result
-    }
-    
-    private func convertTableToFormattedText(_ data: MarkdownTableData) -> String {
-        var lines: [String] = []
-        let cleanHeaders = data.headers.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        if !cleanHeaders.isEmpty {
-            lines.append(cleanHeaders.joined(separator: "\t"))
-        }
-        for row in data.rows {
-            let cleanCells = row.map { $0.trimmingCharacters(in: .whitespaces) }
-            lines.append(cleanCells.joined(separator: "\t"))
-        }
-        return lines.joined(separator: "\n")
     }
 }
 
@@ -1359,6 +1247,7 @@ struct SwashTextView: NSViewRepresentable {
     
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = nsView.documentView as? SwashNSTextView else { return }
+        context.coordinator.verifyWritingToolsState(in: textView)
         textView.isStyled = isStyled
         textView.flavor = flavor
         if textView.window?.isKeyWindow == true {
@@ -1487,6 +1376,10 @@ struct SwashTextView: NSViewRepresentable {
         }
     }
     
+    static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
+        coordinator.flushWritingToolsChanges(in: nsView.documentView as? NSTextView)
+    }
+    
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
@@ -1561,7 +1454,20 @@ struct SwashTextView: NSViewRepresentable {
             self.parent = parent
             super.init()
             NotificationCenter.default.addObserver(self, selector: #selector(handleRemoveCurrentTable(_:)), name: .removeCurrentTable, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(handleWindowWillClose(_:)), name: NSWindow.willCloseNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(handleAppWillTerminate(_:)), name: NSApplication.willTerminateNotification, object: nil)
             logDebug("[SwashTextView] Coordinator.init called")
+        }
+        
+        @objc private func handleWindowWillClose(_ notification: Notification) {
+            if let closingWindow = notification.object as? NSWindow,
+               closingWindow === currentTextView?.window {
+                flushWritingToolsChanges()
+            }
+        }
+        
+        @objc private func handleAppWillTerminate(_ notification: Notification) {
+            flushWritingToolsChanges()
         }
         
         private func convertTableToPlainText(_ data: MarkdownTableData) -> String {
@@ -1780,6 +1686,26 @@ struct SwashTextView: NSViewRepresentable {
         private(set) var isWritingToolsActive = false
         private var textChangedDuringWritingTools = false
 
+        /// Flushes any pending Writing Tools edits to the document binding and restores regular styling.
+        func flushWritingToolsChanges(in textView: NSTextView? = nil) {
+            guard isWritingToolsActive || textChangedDuringWritingTools else { return }
+            isWritingToolsActive = false
+            guard textChangedDuringWritingTools, let textView = textView ?? currentTextView else { return }
+            textChangedDuringWritingTools = false
+            forceFullRestyle = true
+            textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
+        }
+
+        /// Safety net: clears hung Writing Tools state when AppKit reports the session is over but
+        /// `textViewWritingToolsDidEnd` never came. Not on a key press: Writing Tools has its own
+        /// text fields, and typing in them mid-session must not end it (GOTCHAS #29).
+        func verifyWritingToolsState(in textView: NSTextView) {
+            guard isWritingToolsActive else { return }
+            if #available(macOS 15.0, *), !textView.isWritingToolsActive {
+                flushWritingToolsChanges(in: textView)
+            }
+        }
+
         @available(macOS 15.0, *)
         func textViewWritingToolsWillBegin(_ textView: NSTextView) {
             isWritingToolsActive = true
@@ -1787,11 +1713,7 @@ struct SwashTextView: NSViewRepresentable {
 
         @available(macOS 15.0, *)
         func textViewWritingToolsDidEnd(_ textView: NSTextView) {
-            isWritingToolsActive = false
-            guard textChangedDuringWritingTools else { return }
-            textChangedDuringWritingTools = false
-            forceFullRestyle = true
-            textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
+            flushWritingToolsChanges(in: textView)
         }
 
         /// Code, math, HTML, front matter, tables and images are left alone by Writing Tools.
@@ -1855,6 +1777,7 @@ struct SwashTextView: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            verifyWritingToolsState(in: textView)
             cachedOffsetMap = nil
             if isWritingToolsActive {
                 textChangedDuringWritingTools = true
@@ -1899,6 +1822,7 @@ struct SwashTextView: NSViewRepresentable {
         
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            verifyWritingToolsState(in: textView)
             if !isHighlighting {
                 applyFocus(in: textView)
                 centerCaret(in: textView)
@@ -2065,6 +1989,7 @@ struct SwashTextView: NSViewRepresentable {
         }
         
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+            verifyWritingToolsState(in: textView)
             if !isApplyingEdit, !isHighlighting, !isUpdatingFromSwiftUI, !isWritingToolsActive {
                 writingPartner.willType(replacementString, in: affectedCharRange, textView: textView, coordinator: self)
             }

@@ -95,15 +95,18 @@ final class WritingPartnerTests: XCTestCase {
     func testUndoTakesBackOneFixAndCountsAgainstItsRule() throws {
         let harness = try editor()
         harness.textView.becomeFirstResponder()
-        type("so i dont know ", in: harness)
+        // End on the partner's fix: typing from code isn't an undoable change, and UIKit clears
+        // the undo history when it happens (GOTCHAS #68), so text typed after a fix would wipe it
+        type("so i dont ", in: harness)
         waitForPartner(harness)
-        XCTAssertEqual(harness.text, "So I don't know ")
+        XCTAssertEqual(harness.text, "So I don't ")
         let undoManager = try XCTUnwrap(harness.textView.undoManager)
         XCTAssertTrue(undoManager.canUndo)
+        XCTAssertEqual(undoManager.undoActionName, WritingPartnerDefaults.actionName)
         undoManager.undo()
         harness.pump(0.2)
         // Each word the partner changed is its own undo step: the newest goes
-        XCTAssertEqual(harness.text, "So I dont know ")
+        XCTAssertEqual(harness.text, "So I dont ")
         // The caret goes back to where the person was typing, not onto the restored word
         XCTAssertEqual(harness.coordinator.rawRange(forStorage: harness.textView.selectedRange, in: harness.textView).location,
                        (harness.text as NSString).length)

@@ -63,6 +63,9 @@ final class BlockDecoration {
         self.left = left
         self.right = right
     }
+
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+    nonisolated deinit {}
 }
 
 extension NSAttributedString.Key {
@@ -260,6 +263,9 @@ final class MarkdownEditorStyler {
         self.storageShift = storageShift
         self.document = document
     }
+
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+    nonisolated deinit {}
     
     /// Applies all styling. The caller has already reset attributes and wraps this in begin/endEditing.
     func style() {

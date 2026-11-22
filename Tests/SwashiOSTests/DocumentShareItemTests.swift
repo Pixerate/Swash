@@ -61,7 +61,8 @@ final class DocumentShareItemTests: XCTestCase {
         XCTAssertEqual(activityVC.value(forKey: "subject") as? String, "Quarterly Report")
 
         let activities = IOSPresenter.documentActivities(for: source, model: model)
-        XCTAssertEqual(activities.count, 4)
+        XCTAssertEqual(activities.count, 5)
+        XCTAssertEqual(activityVC.excludedActivityTypes, [.print], "the untypeset system Print is replaced")
 
         let exportPDF = try XCTUnwrap(activities[0] as? ExportPDFActivity)
         XCTAssertEqual(ExportPDFActivity.activityCategory, .action)
@@ -90,6 +91,11 @@ final class DocumentShareItemTests: XCTestCase {
         XCTAssertEqual(copyHTML.activityTitle, "Copy HTML")
         XCTAssertNotNil(copyHTML.activityImage)
         XCTAssertTrue(copyHTML.canPerform(withActivityItems: []))
+
+        let print = try XCTUnwrap(activities[4] as? PrintDocumentActivity)
+        XCTAssertEqual(print.activityType, .printDocument)
+        XCTAssertEqual(print.activityTitle, "Print")
+        XCTAssertTrue(print.canPerform(withActivityItems: []))
     }
 
     func testPrintActivityReceivesMarkupPrintFormatter() throws {

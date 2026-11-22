@@ -40,6 +40,9 @@ final class IOSWritingPartnerHost: WritingPartnerHost {
     private let checker = UITextChecker()
     private var overlay: IOSWritingPartnerOverlay?
 
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+    nonisolated deinit {}
+
     init(textView: MarkdownEditingTextView, isStyled: Bool) {
         self.textView = textView
         self.isStyled = isStyled
@@ -257,9 +260,9 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    deinit {
-        if let subscription { MainActor.assumeIsolated { carets?.unsubscribe(subscription) } }
-    }
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103). The caret
+    /// subscription is dropped when the overlay leaves its text view instead.
+    nonisolated deinit {}
 
     /// Covers the text view's whole content (it scrolls with the text), and stays on top of it.
     private func fit() {
@@ -279,6 +282,10 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
 
     override func didMoveToSuperview() {
         super.didMoveToSuperview()
+        if superview == nil, let subscription {
+            carets?.unsubscribe(subscription)
+            self.subscription = nil
+        }
         fit()
     }
 
