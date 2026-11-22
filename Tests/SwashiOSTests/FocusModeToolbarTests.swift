@@ -31,9 +31,8 @@ final class FocusModeToolbarTests: XCTestCase {
     }
 
     func testWritingOptionsFocusState() {
-        let typography = IOSTypographySettings()
-        let defaultOptions = typography.writingOptions()
-        XCTAssertNil(defaultOptions.focus)
+        // Reads only the isolated test suite, never the machine's saved settings
+        XCTAssertFalse(testDefaults.bool(forKey: WritingDefaults.focusMode))
 
         testDefaults.set(true, forKey: WritingDefaults.focusMode)
         testDefaults.set(FocusUnit.sentence.rawValue, forKey: WritingDefaults.focusUnit)

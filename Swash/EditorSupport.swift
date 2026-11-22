@@ -110,3 +110,27 @@ func swashRawMarkdown(from storage: NSAttributedString) -> String {
     }
     return result as String
 }
+
+/// Expands `range` to whole lines if the selection covers list items or table rows.
+func expandedRangeForClipboardCopy(in storage: NSAttributedString, range: NSRange) -> NSRange {
+    guard range.length > 0, NSMaxRange(range) <= storage.length else { return range }
+    let lineRange = (storage.string as NSString).lineRange(for: range)
+    var coversListOrTable = false
+    storage.enumerateAttributes(in: range, options: []) { attributes, _, stop in
+        if attributes[.listMarker] != nil || attributes[.attachment] is TableTextAttachment {
+            coversListOrTable = true
+            stop.pointee = true
+        }
+    }
+    if !coversListOrTable && lineRange.location < storage.length {
+        storage.enumerateAttribute(.listMarker, in: lineRange, options: []) { value, _, stop in
+            if value != nil {
+                if NSMaxRange(range) >= NSMaxRange(lineRange) || (storage.string as NSString).substring(with: range).contains("\n") {
+                    coversListOrTable = true
+                    stop.pointee = true
+                }
+            }
+        }
+    }
+    return coversListOrTable ? lineRange : range
+}

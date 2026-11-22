@@ -48,6 +48,7 @@ struct SourceTextView: UIViewRepresentable {
         textView.installFormattingBar(enabled: formattingEnabled)
         scrollSync?.register(textView)
         textView.setTopBarInset(topInset)
+        context.coordinator.installWritingPartner(in: textView)
         return textView
     }
 
@@ -89,16 +90,44 @@ struct SourceTextView: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: SourceTextView
         var lastTextSize: CGFloat = EditorTypography.defaultTextSize
+        /// The writing partner (#109). In Source the text view's text is the raw Markdown.
+        let writingPartner = WritingPartnerSession()
+        private(set) var partnerHost: IOSWritingPartnerHost?
 
         init(parent: SourceTextView) {
             self.parent = parent
         }
 
+        /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+        nonisolated deinit {}
+
+        func installWritingPartner(in textView: MarkdownEditingTextView) {
+            let host = IOSWritingPartnerHost(textView: textView, isStyled: false)
+            host.rawText = { [weak textView] in textView?.text ?? "" }
+            host.apply = { [weak textView] text, selection, actionName in
+                textView?.applyMarkdownEdit(MarkdownEdit(text: text, selection: selection), actionName: actionName)
+            }
+            host.flavor = { [weak self] in self?.parent.flavor ?? .github }
+            partnerHost = host
+            textView.writingPartner = writingPartner
+            textView.writingPartnerHost = host
+        }
+
         func textViewDidChange(_ textView: UITextView) {
             parent.text = textView.text
+            if let host = partnerHost, !host.isApplyingPartnerEdit { writingPartner.didChange(in: host) }
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            guard let textView = textView as? MarkdownEditingTextView, !textView.isApplyingEdit, let host = partnerHost else { return }
+            writingPartner.selectionDidChange(in: host)
         }
 
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
+            if let textView = textView as? MarkdownEditingTextView, !textView.isApplyingEdit, textView.markedTextRange == nil,
+               !textView.isWritingToolsActive, let host = partnerHost {
+                writingPartner.willType(replacement, inRaw: range, host: host)
+            }
             guard parent.formattingEnabled, let textView = textView as? MarkdownEditingTextView,
                   !textView.isApplyingEdit, textView.markedTextRange == nil else { return true }
             let current = textView.text ?? ""

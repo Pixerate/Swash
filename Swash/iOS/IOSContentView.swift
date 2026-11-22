@@ -28,6 +28,7 @@ struct IOSContentView: View {
     @AppStorage(WritingDefaults.focusMode) private var focusMode = false
     @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
     @AppStorage(WritingDefaults.typewriterScrolling) private var typewriterScrolling = false
+    @State private var partnerPaused = false
     @State private var conflictCount = 0
     @State private var showingConflictSheet = false
     @State private var conflictError: String?
@@ -107,7 +108,11 @@ struct IOSContentView: View {
                 distractionFree.toggle()
             }
         }))
+        .onChange(of: partnerPaused) { _, paused in
+            editor.setPartnerPaused(paused)
+        }
         .onAppear {
+            editor.onPartnerPauseChange = { partnerPaused = $0 }
             editor.onFormatCommand = { handleFormatCommand($0) }
             editor.flavor = document.flavor
             refreshConflicts()
@@ -133,7 +138,10 @@ struct IOSContentView: View {
                 set: { if !distractionFree && !focusMode { outlineVisible = $0 != .detailOnly } }
             )) {
                 IOSOutlineSidebar(model: features, text: document.text, editor: editor,
-                                  isVisible: outlineVisible && !distractionFree && !focusMode, fileURL: fileURL)
+                                  isVisible: outlineVisible && !distractionFree && !focusMode, fileURL: fileURL,
+                                  flavor: flavorBinding,
+                                  showInfo: { features.showInfo(text: document.text, editor: editor) },
+                                  showSettings: { showingSettings = true })
             } detail: {
                 documentScreen
             }
@@ -182,7 +190,8 @@ struct IOSContentView: View {
             }
         }
         .safeAreaBar(edge: .top) {
-            if !distractionFree && !focusMode {
+            // Conflict and folder-access banners stay visible in Focus Mode: they guard the file
+            if !distractionFree {
                 if conflictCount > 0 {
                     ConflictBanner(count: conflictCount) { showingConflictSheet = true }
                 }
@@ -283,11 +292,10 @@ struct IOSContentView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
-                           editor: editor, regularWidth: horizontalSizeClass == .regular,
-                           distractionFree: $distractionFree)
+        // Focus Mode keeps only the Writing menu (its focus options) in the toolbar
         if !focusMode {
-            ToolbarItem(placement: .primaryAction) {
+            // In the centre group on iPad; on iPhone the overflow would hide its one-tap switch
+            ToolbarItem(placement: horizontalSizeClass == .regular ? .secondaryAction : .primaryAction) {
                 // A glyph button, not a segmented control: iOS 26 toolbars squeeze segmented
                 // controls into one glass circle. Tap switches Source and Formatted; hold for every mode.
                 Menu {
@@ -306,6 +314,12 @@ struct IOSContentView: View {
                 .accessibilityValue(effectiveMode.rawValue)
                 .accessibilityHint("Switches between Source and Formatted. Touch and hold for more modes.")
             }
+        }
+        IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
+                           editor: editor, regularWidth: horizontalSizeClass == .regular,
+                           distractionFree: $distractionFree, partnerPaused: $partnerPaused)
+        if horizontalSizeClass != .regular && !focusMode {
+            // iPad shares from the title menu; on iPhone that menu is a tap further away
             ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
                 shareLink
@@ -556,5 +570,12 @@ private extension FormatCommand {
         IOSContentView(document: $document, fileURL: nil)
     }
     .preferredColorScheme(.dark)
+}
+
+#Preview("iOS Editor - iPad", traits: .landscapeLeft) {
+    @Previewable @State var document = SwashSampleDocument.standard
+    NavigationStack {
+        IOSContentView(document: $document, fileURL: nil)
+    }
 }
 #endif

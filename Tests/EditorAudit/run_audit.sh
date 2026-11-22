@@ -9,7 +9,7 @@ source scripts/flair_effects.sh
 OUT="build/editor-audit"; mkdir -p "$OUT"
 SDK="$(xcrun --show-sdk-path --sdk macosx)"
 EXTRAS="$(scripts/build_mac_appkit_extras.sh)"
-CORE="$PIXERATE_MARKDOWN $PIXERATE_CORE Swash/SlackMarkdown.swift Swash/PlatformTypes.swift Swash/EditorSupport.swift Swash/RichContentRenderer.swift Swash/GenUIBlock.swift Swash/WidgetTrustManager.swift Swash/GenUIBlockView.swift Swash/MarkdownEditorStyler.swift Swash/CodeHighlightTheme.swift Swash/FormatCommands.swift Swash/MarkdownFlavor.swift Swash/FolderAccessManager.swift Swash/MarkdownParser.swift Swash/MarkdownPreviewView.swift Swash/DetectedLink.swift Swash/InteractiveTableView.swift Swash/SwashTextView.swift Swash/WritingPartner.swift Swash/FormattingVoice.swift Swash/WritingPartnerSession.swift Swash/PartnerMarks.swift Swash/WritingPartnerOverlay.swift Swash/WritingBandleader.swift Swash/FolderIndex.swift Swash/WritingModes.swift Swash/EditorTypography.swift Swash/ImageInsertion.swift"
+CORE="$PIXERATE_MARKDOWN $PIXERATE_CORE Swash/SlackMarkdown.swift Swash/PlatformTypes.swift Swash/EditorSupport.swift Swash/RichContentRenderer.swift Swash/GenUIBlock.swift Swash/WidgetTrustManager.swift Swash/GenUIBlockView.swift Swash/MarkdownEditorStyler.swift Swash/CodeHighlightTheme.swift Swash/FormatCommands.swift Swash/MarkdownFlavor.swift Swash/FolderAccessManager.swift Swash/MarkdownParser.swift Swash/MarkdownPreviewView.swift Swash/DetectedLink.swift Swash/InteractiveTableView.swift Swash/SwashTextView.swift Swash/WritingPartner.swift Swash/FormattingVoice.swift Swash/WritingPartnerSession.swift Swash/WritingPartnerHost.swift Swash/WritingPartnerMacHost.swift Swash/PartnerMarks.swift Swash/WritingPartnerOverlay.swift Swash/WritingBandleader.swift Swash/FolderIndex.swift Swash/WritingModes.swift Swash/EditorTypography.swift Swash/ImageInsertion.swift"
 what="${1:-all}"
 
 if [[ $what == render || $what == all ]]; then
@@ -43,11 +43,11 @@ enum TestHooks {
 '''
 open(sys.argv[1], "w").write(s)
 PY
-  swiftc $EXTRAS -O -target arm64-apple-macos15.0 -sdk "$SDK" $CORE "$OUT/BubbleMenuView.hooked.swift" Swash/SwashDocument.swift Swash/ViewMode.swift Swash/ContentView.swift $PIXERATE_CORE Swash/MarkdownAgentTools.swift Swash/AgentBridge.swift Swash/DocumentCommands.swift Swash/DocumentOutlineView.swift Swash/DocumentOpening.swift Swash/QuickCapture.swift Swash/ConflictResolution.swift Swash/DocumentExporter.swift Swash/ExportCommands.swift Tests/EditorAudit/BubbleRunner.swift -o "$OUT/bubble"
+  swiftc $EXTRAS -O -target arm64-apple-macos15.0 -sdk "$SDK" $CORE "$OUT/BubbleMenuView.hooked.swift" Swash/SwashDocument.swift Swash/ViewMode.swift Swash/ContentView.swift $PIXERATE_CORE Swash/MarkdownAgentTools.swift Swash/AgentBridge.swift Swash/DocumentCommands.swift Swash/DocumentOutlineView.swift Swash/DocumentOpening.swift Swash/QuickCapture.swift Swash/ConflictResolution.swift Swash/DocumentExporter.swift Swash/ExportCommands.swift Swash/PreviewModifiers.swift Tests/EditorAudit/BubbleRunner.swift -o "$OUT/bubble"
   "$OUT/bubble" "$OUT/bubble-out" | sed -n "/^BUBBLE/,\$p"; echo "Bubble menu report: $OUT/bubble-out/bubble.md"
 fi
 if [[ $what == folder || $what == all ]]; then
-  swiftc $EXTRAS -O -target arm64-apple-macos15.0 -sdk "$SDK" $CORE Swash/BubbleMenuView.swift Swash/SwashDocument.swift Swash/ViewMode.swift Swash/ContentView.swift $PIXERATE_CORE Swash/MarkdownAgentTools.swift Swash/AgentBridge.swift Swash/DocumentCommands.swift Swash/DocumentOutlineView.swift Swash/DocumentOpening.swift Swash/QuickCapture.swift Swash/ConflictResolution.swift Swash/DocumentExporter.swift Swash/ExportCommands.swift Swash/FolderWorkspace.swift Swash/FolderWindowView.swift Tests/EditorAudit/FolderRunner.swift -o "$OUT/folder"
+  swiftc $EXTRAS -O -target arm64-apple-macos15.0 -sdk "$SDK" $CORE Swash/BubbleMenuView.swift Swash/SwashDocument.swift Swash/ViewMode.swift Swash/ContentView.swift $PIXERATE_CORE Swash/MarkdownAgentTools.swift Swash/AgentBridge.swift Swash/DocumentCommands.swift Swash/DocumentOutlineView.swift Swash/DocumentOpening.swift Swash/QuickCapture.swift Swash/ConflictResolution.swift Swash/DocumentExporter.swift Swash/ExportCommands.swift Swash/PreviewModifiers.swift Swash/FolderWorkspace.swift Swash/FolderWindowView.swift Tests/EditorAudit/FolderRunner.swift -o "$OUT/folder"
   "$OUT/folder" "$OUT/folder-out" | grep -E "^(PASS|FAIL|FOLDER|Folder)"
 fi
 if [[ $what == perf || $what == all ]]; then

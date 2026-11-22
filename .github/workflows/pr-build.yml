@@ -63,6 +63,9 @@ jobs:
       - name: Paste conversion tests (Confluence and Jira images)
         run: scripts/run_paste_tests.sh
 
+      - name: Share extension conversion tests (HTML and RTF formatting)
+        run: scripts/run_share_tests.sh
+
       - name: Slack mrkdwn parsing and formatting tests
         run: scripts/run_slack_tests.sh
 

@@ -241,7 +241,9 @@ final class PixerateAccess {
             await account.restoreSession()
         }
         resetRefusals()
+        let prior = store.lastError
         await store.start()
+        settleBackgroundError(prior)
         hasLoadedEntitlements = true
     }
 
@@ -276,7 +278,9 @@ final class PixerateAccess {
             await account.restoreSession()
         }
         resetRefusals()
+        let prior = store.lastError
         await store.refreshEntitlements()
+        settleBackgroundError(prior)
         hasLoadedEntitlements = true
     }
 
@@ -285,7 +289,9 @@ final class PixerateAccess {
         resetRefusals()
         guard !isPreview else { return }
         Task {
+            let prior = store.lastError
             await store.accountDidChange()
+            settleBackgroundError(prior)
         }
     }
 
@@ -294,7 +300,9 @@ final class PixerateAccess {
         resetRefusals()
         guard !isPreview else { return }
         Task {
+            let prior = store.lastError
             await store.accountDidChange()
+            settleBackgroundError(prior)
         }
     }
 
@@ -313,6 +321,25 @@ final class PixerateAccess {
     }
 
     // MARK: Plan & Entitlements
+
+    /// Clears any transient StoreKit / purchase error from the active store.
+    func clearLastError() {
+        store.lastError = nil
+    }
+
+    /// A background start or refresh never surfaces its own failure (an Xcode-environment
+    /// transaction is rejected with 404 on every launch). An error that was already showing, such
+    /// as one from the person's own Restore or purchase, stays unless it was only a cancellation.
+    private func settleBackgroundError(_ prior: PixerateStoreError?) {
+        store.lastError = prior?.isCancellation == true ? nil : prior
+    }
+
+    /// A cancelled request (`URLError.cancelled`, a cancelled task) reports just "cancelled". Only
+    /// that is hidden: a real message that mentions a cancelled subscription is still shown.
+    nonisolated static func isCancellationMessage(_ message: String) -> Bool {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)).lowercased()
+        return trimmed == "cancelled" || trimmed == "canceled"
+    }
 
     /// Plans that never count as Pixerate Pro.
     nonisolated static let freePlanIds: Set<String> = ["free", ""]
@@ -371,7 +398,10 @@ final class PixerateAccess {
     /// (when available) and the Pixerate account bearer key (when signed in), and returns the
     /// response body. Throws `PixerateRefusal`, without sending anything to `path`, when
     /// unauthenticated, when the feature is off, without Swash Pro, or while rate-limited.
-    func post(path: String, body: Data) async throws -> Data {
+    /// `timeout` caps how long the request may take (default: the session's). The writing partner's
+    /// pause tier passes a short one so a dropped connection falls back to the on-device partner
+    /// at once rather than after a minute (#109).
+    func post(path: String, body: Data, timeout: TimeInterval? = nil) async throws -> Data {
         guard isFeatureEnabled() else { throw PixerateRefusal.featureOff }
         guard (try? store.authorizedRequest(path: path, method: "POST", body: body)) != nil else {
             throw PixerateRefusal.signedOut
@@ -392,12 +422,13 @@ final class PixerateAccess {
             self.pausedUntil = nil
         }
 
-        let request: URLRequest
+        var request: URLRequest
         do {
             request = try store.authorizedRequest(path: path, method: "POST", body: body)
         } catch {
             throw PixerateRefusal.signedOut
         }
+        if let timeout { request.timeoutInterval = timeout }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw PixerateRefusal.failed(status: 0, message: nil)
@@ -600,3 +631,13 @@ final class DemoPixerateURLProtocol: URLProtocol {
     }
 }
 #endif
+
+extension PixerateStoreError {
+    /// True for a request that was cancelled rather than one that failed.
+    var isCancellation: Bool {
+        if case .network(let message) = self {
+            return PixerateAccess.isCancellationMessage(message)
+        }
+        return false
+    }
+}

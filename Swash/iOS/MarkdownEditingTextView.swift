@@ -27,6 +27,17 @@ final class IOSEditorController {
 
     var isAttached: Bool { textView != nil }
 
+    /// Whether the writing partner is paused for this document (#112, #109). Kept here rather than
+    /// in the editor's session, so switching between Source and Formatted keeps it.
+    private(set) var partnerPaused = false
+    /// Called when the partner pauses or resumes itself (the undo reminder's Pause button).
+    var onPartnerPauseChange: ((Bool) -> Void)?
+
+    func setPartnerPaused(_ paused: Bool) {
+        partnerPaused = paused
+        textView?.writingPartner?.setPaused(paused, in: textView?.writingPartnerHost)
+    }
+
     var selection: NSRange {
         textView?.markdownSelection ?? NSRange(location: 0, length: 0)
     }
@@ -38,11 +49,22 @@ final class IOSEditorController {
     func attach(_ textView: MarkdownEditingTextView) {
         self.textView = textView
         textView.controller = self
+        if let partner = textView.writingPartner {
+            if partner.isPaused != partnerPaused { partner.setPaused(partnerPaused, in: textView.writingPartnerHost) }
+            partner.onPauseChange = { [weak self] paused in
+                guard let self, paused != self.partnerPaused else { return }
+                self.partnerPaused = paused
+                self.onPartnerPauseChange?(paused)
+            }
+        }
     }
 
     func focus() {
         textView?.becomeFirstResponder()
     }
+
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+    nonisolated deinit {}
 }
 
 /// A TextKit 1 UITextView (the same text system as the macOS editor) with Markdown editing aids.
@@ -56,6 +78,9 @@ class MarkdownEditingTextView: UITextView {
     var flavor: MarkdownFlavor = .github
     /// The document's file URL, for resolving relative and `[[wiki]]` note links in its folder.
     var baseURL: URL?
+    /// The writing partner and this editor as its host, set by the editor's coordinator (#109).
+    weak var writingPartner: WritingPartnerSession?
+    weak var writingPartnerHost: IOSWritingPartnerHost?
 
     /// The selection in raw-Markdown offsets.
     var markdownSelection: NSRange { selectedRange }
@@ -109,10 +134,77 @@ class MarkdownEditingTextView: UITextView {
         let outdent = UIKeyCommand(input: "\t", modifierFlags: .shift, action: #selector(outdentLine))
         indent.wantsPriorityOverSystemBehavior = true
         outdent.wantsPriorityOverSystemBehavior = true
-        return (super.keyCommands ?? []) + [indent, outdent]
+        var commands = (super.keyCommands ?? []) + [indent, outdent]
+        if let partner = writingPartner, partner.hasActiveIntroduction || partner.hasActiveUndoReminder
+            || partner.hasActiveSuggestion || !partner.suggestions.isEmpty {
+            let escape = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(dismissPartner))
+            escape.wantsPriorityOverSystemBehavior = true
+            commands.append(escape)
+        }
+        if writingPartner?.hasActiveSuggestion == true {
+            let accept = UIKeyCommand(input: "\r", modifierFlags: .alternate, action: #selector(acceptPartnerSuggestion))
+            accept.discoverabilityTitle = "Accept Suggestion"
+            commands.append(accept)
+        }
+        return commands
+    }
+
+    // MARK: Writing partner
+
+    /// Tab accepts the partner's suggestion at the caret (as on the Mac) before it indents.
+    @discardableResult
+    func acceptPartnerSuggestionAtCaret() -> Bool {
+        guard let partner = writingPartner, let host = writingPartnerHost else { return false }
+        if partner.hasActiveSuggestion {
+            partner.acceptActiveSuggestion()
+            return true
+        }
+        return partner.acceptSuggestionAtCaret(in: host)
+    }
+
+    @objc private func acceptPartnerSuggestion() {
+        acceptPartnerSuggestionAtCaret()
+    }
+
+    /// Esc: closes the partner's note, or dismisses the suggestion at the caret.
+    @objc private func dismissPartner() {
+        guard let partner = writingPartner, let host = writingPartnerHost else { return }
+        if partner.dismissIntroduction(in: host) { return }
+        if partner.dismissUndoReminder(in: host) { return }
+        if partner.hasActiveSuggestion {
+            partner.dismissActiveSuggestion()
+            return
+        }
+        partner.dismissSuggestion(in: host)
+    }
+
+    /// The partner's actions for the edit menu: a suggestion at the caret, the marks to check.
+    func writingPartnerMenu() -> UIMenu? {
+        guard let partner = writingPartner, let host = writingPartnerHost else { return nil }
+        var actions: [UIMenuElement] = []
+        let atCaret = partner.suggestionsForCaret(in: host)
+        if let suggestion = atCaret.last {
+            let isMark = suggestion.markID != nil
+            actions.append(UIAction(title: "Use “\(suggestion.edit.replacement)”", image: UIImage(systemName: "checkmark")) { [weak self] _ in
+                self?.acceptPartnerSuggestionAtCaret()
+            })
+            actions.append(UIAction(title: isMark ? "Keep as Written" : "Dismiss Suggestion", image: UIImage(systemName: "xmark")) { [weak partner, weak host] _ in
+                guard let partner, let host else { return }
+                partner.dismissSuggestion(in: host)
+            })
+        }
+        if !partner.marks.isEmpty, atCaret.isEmpty {
+            let count = partner.marks.count
+            actions.append(UIAction(title: count == 1 ? "Check 1 Mark" : "Check \(count) Marks", image: UIImage(systemName: "text.badge.checkmark")) { [weak partner, weak host] _ in
+                guard let partner, let host else { return }
+                partner.reviewMarks(in: host)
+            })
+        }
+        return actions.isEmpty ? nil : UIMenu(title: "Writing Partner", options: .displayInline, children: actions)
     }
 
     @objc private func indentLine() {
+        if acceptPartnerSuggestionAtCaret() { return }
         if let edit = MarkdownEditingCommands.indent(text: markdownText, selection: markdownSelection) {
             applyMarkdownEdit(edit, actionName: "Indent")
         } else {
@@ -132,6 +224,9 @@ class MarkdownEditingTextView: UITextView {
     /// no ⌘-click), and the Format submenu.
     func editMenu(for range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
         var actions = suggestedActions
+        if let partner = writingPartnerMenu() {
+            actions.insert(partner, at: 0)
+        }
         if let note = noteURL(at: markdownSelection) {
             let open = UIAction(title: "Open Note", image: UIImage(systemName: "doc.text")) { _ in
                 DocumentOpener.open(note)
@@ -287,6 +382,23 @@ class MarkdownEditingTextView: UITextView {
 
     private weak var formatPanelButton: UIButton?
 
+    /// Whether the editor is in Markdown source mode. In Source mode, character buttons appear
+    /// first on the keyboard bar (#191).
+    open var isSourceMode: Bool {
+        get {
+            if let custom = objc_getAssociatedObject(self, &isSourceModeKey) as? Bool {
+                return custom
+            }
+            return !(self is StyledUITextView)
+        }
+        set {
+            objc_setAssociatedObject(self, &isSourceModeKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            if formattingBarEnabled == true {
+                restoreFormattingBar()
+            }
+        }
+    }
+
     /// Puts the formatting bar back after another accessory (the "/" block menu) replaced it.
     func restoreFormattingBar() {
         inputAccessoryView = formattingBarEnabled == true ? makeFormattingBar() : nil
@@ -316,6 +428,7 @@ class MarkdownEditingTextView: UITextView {
     /// Aa opens the format panel; inline formats are buttons; every other manifest group is a
     /// menu named after the group, and a command's variants (Heading 1–3) get a menu of their own.
     /// The items scroll in a glass capsule (`GlassAccessoryBar`), so none is clipped (#72).
+    /// In Source mode, character buttons appear first; in Formatted mode, format commands come first (#191).
     private func makeFormattingBar() -> UIView {
         var items: [UIView] = []
         let panel = GlassAccessoryBar.iconButton(symbol: "textformat", label: "Format",
@@ -328,32 +441,87 @@ class MarkdownEditingTextView: UITextView {
         panel.isSelected = isShowingFormatPanel
         formatPanelButton = panel
         items.append(panel)
+
+        var formatButtons: [UIView] = []
         for group in FormatManifestLayout.groups(FormatManifestLayout.keyboardBarEntries) {
             if group.allSatisfy(\.command.isInlineFormat) {
                 for entry in group {
-                    items.append(GlassAccessoryBar.iconButton(symbol: entry.command.symbolName,
-                                                              label: entry.label.replacingOccurrences(of: "…", with: ""),
-                                                              action: action(entry)))
+                    formatButtons.append(GlassAccessoryBar.iconButton(symbol: entry.command.symbolName,
+                                                                      label: entry.label.replacingOccurrences(of: "…", with: ""),
+                                                                      action: action(entry)))
                 }
                 continue
             }
             let runs = FormatManifestLayout.commandRuns(group)
             for run in runs where run.count > 1 {
                 let title = run[0].command.definition?.label ?? run[0].label
-                items.append(GlassAccessoryBar.iconButton(symbol: run[0].command.variantsSymbolName, label: title,
-                                                          menu: UIMenu(title: title, children: run.map(action))))
+                formatButtons.append(GlassAccessoryBar.iconButton(symbol: run[0].command.variantsSymbolName, label: title,
+                                                                  menu: UIMenu(title: title, children: run.map(action))))
             }
             let rest = runs.filter { $0.count == 1 }.map { $0[0] }
             if let first = rest.first {
-                items.append(GlassAccessoryBar.iconButton(symbol: FormatManifestLayout.symbolName(forGroup: first.group), label: first.group,
-                                                          menu: UIMenu(title: first.group, children: rest.map(action))))
+                formatButtons.append(GlassAccessoryBar.iconButton(symbol: FormatManifestLayout.symbolName(forGroup: first.group), label: first.group,
+                                                                  menu: UIMenu(title: first.group, children: rest.map(action))))
             }
         }
+
+        let characterButtons = makeCharacterButtons()
+
+        if isSourceMode {
+            items.append(contentsOf: characterButtons)
+            if !formatButtons.isEmpty {
+                items.append(GlassAccessoryBar.separatorView())
+                items.append(contentsOf: formatButtons)
+            }
+        } else {
+            items.append(contentsOf: formatButtons)
+            if !characterButtons.isEmpty {
+                items.append(GlassAccessoryBar.separatorView())
+                items.append(contentsOf: characterButtons)
+            }
+        }
+
         let dismiss = GlassAccessoryBar.trailingButton(symbol: "keyboard.chevron.compact.down", label: "Hide Keyboard",
                                                        action: UIAction(title: "Hide Keyboard") { [weak self] _ in
             _ = self?.resignFirstResponder()
         })
         return GlassAccessoryBar(items: items, trailing: dismiss, groupedInCapsule: true)
+    }
+
+    /// Types `string` from the keyboard bar as a keystroke would: the delegate is asked first, so
+    /// structural editing, the "/" menu and the writing partner see it, and the change is an undo
+    /// step. A plain `insertText` from code does neither, and wipes the undo history (GOTCHAS #68).
+    func typeFromBar(_ string: String) {
+        let range = selectedRange
+        guard delegate?.textView?(self, shouldChangeTextIn: range, replacementText: string) ?? true,
+              let textRange = selectedTextRange else { return }
+        // Edit Text restyles on the next turn of the run loop, which clears an undo step made
+        // outside its own edits: go through the coordinator, which restyles in the same step
+        if let styled = self as? StyledUITextView, let coordinator = styled.coordinator {
+            coordinator.replaceSelection(with: string, in: styled, actionName: "Typing")
+            return
+        }
+        undoManager?.beginUndoGrouping()
+        replace(textRange, withText: string)
+        undoManager?.setActionName("Typing")
+        undoManager?.endUndoGrouping()
+    }
+
+    /// Generates character buttons for the accessory bar (#191).
+    func makeCharacterButtons() -> [UIButton] {
+        MarkdownCharacterBar.entries.map { entry in
+            GlassAccessoryBar.characterButton(
+                character: entry.character,
+                label: entry.accessibilityLabel,
+                action: UIAction(title: entry.character) { [weak self] _ in
+                    self?.typeFromBar(entry.character)
+                },
+                variants: entry.variants,
+                onVariant: { [weak self] variant in
+                    self?.typeFromBar(variant)
+                }
+            )
+        }
     }
 }
 
@@ -446,5 +614,41 @@ extension FormatCommand {
         if case .heading = self { return "textformat.size" }
         return symbolName
     }
+}
+
+private var isSourceModeKey: UInt8 = 0
+
+// MARK: - Markdown character bar
+
+/// An entry in the Markdown character strip on the keyboard bar (#191).
+struct MarkdownCharacterEntry: Equatable {
+    let character: String
+    let accessibilityLabel: String
+    let variants: [String]
+
+    init(_ character: String, label: String, variants: [String] = []) {
+        self.character = character
+        self.accessibilityLabel = label
+        self.variants = variants
+    }
+}
+
+/// The Markdown characters that are awkward to reach on the iOS keyboard (#191).
+enum MarkdownCharacterBar {
+    static let entries: [MarkdownCharacterEntry] = [
+        MarkdownCharacterEntry("#", label: "Number sign", variants: ["##", "###"]),
+        MarkdownCharacterEntry("*", label: "Asterisk", variants: ["**"]),
+        MarkdownCharacterEntry("_", label: "Underscore", variants: ["__"]),
+        MarkdownCharacterEntry("`", label: "Backtick", variants: ["```"]),
+        MarkdownCharacterEntry(">", label: "Greater than"),
+        MarkdownCharacterEntry("-", label: "Hyphen", variants: ["---"]),
+        MarkdownCharacterEntry("[", label: "Left bracket", variants: ["[ ]"]),
+        MarkdownCharacterEntry("]", label: "Right bracket"),
+        MarkdownCharacterEntry("(", label: "Left parenthesis"),
+        MarkdownCharacterEntry(")", label: "Right parenthesis"),
+        MarkdownCharacterEntry("|", label: "Vertical bar"),
+        MarkdownCharacterEntry("!", label: "Exclamation mark"),
+        MarkdownCharacterEntry("~", label: "Tilde", variants: ["~~"]),
+    ]
 }
 #endif

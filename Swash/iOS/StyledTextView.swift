@@ -54,6 +54,7 @@ struct StyledTextView: UIViewRepresentable {
         textView.baseURL = baseURL
         textView.installFormattingBar(enabled: formattingEnabled)
         context.coordinator.textView = textView
+        context.coordinator.installWritingPartner(in: textView)
         context.coordinator.applyWritingOptions(writingOptions, in: textView)
         context.coordinator.scheduleFullRestyle()
         textView.setTopBarInset(topInset)
@@ -113,6 +114,9 @@ struct StyledTextView: UIViewRepresentable {
         var lastWritingOptions = WritingOptions()
 
         private var cachedOffsetMap: AttachmentOffsetMap?
+        /// The writing partner (#109): the Mac's session, with this editor as its host.
+        let writingPartner = WritingPartnerSession()
+        private(set) var partnerHost: IOSWritingPartnerHost?
         /// Raw-markdown selection to restore after the next styling pass.
         private var pendingRawSelection: NSRange?
         private var editGeneration = 0
@@ -128,7 +132,8 @@ struct StyledTextView: UIViewRepresentable {
             super.init()
         }
 
-        deinit {
+        /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+        nonisolated deinit {
             NotificationCenter.default.removeObserver(self)
         }
 
@@ -154,6 +159,42 @@ struct StyledTextView: UIViewRepresentable {
             let mapped = offsetMap(for: textView).storageRange(forRaw: range)
             let start = min(max(0, mapped.location), length)
             return NSRange(location: start, length: min(mapped.length, length - start))
+        }
+
+        // MARK: Writing partner
+
+        func installWritingPartner(in textView: StyledUITextView) {
+            let host = IOSWritingPartnerHost(textView: textView, isStyled: true)
+            host.rawText = { [weak textView] in textView.map { swashRawMarkdown(from: $0.textStorage) } ?? "" }
+            host.rawRange = { [weak self, weak textView] range in
+                guard let self, let textView else { return range }
+                return self.rawRange(forStorage: range, in: textView)
+            }
+            host.storageRange = { [weak self, weak textView] range in
+                guard let self, let textView else { return range }
+                return self.storageRange(forRaw: range, in: textView)
+            }
+            host.apply = { [weak self, weak textView] text, selection, actionName in
+                guard let self, let textView else { return }
+                self.applyEdit(in: textView, newRawText: text, rawSelection: selection, actionName: actionName)
+            }
+            host.flavor = { [weak self] in self?.parent.flavor ?? .github }
+            partnerHost = host
+            textView.writingPartner = writingPartner
+            textView.writingPartnerHost = host
+        }
+
+        /// The person's change landed (not Swash's own edits, nor the partner's).
+        private func partnerDidChange(_ textView: StyledUITextView) {
+            guard let host = partnerHost, !host.isApplyingPartnerEdit else { return }
+            writingPartner.didChange(in: host)
+        }
+
+        /// Restyling moves the text: the partner's underlines and marks follow it.
+        private func refreshPartnerDrawing() {
+            guard let host = partnerHost, host.existingOverlay != nil else { return }
+            if !writingPartner.suggestions.isEmpty { writingPartner.refreshSuggestions(in: host) }
+            if !writingPartner.marks.isEmpty { writingPartner.refreshMarks(in: host) }
         }
 
         // MARK: Edits
@@ -254,6 +295,7 @@ struct StyledTextView: UIViewRepresentable {
             textView.setNeedsOverlayLayout()
             guard !isUpdatingFromSwiftUI, !isHighlighting else { return }
             parent.text = swashRawMarkdown(from: textView.textStorage)
+            if !textView.isApplyingEdit { partnerDidChange(textView) }
             editGeneration += 1
             let generation = editGeneration
             DispatchQueue.main.async { [weak self, weak textView] in
@@ -267,6 +309,10 @@ struct StyledTextView: UIViewRepresentable {
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
             guard let textView = textView as? StyledUITextView, !textView.isApplyingEdit, !isHighlighting,
                   textView.markedTextRange == nil else { return true }
+            // The person's own typing, for the writing partner (GOTCHAS #78): not SwiftUI updates or Writing Tools
+            if !isUpdatingFromSwiftUI, !textView.isWritingToolsActive, let host = partnerHost {
+                writingPartner.willType(replacement, inRaw: rawRange(forStorage: range, in: textView), host: host)
+            }
             textView.dismissBlockMenu()
             if replacement == "/", range.length == 0 {
                 let raw = swashRawMarkdown(from: textView.textStorage)
@@ -283,12 +329,16 @@ struct StyledTextView: UIViewRepresentable {
                 return true
             }
             if replacement == "\n", range.length == 0 {
-                return !applyStructuralEdit(in: textView, actionName: "New Line") { MarkdownEditingCommands.newline(text: $0, selection: $1) }
+                let handled = applyStructuralEdit(in: textView, actionName: "New Line") { MarkdownEditingCommands.newline(text: $0, selection: $1) }
+                if handled { partnerDidChange(textView) }
+                return !handled
             }
             if replacement.isEmpty, range.length == 1, textView.selectedRange.length == 0 {
-                return !applyStructuralEdit(in: textView, actionName: "Delete") {
+                let handled = applyStructuralEdit(in: textView, actionName: "Delete") {
                     MarkdownEditingCommands.backspace(text: $0, selection: $1, markersHidden: true)
                 }
+                if handled { partnerDidChange(textView) }
+                return !handled
             }
             return true
         }
@@ -310,6 +360,8 @@ struct StyledTextView: UIViewRepresentable {
             if let styled = textView as? StyledUITextView {
                 applyFocus(in: styled)
                 centerCaret(in: styled)
+                // The Formatting voice tidies a block once the caret has left it (#113)
+                if !styled.isApplyingEdit, let host = partnerHost { writingPartner.selectionDidChange(in: host) }
             }
         }
 
@@ -428,6 +480,7 @@ struct StyledTextView: UIViewRepresentable {
 
         func highlight(in textView: StyledUITextView) {
             guard !isHighlighting else { return }
+            defer { refreshPartnerDrawing() }
             let storage = textView.textStorage
             if highlightIncrementally(in: textView, storage: storage) {
                 pendingRawSelection = nil
@@ -847,15 +900,115 @@ final class StyledUITextView: MarkdownEditingTextView {
         setNeedsLayout()
     }
 
+
+    // MARK: - Caret geometry
+
+    override func caretRect(for position: UITextPosition) -> CGRect {
+        var rect = super.caretRect(for: position)
+        guard !rect.isNull, !rect.isInfinite else { return rect }
+        let storage = textStorage
+        guard storage.length > 0 else {
+            let font = coordinator?.baseFont ?? (typingAttributes[.font] as? UIFont) ?? UIFont.preferredFont(forTextStyle: .body)
+            rect.size.height = font.lineHeight
+            return rect
+        }
+
+        let charIndex = max(0, min(storage.length, offset(from: beginningOfDocument, to: position)))
+        let font = visibleFont(around: charIndex, in: storage)
+            ?? coordinator?.baseFont
+            ?? (typingAttributes[.font] as? UIFont)
+            ?? UIFont.preferredFont(forTextStyle: .body)
+
+        // Only the lines around the caret: UIKit asks for the caret often, and laying out the
+        // whole container each time made typing in a long document lag
+        layoutManager.ensureLayout(forCharacterRange: NSRange(location: max(0, charIndex - 1), length: min(2, storage.length - max(0, charIndex - 1))))
+        let baselineY: CGFloat
+        if charIndex >= storage.length, !layoutManager.extraLineFragmentRect.isEmpty {
+            let extraRect = layoutManager.extraLineFragmentRect
+            baselineY = extraRect.minY + textContainerInset.top + font.ascender
+        } else if layoutManager.numberOfGlyphs > 0 {
+            let glyph: Int
+            if charIndex > 0, charIndex < storage.length {
+                let currentGlyph = layoutManager.glyphIndexForCharacter(at: charIndex)
+                let currentLine = layoutManager.lineFragmentRect(forGlyphAt: currentGlyph, effectiveRange: nil)
+                let prevGlyph = layoutManager.glyphIndexForCharacter(at: charIndex - 1)
+                let prevLine = layoutManager.lineFragmentRect(forGlyphAt: prevGlyph, effectiveRange: nil)
+                if prevLine.minY != currentLine.minY {
+                    let superY = rect.midY - textContainerInset.top
+                    if abs(superY - prevLine.midY) < abs(superY - currentLine.midY) {
+                        glyph = prevGlyph
+                    } else {
+                        glyph = currentGlyph
+                    }
+                } else {
+                    glyph = currentGlyph
+                }
+            } else {
+                glyph = layoutManager.glyphIndexForCharacter(at: min(charIndex, max(0, storage.length - 1)))
+            }
+
+            let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let glyphY = layoutManager.location(forGlyphAt: glyph).y
+            if glyphY > 0 {
+                baselineY = lineRect.minY + textContainerInset.top + glyphY
+            } else {
+                baselineY = lineRect.minY + textContainerInset.top + font.ascender
+            }
+        } else {
+            baselineY = rect.minY + font.ascender
+        }
+
+        rect.origin.y = baselineY - font.ascender
+        rect.size.height = font.lineHeight
+        return rect
+    }
+
+    private func visibleFont(around charIndex: Int, in storage: NSTextStorage) -> UIFont? {
+        let length = storage.length
+        guard length > 0 else { return nil }
+        let ns = storage.string as NSString
+
+        func fontIfVisible(at i: Int) -> UIFont? {
+            if storage.attribute(.attachment, at: i, effectiveRange: nil) != nil { return nil }
+            guard let font = storage.attribute(.font, at: i, effectiveRange: nil) as? UIFont, font.pointSize >= 1 else { return nil }
+            if let color = storage.attribute(.foregroundColor, at: i, effectiveRange: nil) as? UIColor, color == .clear || color.cgColor.alpha == 0 { return nil }
+            return font
+        }
+
+        // Look backwards within the line (stopping at newline)
+        if charIndex > 0 {
+            var i = min(charIndex - 1, length - 1)
+            while i >= 0 {
+                let ch = ns.character(at: i)
+                if ch == 0x0A { break }
+                if let font = fontIfVisible(at: i) { return font }
+                i -= 1
+            }
+        }
+
+        // Look forwards within the line (stopping at newline)
+        if charIndex < length {
+            var i = max(0, charIndex)
+            while i < length {
+                let ch = ns.character(at: i)
+                if ch == 0x0A { break }
+                if let font = fontIfVisible(at: i) { return font }
+                i += 1
+            }
+        }
+
+        return nil
+    }
+
     // MARK: Clipboard
 
     override func copy(_ sender: Any?) {
-        EditorClipboard.copy(selectedRange, from: textStorage)
+        EditorClipboard.copy(selectedRange, from: textStorage, flavor: flavor, folder: baseURL)
     }
 
     override func cut(_ sender: Any?) {
         guard selectedRange.length > 0 else { return }
-        EditorClipboard.copy(selectedRange, from: textStorage)
+        EditorClipboard.copy(selectedRange, from: textStorage, flavor: flavor, folder: baseURL)
         coordinator?.replaceSelection(with: "", in: self, actionName: "Cut")
     }
 

@@ -32,14 +32,25 @@ struct PixerateAccountSections: View {
     private var displayedTeams: [Team] { account.teams.isEmpty ? previewSignedInTeams : account.teams }
 
     var body: some View {
-        swashProSection
-        if activeStore.supportId != nil {
-            Section("Support") {
-                PixerateSupportIDRow(supportId: activeStore.supportId)
+        Group {
+            swashProSection
+            if activeStore.supportId != nil {
+                Section("Support") {
+                    PixerateSupportIDRow(supportId: activeStore.supportId)
+                }
+            }
+            pixerateAccountSection
+            privacySection
+        }
+        .onAppear {
+            activeStore.lastError = nil
+            linkError = nil
+        }
+        .onChange(of: activeStore.lastError) { _, newError in
+            if newError?.isCancellation == true {
+                activeStore.lastError = nil
             }
         }
-        pixerateAccountSection
-        privacySection
     }
 
     // MARK: - Swash Pro Section
@@ -67,7 +78,7 @@ struct PixerateAccountSections: View {
                     }
                     .disabled(activeStore.isPurchasing)
                 }
-                if let error = activeStore.lastError?.errorDescription {
+                if let error = displayedStoreError {
                     Text(error)
                         .font(.footnote)
                         .foregroundStyle(.red)
@@ -76,11 +87,7 @@ struct PixerateAccountSections: View {
                 PixerateProPaywall(
                     store: activeStore,
                     title: "Swash Pro",
-                    features: [
-                        "Paragraph structure and grammar suggestions when you pause",
-                        "Quick Note tidy-up on pause or save",
-                        "Personal vocabulary and house style across devices"
-                    ],
+                    features: proFeatures,
                     termsURL: PixerateAccess.termsURL,
                     privacyURL: PixerateAccess.privacyURL,
                     directMessage: "Sign in to use Pixerate Pro or a complimentary subscription."
@@ -89,7 +96,7 @@ struct PixerateAccountSections: View {
                 Text("Sign in to use Pixerate Pro or a complimentary subscription.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                if let error = activeStore.lastError?.errorDescription {
+                if let error = displayedStoreError {
                     Text(error)
                         .font(.footnote)
                         .foregroundStyle(.red)
@@ -158,7 +165,7 @@ struct PixerateAccountSections: View {
             } else {
                 signedOut
             }
-            if let error = linkError ?? account.error {
+            if let error = displayedAccountError {
                 Text(error)
                     .font(.footnote)
                     .foregroundStyle(.red)
@@ -250,6 +257,10 @@ struct PixerateAccountSections: View {
             showMovePurchaseAlert = true
         } catch PixerateStoreError.unauthenticated {
             // No App Store customer session to link yet; ignore quietly.
+        } catch is CancellationError {
+            // Ignore cancellation
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            // Ignore cancellation
         } catch {
             linkError = error.localizedDescription
         }
@@ -259,6 +270,10 @@ struct PixerateAccountSections: View {
         linkError = nil
         do {
             try await activeStore.link(confirmMove: true)
+        } catch is CancellationError {
+            // Ignore cancellation
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            // Ignore cancellation
         } catch {
             linkError = error.localizedDescription
         }
@@ -276,144 +291,41 @@ struct PixerateAccountSections: View {
             Text("Privacy")
         }
         .font(.callout)
-        .task {
-            guard !access.isPreview else { return }
-            await access.start()
-        }
     }
-}
 
-// MARK: - Previews
+    private var displayedStoreError: String? {
+        guard let error = activeStore.lastError, !error.isCancellation else { return nil }
+        return error.errorDescription
+    }
 
-#Preview("Free (App Store)", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .appStore,
-            entitlements: PixerateEntitlements(supportId: "SWSH-4X9Q")
-        )
-    )
-}
+    private var displayedAccountError: String? {
+        if let linkError, !PixerateAccess.isCancellationMessage(linkError) {
+            return linkError
+        }
+        if let error = account.error, !PixerateAccess.isCancellationMessage(error) {
+            return error
+        }
+        return nil
+    }
 
-#Preview("Swash Pro (App Store)", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .appStore,
-            entitlements: PixerateEntitlements(
-                entitlements: [PixerateEntitlement.swashPro],
-                grants: [
-                    PixerateEntitlementGrant(
-                        entitlement: PixerateEntitlement.swashPro,
-                        source: "app_store",
-                        via: "customer",
-                        productId: "com.pixerate.swash.pro.monthly",
-                        ownership: "PURCHASED"
-                    )
-                ],
-                supportId: "SWSH-4X9Q"
-            )
-        )
-    )
-}
+    private var proFeatures: [String] {
+        Self.proFeatures()
+    }
 
-#Preview("Family-Shared", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .appStore,
-            entitlements: PixerateEntitlements(
-                entitlements: [PixerateEntitlement.swashPro],
-                grants: [
-                    PixerateEntitlementGrant(
-                        entitlement: PixerateEntitlement.swashPro,
-                        source: "app_store",
-                        via: "customer",
-                        productId: "com.pixerate.swash.pro.yearly",
-                        ownership: "FAMILY_SHARED"
-                    )
-                ],
-                supportId: "SWSH-8M2P"
-            )
-        )
-    )
-}
-
-#Preview("Pixerate Pro", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .appStore,
-            entitlements: PixerateEntitlements(
-                entitlements: [PixerateEntitlement.pixeratePro, PixerateEntitlement.swashPro],
-                grants: [
-                    PixerateEntitlementGrant(
-                        entitlement: PixerateEntitlement.pixeratePro,
-                        source: "plan",
-                        via: "team",
-                        teamId: "team_demo"
-                    )
-                ],
-                supportId: "SWSH-4X9Q"
-            ),
-            signedIn: true
-        ),
-        previewSignedInUser: AuthUser(id: "user_demo", email: "writer@example.com", displayName: "Demo Writer"),
-        previewSignedInTeams: [Team(id: "team_demo", name: "Personal", ownerId: "user_demo", planId: "pro")]
-    )
-}
-
-#Preview("Complimentary", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .direct,
-            entitlements: PixerateEntitlements(
-                entitlements: [PixerateEntitlement.swashPro],
-                grants: [
-                    PixerateEntitlementGrant(
-                        entitlement: PixerateEntitlement.swashPro,
-                        source: "complimentary",
-                        via: "team",
-                        teamId: "team_demo",
-                        expiresAt: Date(timeIntervalSince1970: 1_900_000_000)
-                    )
-                ]
-            ),
-            signedIn: true
-        ),
-        previewSignedInUser: AuthUser(id: "user_demo", email: "writer@example.com", displayName: "Demo Writer"),
-        previewSignedInTeams: [Team(id: "team_demo", name: "Personal", ownerId: "user_demo", planId: "free")]
-    )
-}
-
-#Preview("Direct Download", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .direct,
-            entitlements: PixerateEntitlements()
-        )
-    )
-}
-
-#Preview("Signed In", traits: .sectionContainer) {
-    PixerateAccountSections(
-        access: .preview(
-            distribution: .appStore,
-            entitlements: PixerateEntitlements(
-                entitlements: [PixerateEntitlement.swashPro],
-                grants: [
-                    PixerateEntitlementGrant(
-                        entitlement: PixerateEntitlement.swashPro,
-                        source: "app_store",
-                        via: "customer",
-                        productId: "com.pixerate.swash.pro.monthly",
-                        ownership: "PURCHASED"
-                    )
-                ],
-                supportId: "SWSH-4X9Q"
-            ),
-            signedIn: true
-        ),
-        previewSignedInUser: AuthUser(id: "user_demo", email: "writer@example.com", displayName: "Demo Writer"),
-        previewSignedInTeams: [
-            Team(id: "team_demo", name: "Personal", ownerId: "user_demo", planId: "pro"),
-            Team(id: "team_studio", name: "Studio", ownerId: "user_other", planId: "free")
+    /// The writing partner's pause tier runs on iPhone and iPad too (#109); Quick Note is Mac-only.
+    static func proFeatures() -> [String] {
+        #if os(iOS)
+        return [
+            "Paragraph structure and grammar suggestions when you pause",
+            "Personal vocabulary and house style across devices",
+            "Quick Note tidy-up on pause or save, on the Mac"
         ]
-    )
+        #else
+        return [
+            "Paragraph structure and grammar suggestions when you pause",
+            "Quick Note tidy-up on pause or save",
+            "Personal vocabulary and house style across devices"
+        ]
+        #endif
+    }
 }

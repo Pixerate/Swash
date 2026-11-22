@@ -412,8 +412,13 @@ struct InteractionRunner {
              let host = NSHostingView(rootView: MarkdownPreviewView(text: md, flavor: .github).frame(width: 500, height: 600))
              host.frame = NSRect(x: 0, y: 0, width: 500, height: 600)
              let win = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
-             win.contentView = host; windows.append(win); pump(0.3)
+             win.contentView = host; windows.append(win)
              func allScrollViews(in v: NSView) -> [NSScrollView] { ((v as? NSScrollView).map { [$0] } ?? []) + v.subviews.flatMap(allScrollViews) }
+             // Wait for the preview, its code block and its table to lay out (about 0.3–0.5 s on a busy
+             // Mac) rather than a fixed time: until then the outer document is 0 pt tall
+             let laidOut = Date().addingTimeInterval(3)
+             repeat { pump(0.05) } while Date() < laidOut && !(allScrollViews(in: host).count >= 3
+                 && allScrollViews(in: host).contains { ($0.documentView?.frame.height ?? 0) > host.frame.height })
              let all = allScrollViews(in: host)
              let outer = all.max { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) }!
              let nested = all.filter { $0 !== outer && $0.isDescendant(of: outer) }
@@ -1363,6 +1368,83 @@ struct InteractionRunner {
             log("multi-agent-overlay-carets", "Claude (0..5) + Cursor (16)",
                 "tags=\(tagTexts.joined(separator: ",")) cursorMoved=\(cursorHeadAfter) cleared=\(cleared)",
                 expect: "tags=Claude,Cursor cursorMoved=20 cleared=true")
+        }
+
+        // Writing Tools: uncommitted edits on window close, app termination, dismantle, and safety net (SWA-55)
+        do {
+            // 1. Deferred Publication during Writing Tools session
+            let b1 = TextBox("Initial text")
+            let tv1 = makeEditor(b1)
+            let coord1 = tv1.delegate as! SwashTextView.Coordinator
+            (tv1 as? SwashNSTextView)?.writingToolsActiveOverride = true
+            if #available(macOS 15.0, *) {
+                coord1.textViewWritingToolsWillBegin(tv1)
+            }
+            tv1.insertText(" rewritten", replacementRange: NSRange(location: (tv1.string as NSString).length, length: 0))
+            pump(0.1)
+            // While Writing Tools is active, parent.text should still have the old text
+            log("writing-tools-deferred-publication", "Initial text", b1.text,
+                "binding has not updated during active writing tools session",
+                expect: "Initial text")
+
+            // 2. Window close flush
+            if let win1 = tv1.window {
+                NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: win1)
+                pump(0.1)
+                log("writing-tools-window-close-flush", "Initial text", b1.text,
+                    "window close flushes pending writing tools edits",
+                    expect: "Initial text rewritten")
+            }
+
+            // 3. App termination flush
+            let b2 = TextBox("App terminate test")
+            let tv2 = makeEditor(b2)
+            let coord2 = tv2.delegate as! SwashTextView.Coordinator
+            (tv2 as? SwashNSTextView)?.writingToolsActiveOverride = true
+            if #available(macOS 15.0, *) {
+                coord2.textViewWritingToolsWillBegin(tv2)
+            }
+            tv2.insertText(" flushed", replacementRange: NSRange(location: (tv2.string as NSString).length, length: 0))
+            pump(0.1)
+            NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: NSApp)
+            pump(0.1)
+            log("writing-tools-app-terminate-flush", "App terminate test", b2.text,
+                "app termination flushes pending writing tools edits",
+                expect: "App terminate test flushed")
+
+            // 4. Dismantle flush (e.g. view switching / rebuilds)
+            let b3 = TextBox("Dismantle test")
+            let tv3 = makeEditor(b3)
+            let coord3 = tv3.delegate as! SwashTextView.Coordinator
+            (tv3 as? SwashNSTextView)?.writingToolsActiveOverride = true
+            if #available(macOS 15.0, *) {
+                coord3.textViewWritingToolsWillBegin(tv3)
+            }
+            tv3.insertText(" dismantled", replacementRange: NSRange(location: (tv3.string as NSString).length, length: 0))
+            pump(0.1)
+            if let sv3 = tv3.enclosingScrollView {
+                SwashTextView.dismantleNSView(sv3, coordinator: coord3)
+                pump(0.1)
+                log("writing-tools-dismantle-flush", "Dismantle test", b3.text,
+                    "dismantleNSView flushes pending writing tools edits",
+                    expect: "Dismantle test dismantled")
+            }
+
+            // 6. AppKit isWritingToolsActive == false safety net
+            let b5 = TextBox("AppKit safety net")
+            let tv5 = makeEditor(b5)
+            let coord5 = tv5.delegate as! SwashTextView.Coordinator
+            if #available(macOS 15.0, *) {
+                coord5.textViewWritingToolsWillBegin(tv5)
+            }
+            // Writing Tools ended or crashed without didEnd, so tv5 reports isWritingToolsActive == false
+            (tv5 as? SwashNSTextView)?.writingToolsActiveOverride = false
+            tv5.insertText(" updated", replacementRange: NSRange(location: (tv5.string as NSString).length, length: 0))
+            pump(0.1)
+            log("writing-tools-appkit-state-safety-net", "AppKit safety net",
+                "active=\(coord5.isWritingToolsActive) text=\(b5.text)",
+                "AppKit inactive state clears isWritingToolsActive and flushes",
+                expect: "active=false text=AppKit safety net updated")
         }
 
         try? out.write(toFile: CommandLine.arguments[1], atomically: true, encoding: .utf8)
