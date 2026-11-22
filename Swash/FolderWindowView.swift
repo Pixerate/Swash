@@ -134,6 +134,29 @@ private struct FolderBrowserView: View {
         } message: {
             Text(workspace.errorMessage ?? "")
         }
+        .alert(
+            "Conflict in “\(workspace.activeConflict?.file.lastPathComponent ?? "File")”",
+            isPresented: Binding(
+                get: { workspace.activeConflict != nil },
+                set: { if !$0 { workspace.dismissConflict() } }
+            ),
+            presenting: workspace.activeConflict
+        ) { conflict in
+            Button("Keep Mine") {
+                workspace.resolveConflict(keeping: .mine)
+            }
+            Button("Keep Theirs", role: .destructive) {
+                workspace.resolveConflict(keeping: .theirs)
+            }
+            Button("Save Mine as a Copy") {
+                workspace.resolveConflict(keeping: .copy)
+            }
+            Button("Cancel", role: .cancel) {
+                workspace.dismissConflict()
+            }
+        } message: { conflict in
+            Text("Another application changed this file on disk. Do you want to keep your changes or the changes made by the other application?")
+        }
         .modifier(FileActionDialogs(workspace: workspace, renameTarget: $renameTarget, renameText: $renameText, trashTarget: $trashTarget))
     }
 

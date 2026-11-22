@@ -18,6 +18,26 @@ import Combine
 import CoreServices
 #endif
 
+struct FileConflict: Identifiable, Equatable {
+    let id: UUID
+    let file: URL
+    let diskText: String
+    let localText: String
+
+    init(id: UUID = UUID(), file: URL, diskText: String, localText: String) {
+        self.id = id
+        self.file = file
+        self.diskText = diskText
+        self.localText = localText
+    }
+}
+
+enum ConflictResolution {
+    case mine
+    case theirs
+    case copy
+}
+
 final class FolderWorkspace: ObservableObject {
     static var markdownExtensions: Set<String> { FolderScanner.markdownExtensions }
 
@@ -41,6 +61,8 @@ final class FolderWorkspace: ObservableObject {
     @Published private(set) var revealRequest: TextRevealRequest?
     /// The last read or write that failed, for the window to show.
     @Published var errorMessage: String?
+    /// Active file conflict when the file on disk changed while unsaved edits exist in memory.
+    @Published private(set) var activeConflict: FileConflict?
 
     /// Full-text search results for `searchQuery`.
     @Published private(set) var searchResults: [FolderSearchMatch] = []
@@ -49,6 +71,8 @@ final class FolderWorkspace: ObservableObject {
 
     /// The selected file's text as it is on disk.
     private var savedText = ""
+    /// The modification date of the selected file when `savedText` was read or saved.
+    private var savedModificationDate: Date?
     private var pendingSave: DispatchWorkItem?
     private var eventStream: FSEventStreamRef?
     private var scanTask: Task<Void, Never>?
@@ -103,9 +127,11 @@ final class FolderWorkspace: ObservableObject {
             return
         }
         save()
+        guard activeConflict == nil else { return }
         do {
             let text = try Self.read(url)
             savedText = text
+            savedModificationDate = Self.modificationDate(for: url)
             revealRequest = range.map { TextRevealRequest(fileURL: url, range: $0) }
             selectedFile = url
             document = SwashDocument(text: text)
@@ -158,6 +184,7 @@ final class FolderWorkspace: ObservableObject {
             return nil
         }
         save()
+        guard activeConflict == nil else { return nil }
         do {
             try FileManager.default.moveItem(at: url, to: destination)
         } catch {
@@ -178,6 +205,7 @@ final class FolderWorkspace: ObservableObject {
         let containsSelection = selectedFile.map { FolderScanner.relocate($0, from: url, to: url) != nil } ?? false
         // Unsaved edits go to the Trash with the file
         save()
+        guard activeConflict == nil else { return }
         do {
             try FileManager.default.trashItem(at: url, resultingItemURL: nil)
         } catch {
@@ -198,10 +226,21 @@ final class FolderWorkspace: ObservableObject {
         pendingSave?.cancel()
         pendingSave = nil
         guard let url = selectedFile, document.text != savedText else { return }
+        guard activeConflict == nil else { return }
+
+        let currentModDate = Self.modificationDate(for: url)
+        if currentModDate != savedModificationDate {
+            if let diskText = try? Self.read(url), diskText != savedText {
+                activeConflict = FileConflict(file: url, diskText: diskText, localText: document.text)
+                return
+            }
+        }
+
         let text = document.text
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             savedText = text
+            savedModificationDate = Self.modificationDate(for: url)
         } catch {
             errorMessage = "“\(url.lastPathComponent)” couldn’t be saved. \(error.localizedDescription)"
         }
@@ -219,6 +258,8 @@ final class FolderWorkspace: ObservableObject {
         pendingSave = nil
         selectedFile = nil
         savedText = ""
+        savedModificationDate = nil
+        activeConflict = nil
         revealRequest = nil
         document = SwashDocument()
     }
@@ -253,6 +294,7 @@ final class FolderWorkspace: ObservableObject {
         } else if !hasUnsavedChanges, let text = try? Self.read(selected), text != savedText {
             // Changed by another app, with no edits here to lose
             savedText = text
+            savedModificationDate = Self.modificationDate(for: selected)
             document = SwashDocument(text: text)
         }
     }
@@ -361,6 +403,68 @@ final class FolderWorkspace: ObservableObject {
             throw CocoaError(.fileReadInapplicableStringEncoding)
         }
         return text
+    }
+
+    private static func modificationDate(for url: URL) -> Date? {
+        try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date
+    }
+
+    // MARK: Conflict resolution
+
+    func resolveConflict(keeping resolution: ConflictResolution) {
+        guard let conflict = activeConflict else { return }
+        switch resolution {
+        case .mine:
+            let text = document.text
+            do {
+                try text.write(to: conflict.file, atomically: true, encoding: .utf8)
+                savedText = text
+                savedModificationDate = Self.modificationDate(for: conflict.file)
+                activeConflict = nil
+            } catch {
+                errorMessage = "“\(conflict.file.lastPathComponent)” couldn’t be saved. \(error.localizedDescription)"
+            }
+        case .theirs:
+            savedText = conflict.diskText
+            savedModificationDate = Self.modificationDate(for: conflict.file)
+            document = SwashDocument(text: conflict.diskText)
+            activeConflict = nil
+        case .copy:
+            let copyURL = conflictCopyURL(for: conflict.file)
+            let text = document.text
+            do {
+                try text.write(to: copyURL, atomically: true, encoding: .utf8)
+                savedText = conflict.diskText
+                savedModificationDate = Self.modificationDate(for: conflict.file)
+                document = SwashDocument(text: conflict.diskText)
+                activeConflict = nil
+                select(copyURL)
+                reloadFiles()
+            } catch {
+                errorMessage = "A conflict copy couldn’t be created. \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func dismissConflict() {
+        activeConflict = nil
+    }
+
+    func conflictCopyURL(for url: URL) -> URL {
+        let folder = url.deletingLastPathComponent()
+        let baseName = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+        var counter = 1
+        while true {
+            let name = counter == 1 ? "\(baseName) (Conflict)" : "\(baseName) (Conflict \(counter))"
+            let candidate = ext.isEmpty
+                ? folder.appendingPathComponent(name)
+                : folder.appendingPathComponent(name).appendingPathExtension(ext)
+            if !FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate.standardizedFileURL
+            }
+            counter += 1
+        }
     }
 }
 #endif

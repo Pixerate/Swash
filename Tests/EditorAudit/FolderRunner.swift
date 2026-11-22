@@ -120,6 +120,71 @@ enum FolderRunner {
         write("Added.md", "# Added elsewhere\n")
         wait(4) { workspace.files.contains { $0.lastPathComponent == "Added.md" } }
         check("files added by other apps appear", workspace.files.contains { $0.lastPathComponent == "Added.md" })
+
+        // Conflict detection and resolution
+        workspace.select(welcome)
+        let initialWelcomeText = workspace.document.text
+        workspace.document.text = "# Welcome\n\nLocal unsaved edit.\n"
+        let externalText1 = "# Welcome\n\nExternal app edit.\n"
+        try! externalText1.write(to: welcome, atomically: true, encoding: .utf8)
+        workspace.save()
+        check("conflict detected when disk changed while unsaved edits existed", workspace.activeConflict != nil)
+        check("conflict preserves external text on disk", (try? String(contentsOf: welcome, encoding: .utf8)) == externalText1)
+        check("conflict holds correct file URL", workspace.activeConflict?.file == welcome)
+        check("conflict holds external disk text", workspace.activeConflict?.diskText == externalText1)
+        check("conflict holds local unsaved text", workspace.activeConflict?.localText == "# Welcome\n\nLocal unsaved edit.\n")
+
+        // Test navigation safety: navigating away with active conflict must abort
+        workspace.select(plan)
+        check("navigating away with a conflict aborts selection change", workspace.selectedFile == welcome && workspace.activeConflict != nil)
+
+        // Resolve keeping theirs
+        workspace.resolveConflict(keeping: .theirs)
+        check("resolve with .theirs updates document text to external version", workspace.document.text == externalText1)
+        check("resolve with .theirs clears active conflict", workspace.activeConflict == nil)
+        check("resolve with .theirs clears unsaved changes", !workspace.hasUnsavedChanges)
+
+        // Resolve keeping mine
+        workspace.document.text = "# Welcome\n\nMine wins.\n"
+        let externalText2 = "# Welcome\n\nAnother external write.\n"
+        try! externalText2.write(to: welcome, atomically: true, encoding: .utf8)
+        workspace.save()
+        check("conflict detected on second external change", workspace.activeConflict != nil)
+        workspace.resolveConflict(keeping: .mine)
+        check("resolve with .mine clears active conflict", workspace.activeConflict == nil)
+        check("resolve with .mine overwrites disk with local text", (try? String(contentsOf: welcome, encoding: .utf8)) == "# Welcome\n\nMine wins.\n")
+        check("resolve with .mine clears unsaved changes", !workspace.hasUnsavedChanges)
+
+        // Resolve keeping copy
+        workspace.document.text = "# Welcome\n\nCopy this.\n"
+        let externalText3 = "# Welcome\n\nThird external write.\n"
+        try! externalText3.write(to: welcome, atomically: true, encoding: .utf8)
+        workspace.save()
+        check("conflict detected on third external change", workspace.activeConflict != nil)
+        let copyURL = workspace.conflictCopyURL(for: welcome)
+        check("conflictCopyURL computes non-colliding name", copyURL.lastPathComponent == "Welcome (Conflict).md")
+        workspace.resolveConflict(keeping: .copy)
+        check("resolve with .copy clears active conflict", workspace.activeConflict == nil)
+        check("resolve with .copy leaves original file with external edits", (try? String(contentsOf: welcome, encoding: .utf8)) == externalText3)
+        check("resolve with .copy writes copy file with local edits", (try? String(contentsOf: copyURL, encoding: .utf8)) == "# Welcome\n\nCopy this.\n")
+        check("resolve with .copy switches selection to the new copy file", workspace.selectedFile == copyURL)
+        check("selected copy file has local edits as document text", workspace.document.text == "# Welcome\n\nCopy this.\n")
+
+        // Dismissing conflict
+        workspace.document.text = "# Welcome (Conflict)\n\nUnsaved in copy.\n"
+        let externalText4 = "# Welcome (Conflict)\n\nExternal in copy.\n"
+        try! externalText4.write(to: copyURL, atomically: true, encoding: .utf8)
+        workspace.save()
+        check("conflict detected in copy file", workspace.activeConflict != nil)
+        workspace.dismissConflict()
+        check("dismissConflict clears activeConflict", workspace.activeConflict == nil)
+        check("dismissConflict leaves local edits dirty in memory", workspace.hasUnsavedChanges)
+        check("dismissConflict preserves disk content", (try? String(contentsOf: copyURL, encoding: .utf8)) == externalText4)
+
+        // Restore welcome for subsequent tests
+        try! initialWelcomeText.write(to: welcome, atomically: true, encoding: .utf8)
+        workspace.select(welcome)
+
         workspace.close()
 
         // MARK: Editor hooks
