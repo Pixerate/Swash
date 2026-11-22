@@ -1390,10 +1390,18 @@ struct CreateDocumentIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & OpensIntent & ReturnsValue<SwashDocumentEntity> {
+        // A placeholder title takes the note's own title (its first heading) instead (#209)
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTitle: String
+        if trimmed.isEmpty || trimmed == "Untitled" || trimmed == "Untitled Note" || trimmed == "Shared Note" {
+            resolvedTitle = MarkdownTitleSuggestion.suggest(from: content).map(MarkdownTitleSuggestion.cleanFileName) ?? "Untitled Note"
+        } else {
+            resolvedTitle = trimmed
+        }
         let fileURL: URL
         #if os(macOS)
         let root = (try? SwashShortcutsEngine.defaultWritableRoot()) ?? FileManager.default.temporaryDirectory
-        let relative = SwashShortcutsEngine.normalizedRelativePath(title) ?? "Untitled Note.md"
+        let relative = SwashShortcutsEngine.normalizedRelativePath(resolvedTitle) ?? "Untitled Note.md"
         var candidate = root.appendingPathComponent(relative)
         let base = candidate.deletingPathExtension().lastPathComponent
         let folder = candidate.deletingLastPathComponent()
@@ -1407,7 +1415,7 @@ struct CreateDocumentIntent: AppIntent {
         fileURL = candidate
         NSDocumentController.shared.openDocument(withContentsOf: fileURL, display: true) { _, _, _ in }
         #else
-        fileURL = try DocumentOpener.createDocument(title: title, text: content)
+        fileURL = try DocumentOpener.createDocument(title: resolvedTitle, text: content)
         DocumentOpener.open(fileURL)
         #endif
         return .result(value: SwashDocumentEntity(url: fileURL, text: content))

@@ -137,6 +137,12 @@ struct ContentView: View {
         if url != windowDocumentURL { windowDocumentURL = url }
     }
 
+    private func updateDraftName() {
+        guard effectiveBaseURL == nil, let window = window,
+              let doc = NSDocumentController.shared.document(for: window) else { return }
+        doc.swashSuggestedDraftName = MarkdownTitleSuggestion.suggest(from: document.text)
+    }
+
     /// Folder whose images can't be read, refreshed off the keystroke path (see `refreshFolderBanner`).
     @State private var unreadableFolder: URL? = nil
     @State private var bannerScannedText: String? = nil
@@ -259,9 +265,18 @@ struct ContentView: View {
             }
         }
         .background(WindowAccessor(window: $window))
-        .onChange(of: window) { _, _ in refreshWindowDocumentURL() }
+        .onChange(of: window) { _, _ in
+            refreshWindowDocumentURL()
+            updateDraftName()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
-            if let window = window, notification.object as? NSWindow === window { refreshWindowDocumentURL() }
+            if let window = window, notification.object as? NSWindow === window {
+                refreshWindowDocumentURL()
+                updateDraftName()
+            }
+        }
+        .onChange(of: document.text) { _, _ in
+            updateDraftName()
         }
     }
 
@@ -314,6 +329,7 @@ struct ContentView: View {
             if fileURL == nil, document.text.isEmpty, let seed = NewDocumentSeed.take() {
                 document.text = seed
             }
+            updateDraftName()
         }
     }
     

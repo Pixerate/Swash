@@ -1017,7 +1017,9 @@ final class IOSDocumentFeaturesModel {
 
     /// A file name without characters Files won't accept.
     nonisolated static func fileName(_ title: String) -> String {
-        let cleaned = title.components(separatedBy: CharacterSet(charactersIn: "/:\\")).joined(separator: "-")
+        // Line breaks and control characters too: a suggested title can come from any text
+        let invalid = CharacterSet(charactersIn: "/:\\").union(.newlines).union(.controlCharacters)
+        let cleaned = title.components(separatedBy: invalid).joined(separator: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? "Untitled" : cleaned
     }
