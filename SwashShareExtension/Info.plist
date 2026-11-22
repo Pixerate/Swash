@@ -25,7 +25,7 @@
 		<key>NSExtensionAttributes</key>
 		<dict>
 			<key>NSExtensionActivationRule</key>
-			<string>SUBQUERY(extensionItems, $extensionItem, SUBQUERY($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url").@count > 0).@count > 0</string>
+			<string>SUBQUERY(extensionItems, $extensionItem, SUBQUERY($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.html" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.rtf" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "com.apple.flat-rtfd" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "net.daringfireball.markdown").@count > 0).@count > 0</string>
 		</dict>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.share-services</string>

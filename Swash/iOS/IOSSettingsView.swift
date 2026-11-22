@@ -9,10 +9,19 @@
 #if os(iOS)
 import SwiftUI
 import PixerateStickers
+import PixerateStore
 
 struct IOSSettingsView: View {
     @AppStorage("markdownFlavor") private var markdownFlavor: MarkdownFlavor = .github
     @Environment(\.dismiss) private var dismiss
+    var access: PixerateAccess = .shared
+
+    private var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "–"
+        let build = info?["CFBundleVersion"] as? String ?? "–"
+        return "\(version) (\(build))"
+    }
 
     var body: some View {
         NavigationStack {
@@ -33,12 +42,12 @@ struct IOSSettingsView: View {
                     }
                 }
                 IOSTypographySettingsSections()
-                PixerateAccountSections()
+                PixerateAccountSections(access: access)
                 if StickerCatalog.isAvailable {
                     StickerSetsSection()
                 }
                 Section {
-                    LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
+                    LabeledContent("Version", value: versionString)
                 }
             }
             .navigationTitle("Settings")
@@ -49,6 +58,13 @@ struct IOSSettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+        .task {
+            guard !access.isPreview else { return }
+            await access.start()
+        }
+        .onAppear {
+            access.clearLastError()
         }
     }
 }

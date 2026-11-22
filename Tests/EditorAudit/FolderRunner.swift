@@ -117,6 +117,26 @@ enum FolderRunner {
         _ = workspace.rename(root.appendingPathComponent("Work"), to: "Projects")
         _ = workspace.rename(root.appendingPathComponent("Projects/Roadmap.md"), to: "Plan")
 
+        // Switching files or renaming aborts and keeps the current file open when saving fails
+        let editedText = "# Important Ideas\nUnsaved content that should not be dropped.\n"
+        let ideas = root.appendingPathComponent("Ideas.md")
+        workspace.select(ideas)
+        workspace.document.text = editedText
+        try! fm.setAttributes([.immutable: true], ofItemAtPath: ideas.path)
+        let selectFailed = !workspace.select(welcome)
+        check("switching files aborts when save fails", selectFailed && workspace.selectedFile == ideas && workspace.document.text == editedText,
+              "selected: \(workspace.selectedFile?.lastPathComponent ?? "nil"), text: \(workspace.document.text)")
+        check("save failure reports an error message", workspace.errorMessage != nil && workspace.errorMessage!.contains("Ideas.md"),
+              workspace.errorMessage ?? "nil")
+        let linkHandled = workspace.openLink(URL(string: "Projects/Plan.md")!)
+        check("openLink handles link but aborts switch on save failure", linkHandled && workspace.selectedFile == ideas && workspace.document.text == editedText)
+        let renameFailed = workspace.rename(ideas, to: "Thoughts") == nil
+        check("rename aborts when save fails", renameFailed && workspace.selectedFile == ideas && workspace.document.text == editedText)
+        try! fm.setAttributes([.immutable: false], ofItemAtPath: ideas.path)
+        workspace.errorMessage = nil
+        check("save succeeds once permissions are restored", workspace.save() && !workspace.hasUnsavedChanges)
+        check("selecting next file succeeds after successful save", workspace.select(welcome) && workspace.selectedFile == welcome)
+
         write("Added.md", "# Added elsewhere\n")
         wait(4) { workspace.files.contains { $0.lastPathComponent == "Added.md" } }
         check("files added by other apps appear", workspace.files.contains { $0.lastPathComponent == "Added.md" })
