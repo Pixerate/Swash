@@ -260,6 +260,8 @@ final class MarkdownEditorStyler {
         self.storageShift = storageShift
         self.document = document
     }
+
+    nonisolated deinit {}
     
     /// Applies all styling. The caller has already reset attributes and wraps this in begin/endEditing.
     func style() {

@@ -419,3 +419,8 @@
   2. Sparkle's keys stay in `Swash/Info.plist` for direct builds. The `Strip Sparkle Keys (App Store Builds)` phase deletes them from the processed Info.plist; its input path, the built Info.plist, makes it run after Info.plist is processed, and `ENABLE_USER_SCRIPT_SANDBOXING = NO` in this configuration lets it edit that file.
   3. It signs with `Swash/Swash-AppStore.entitlements`, which has no Sparkle Mach lookup exceptions.
   4. `scripts/verify_app_store_build.sh <path to Swash.app>` checks the result. The PR build runs it on the macOS build and also builds the scheme for the iOS Simulator.
+
+## 102. Concurrency Deinit Crash in Synchronous Tests on MainActor
+- **Issue**: Targets building with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` treat unannotated classes (such as `MarkdownEditorStyler`) as `@MainActor`-isolated reference types. When an instance is deallocated inside synchronous test runloop pumping (`RunLoop.main.run(until:)`), the compiler-generated isolated deinit invokes `swift_task_deinitOnExecutorImpl`. On Xcode 16/iOS 26 simulator runtimes, `swift::TaskLocal::StopLookupScope::~StopLookupScope()` attempts to free an unallocated pointer (`pointer being freed was not allocated`), crashing the test host with `EXC_CRASH (SIGABRT)`.
+- **Solution**: Add an explicit `nonisolated deinit {}` to the class when none of its stored properties require actor-isolated deinitialization. This prevents Swift from generating an isolated destructor and routing through `swift_task_deinitOnExecutorImpl`.
+
