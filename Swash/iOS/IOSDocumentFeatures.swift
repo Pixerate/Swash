@@ -13,6 +13,8 @@ import SwiftUI
 import MacAppKitExtras
 import UIKit
 import PixerateMarkdown
+import LinkPresentation
+import UniformTypeIdentifiers
 
 // MARK: - Typography and Writing Options
 
@@ -302,25 +304,614 @@ enum IOSExportFormat: String, Identifiable {
 /// Presents UIKit view controllers over the key window's frontmost one, anchored at the top
 /// trailing corner on iPad (where the toolbar's overflow menu is).
 enum IOSPresenter {
+    /// Optional observer hook for unit tests to inspect presented view controllers.
+    static var onPresent: ((UIViewController) -> Void)?
+
     static var frontmost: UIViewController? {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        guard let window = scenes.filter({ $0.activationState == .foregroundActive }).flatMap(\.windows).first(where: \.isKeyWindow),
+        let activeWindows = scenes.filter { $0.activationState == .foregroundActive }.flatMap(\.windows)
+        let allWindows = activeWindows.isEmpty ? scenes.flatMap(\.windows) : activeWindows
+        guard let window = allWindows.first(where: \.isKeyWindow) ?? allWindows.first,
               var presenter = window.rootViewController else { return nil }
         while let presented = presenter.presentedViewController, !presented.isBeingDismissed { presenter = presented }
         return presenter
     }
 
-    /// The system share sheet for `items` (GOTCHAS #55: not ShareLink, which crashes in the overflow menu).
-    static func share(_ items: [Any], subject: String) {
+    /// Presents a configured `UIActivityViewController` anchored at the top trailing corner on iPad.
+    static func presentActivity(_ activity: UIActivityViewController) {
+        onPresent?(activity)
         guard let presenter = frontmost else { return }
-        let activity = UIActivityViewController(activityItems: items, applicationActivities: nil)
-        activity.setValue(subject, forKey: "subject")
         if let popover = activity.popoverPresentationController {
             popover.sourceView = presenter.view
             popover.sourceRect = CGRect(x: presenter.view.bounds.maxX - 60, y: presenter.view.safeAreaInsets.top, width: 1, height: 1)
             popover.permittedArrowDirections = .up
         }
-        presenter.present(activity, animated: true)
+        if let dismissing = presenter.presentedViewController, dismissing.isBeingDismissed,
+           let coordinator = dismissing.transitionCoordinator {
+            coordinator.animate(alongsideTransition: nil) { _ in
+                presenter.present(activity, animated: true)
+            }
+        } else {
+            presenter.present(activity, animated: true)
+        }
+    }
+
+    /// The system share sheet for `items` (GOTCHAS #55: not ShareLink, which crashes in the overflow menu).
+    static func share(_ items: [Any], subject: String, applicationActivities: [UIActivity]? = nil) {
+        let activity = UIActivityViewController(activityItems: items, applicationActivities: applicationActivities)
+        activity.setValue(subject, forKey: "subject")
+        presentActivity(activity)
+    }
+
+    /// The share sheet action activities for a Markdown document: Export as PDF, Export as HTML,
+    /// Copy as Rich Text, and Copy HTML (#183).
+    static func documentActivities(
+        for source: DocumentExporter.Source,
+        model: IOSDocumentFeaturesModel? = nil
+    ) -> [UIActivity] {
+        [
+            ExportPDFActivity(source: source, model: model),
+            ExportHTMLActivity(source: source, model: model),
+            CopyRichTextActivity(source: source),
+            CopyHTMLActivity(source: source),
+            PrintDocumentActivity(source: source, model: model),
+        ]
+    }
+
+    /// Builds the `UIActivityViewController` for sharing a document (used by both the toolbar
+    /// Share button and the navigation bar's document title menu).
+    /// Includes:
+    /// - `DocumentShareItemSource` (formatted rich text for Apple Notes, plain text Markdown for
+    ///   Messages/Mail/Notion, and the `.md` file URL for AirDrop and Save to Files)
+    /// - `applicationActivities`: `ExportPDFActivity`, `ExportHTMLActivity`,
+    ///   `CopyRichTextActivity`, `CopyHTMLActivity`, `PrintDocumentActivity`
+    /// The system Print action is excluded: it would print untypeset HTML (no math or diagrams),
+    /// while `PrintDocumentActivity` typesets first, like the Mac.
+    static func makeDocumentActivityViewController(
+        source: DocumentExporter.Source,
+        model: IOSDocumentFeaturesModel? = nil
+    ) -> UIActivityViewController {
+        let html = DocumentExporter.clipboardHTML(for: source)
+        let itemSource = DocumentShareItemSource(source: source, html: html)
+        let activities = documentActivities(for: source, model: model)
+        let controller = UIActivityViewController(
+            activityItems: [itemSource],
+            applicationActivities: activities
+        )
+        controller.excludedActivityTypes = [.print]
+        controller.setValue(source.title, forKey: "subject")
+        return controller
+    }
+
+    /// Presents the system share sheet for sharing a document.
+    static func shareDocument(source: DocumentExporter.Source, model: IOSDocumentFeaturesModel? = nil) {
+        let controller = makeDocumentActivityViewController(source: source, model: model)
+        presentActivity(controller)
+    }
+
+    /// Presents the system share sheet for sharing a document.
+    static func shareDocument(
+        title: String,
+        text: String,
+        flavor: MarkdownFlavor,
+        fileURL: URL?,
+        model: IOSDocumentFeaturesModel? = nil
+    ) {
+        let source = DocumentExporter.Source(text: text, flavor: flavor, fileURL: fileURL, title: title)
+        shareDocument(source: source, model: model)
+    }
+}
+
+// MARK: - Document sharing sources, activities and transferable items
+
+extension UIActivity.ActivityType {
+    static let saveToFiles = UIActivity.ActivityType("com.apple.UIKit.activity.SaveToFiles")
+    static let exportPDF = UIActivity.ActivityType("com.pixerate.Swash.activity.exportPDF")
+    static let exportHTML = UIActivity.ActivityType("com.pixerate.Swash.activity.exportHTML")
+    static let copyRichText = UIActivity.ActivityType("com.pixerate.Swash.activity.copyRichText")
+    static let copyHTML = UIActivity.ActivityType("com.pixerate.Swash.activity.copyHTML")
+    static let printDocument = UIActivity.ActivityType("com.pixerate.Swash.activity.print")
+}
+
+/// An activity item source that shares multiple representations of a Markdown document,
+/// picking the appropriate representation for each activity:
+/// - HTML (`UTType.html`) / rich text for Apple Notes (`com.apple.mobilenotes.SharingExtension`)
+/// - `UIMarkupTextPrintFormatter` for the system Print action (`.print`)
+/// - Plain text (`UTType.plainText`) for Messages, Mail, Notion and general text receivers
+/// - The `.md` file URL for AirDrop and Save to Files
+final class DocumentShareItemSource: NSObject, UIActivityItemSource {
+    let title: String
+    let text: String
+    let html: String
+    let fileURL: URL
+    let flavor: MarkdownFlavor
+    private let originalFileURL: URL?
+
+    var source: DocumentExporter.Source {
+        DocumentExporter.Source(text: text, flavor: flavor, fileURL: originalFileURL, title: title)
+    }
+
+    init(title: String, text: String, html: String, fileURL: URL?, flavor: MarkdownFlavor = .commonMark) {
+        self.title = title
+        self.text = text
+        self.html = html
+        self.flavor = flavor
+        self.originalFileURL = fileURL
+        if let fileURL {
+            self.fileURL = fileURL
+        } else {
+            let folder = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Shared", isDirectory: true)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let temp = folder.appendingPathComponent(IOSDocumentFeaturesModel.fileName(title)).appendingPathExtension("md")
+            try? text.write(to: temp, atomically: true, encoding: .utf8)
+            self.fileURL = temp
+        }
+        super.init()
+    }
+
+    convenience init(source: DocumentExporter.Source, html: String? = nil) {
+        let renderedHTML = html ?? DocumentExporter.clipboardHTML(for: source)
+        self.init(
+            title: source.title,
+            text: source.text,
+            html: renderedHTML,
+            fileURL: source.fileURL,
+            flavor: source.flavor
+        )
+    }
+
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator when freed outside a Task.
+    nonisolated deinit {}
+
+    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
+        fileURL
+    }
+
+    func activityViewController(_ activityViewController: UIActivityViewController, itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
+        if activityType == .airDrop || activityType == .saveToFiles || activityType?.rawValue.contains("SaveToFiles") == true || activityType?.rawValue.contains("CloudDocs") == true {
+            return fileURL
+        }
+        if activityType == .print {
+            return UIMarkupTextPrintFormatter(markupText: html)
+        }
+        if activityType?.rawValue == "com.apple.mobilenotes.SharingExtension" || activityType?.rawValue.contains("mobilenotes") == true {
+            if let data = html.data(using: .utf8),
+               let attributed = try? NSAttributedString(data: data, options: [
+                   .documentType: NSAttributedString.DocumentType.html,
+                   .characterEncoding: String.Encoding.utf8.rawValue
+               ], documentAttributes: nil) {
+                return attributed
+            }
+            return text
+        }
+        return text
+    }
+
+    func activityViewController(_ activityViewController: UIActivityViewController, subjectForActivityType activityType: UIActivity.ActivityType?) -> String {
+        title
+    }
+
+    func activityViewController(_ activityViewController: UIActivityViewController, dataTypeIdentifierForActivityType activityType: UIActivity.ActivityType?) -> String {
+        if activityType == .airDrop || activityType == .saveToFiles || activityType?.rawValue.contains("SaveToFiles") == true || activityType?.rawValue.contains("CloudDocs") == true {
+            return UTType(filenameExtension: "md")?.identifier ?? UTType.plainText.identifier
+        }
+        if activityType == .print || activityType?.rawValue == "com.apple.mobilenotes.SharingExtension" || activityType?.rawValue.contains("mobilenotes") == true {
+            return UTType.html.identifier
+        }
+        return UTType.plainText.identifier
+    }
+
+    func activityViewControllerLinkMetadata(_ activityViewController: UIActivityViewController) -> LPLinkMetadata? {
+        let metadata = LPLinkMetadata()
+        metadata.title = title
+        metadata.originalURL = fileURL
+        metadata.url = fileURL
+        return metadata
+    }
+}
+
+/// Extracts a `DocumentExporter.Source` from share sheet activity items when an activity was not
+/// initialized with an explicit source.
+private func extractExportSource(from activityItems: [Any]) -> DocumentExporter.Source? {
+    for item in activityItems {
+        if let shareSource = item as? DocumentShareItemSource {
+            return shareSource.source
+        }
+    }
+    for item in activityItems {
+        if let text = item as? String {
+            return DocumentExporter.Source(text: text, flavor: .commonMark, fileURL: nil, title: "Untitled")
+        }
+        if let url = item as? URL, let text = try? String(contentsOf: url, encoding: .utf8) {
+            let title = url.deletingPathExtension().lastPathComponent
+            return DocumentExporter.Source(
+                text: text,
+                flavor: MarkdownParser.detectFlavor(text),
+                fileURL: url,
+                title: title.isEmpty ? "Untitled" : title
+            )
+        }
+    }
+    return nil
+}
+
+/// Share sheet action activity that exports the document as a paginated PDF and presents a share
+/// sheet for the generated PDF file.
+final class ExportPDFActivity: UIActivity {
+    private var source: DocumentExporter.Source?
+    private weak var model: IOSDocumentFeaturesModel?
+    var onExported: ((Result<URL, Error>) -> Void)?
+
+    init(
+        source: DocumentExporter.Source? = nil,
+        model: IOSDocumentFeaturesModel? = nil,
+        onExported: ((Result<URL, Error>) -> Void)? = nil
+    ) {
+        self.source = source
+        self.model = model
+        self.onExported = onExported
+        super.init()
+    }
+
+    nonisolated deinit {}
+
+    override class var activityCategory: UIActivity.Category { .action }
+    override var activityType: UIActivity.ActivityType? { .exportPDF }
+    override var activityTitle: String? { "Export as PDF" }
+    override var activityImage: UIImage? { UIImage(systemName: "doc.richtext") }
+
+    override func canPerform(withActivityItems activityItems: [Any]) -> Bool {
+        source != nil || extractExportSource(from: activityItems) != nil
+    }
+
+    override func prepare(withActivityItems activityItems: [Any]) {
+        if source == nil {
+            source = extractExportSource(from: activityItems)
+        }
+    }
+
+    override func perform() {
+        guard let source else {
+            activityDidFinish(false)
+            return
+        }
+        activityDidFinish(true)
+        if let model {
+            model.export(.pdf, source: source, completion: onExported)
+        } else {
+            let callback = onExported
+            Task {
+                do {
+                    let url = try await IOSDocumentFeaturesModel.writeExportFile(.pdf, source: source)
+                    IOSPresenter.share([url], subject: source.title)
+                    callback?(.success(url))
+                } catch {
+                    callback?(.failure(error))
+                }
+            }
+        }
+    }
+}
+
+/// Share sheet action activity that exports the document as a self-contained HTML file and
+/// presents a share sheet for the generated HTML file.
+final class ExportHTMLActivity: UIActivity {
+    private var source: DocumentExporter.Source?
+    private weak var model: IOSDocumentFeaturesModel?
+    var onExported: ((Result<URL, Error>) -> Void)?
+
+    init(
+        source: DocumentExporter.Source? = nil,
+        model: IOSDocumentFeaturesModel? = nil,
+        onExported: ((Result<URL, Error>) -> Void)? = nil
+    ) {
+        self.source = source
+        self.model = model
+        self.onExported = onExported
+        super.init()
+    }
+
+    nonisolated deinit {}
+
+    override class var activityCategory: UIActivity.Category { .action }
+    override var activityType: UIActivity.ActivityType? { .exportHTML }
+    override var activityTitle: String? { "Export as HTML" }
+    override var activityImage: UIImage? { UIImage(systemName: "chevron.left.forwardslash.chevron.right") }
+
+    override func canPerform(withActivityItems activityItems: [Any]) -> Bool {
+        source != nil || extractExportSource(from: activityItems) != nil
+    }
+
+    override func prepare(withActivityItems activityItems: [Any]) {
+        if source == nil {
+            source = extractExportSource(from: activityItems)
+        }
+    }
+
+    override func perform() {
+        guard let source else {
+            activityDidFinish(false)
+            return
+        }
+        activityDidFinish(true)
+        if let model {
+            model.export(.html, source: source, completion: onExported)
+        } else {
+            let callback = onExported
+            Task {
+                do {
+                    let url = try await IOSDocumentFeaturesModel.writeExportFile(.html, source: source)
+                    IOSPresenter.share([url], subject: source.title)
+                    callback?(.success(url))
+                } catch {
+                    callback?(.failure(error))
+                }
+            }
+        }
+    }
+}
+
+/// Share sheet action activity that copies the document to the clipboard as rich text (HTML + plain text).
+final class CopyRichTextActivity: UIActivity {
+    private var source: DocumentExporter.Source?
+
+    init(source: DocumentExporter.Source? = nil) {
+        self.source = source
+        super.init()
+    }
+
+    nonisolated deinit {}
+
+    override class var activityCategory: UIActivity.Category { .action }
+    override var activityType: UIActivity.ActivityType? { .copyRichText }
+    override var activityTitle: String? { "Copy as Rich Text" }
+    override var activityImage: UIImage? { UIImage(systemName: "doc.on.clipboard") }
+
+    override func canPerform(withActivityItems activityItems: [Any]) -> Bool {
+        source != nil || extractExportSource(from: activityItems) != nil
+    }
+
+    override func prepare(withActivityItems activityItems: [Any]) {
+        if source == nil {
+            source = extractExportSource(from: activityItems)
+        }
+    }
+
+    override func perform() {
+        guard let source else {
+            activityDidFinish(false)
+            return
+        }
+        DocumentExporter.copyRichText(source)
+        activityDidFinish(true)
+    }
+}
+
+/// Share sheet action activity that copies the document's rendered HTML source to the clipboard.
+final class CopyHTMLActivity: UIActivity {
+    private var source: DocumentExporter.Source?
+
+    init(source: DocumentExporter.Source? = nil) {
+        self.source = source
+        super.init()
+    }
+
+    nonisolated deinit {}
+
+    override class var activityCategory: UIActivity.Category { .action }
+    override var activityType: UIActivity.ActivityType? { .copyHTML }
+    override var activityTitle: String? { "Copy HTML" }
+    override var activityImage: UIImage? { UIImage(systemName: "curlybraces") }
+
+    override func canPerform(withActivityItems activityItems: [Any]) -> Bool {
+        source != nil || extractExportSource(from: activityItems) != nil
+    }
+
+    override func prepare(withActivityItems activityItems: [Any]) {
+        if source == nil {
+            source = extractExportSource(from: activityItems)
+        }
+    }
+
+    override func perform() {
+        guard let source else {
+            activityDidFinish(false)
+            return
+        }
+        DocumentExporter.copyHTML(source)
+        activityDidFinish(true)
+    }
+}
+
+/// Share sheet action activity that prints the document typeset (math, diagrams) through
+/// `DocumentExporter.print`, instead of the system Print action's untypeset HTML.
+final class PrintDocumentActivity: UIActivity {
+    private var source: DocumentExporter.Source?
+    private weak var model: IOSDocumentFeaturesModel?
+
+    init(source: DocumentExporter.Source? = nil, model: IOSDocumentFeaturesModel? = nil) {
+        self.source = source
+        self.model = model
+        super.init()
+    }
+
+    nonisolated deinit {}
+
+    override class var activityCategory: UIActivity.Category { .action }
+    override var activityType: UIActivity.ActivityType? { .printDocument }
+    override var activityTitle: String? { "Print" }
+    override var activityImage: UIImage? { UIImage(systemName: "printer") }
+
+    override func canPerform(withActivityItems activityItems: [Any]) -> Bool {
+        source != nil || extractExportSource(from: activityItems) != nil
+    }
+
+    override func prepare(withActivityItems activityItems: [Any]) {
+        if source == nil {
+            source = extractExportSource(from: activityItems)
+        }
+    }
+
+    override func perform() {
+        guard let source else {
+            activityDidFinish(false)
+            return
+        }
+        // Finish first: the print sheet can't present while the share sheet is still up
+        activityDidFinish(true)
+        let model = model
+        Task { @MainActor in
+            do {
+                try await DocumentExporter.print(source)
+            } catch {
+                model?.exportError = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// Configures `UINavigationItem.documentProperties.activityViewControllerProvider` on the
+/// enclosing navigation item(s) so the navigation bar's document title menu presents the same
+/// share sheet (with Export as PDF, Export as HTML, Copy as Rich Text, Copy HTML and Print)
+/// as the toolbar Share button.
+struct DocumentShareBridge: UIViewControllerRepresentable {
+    let source: DocumentExporter.Source
+    let model: IOSDocumentFeaturesModel
+
+    func makeUIViewController(context: Context) -> Controller {
+        let controller = Controller()
+        controller.configure(source: source, model: model)
+        return controller
+    }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.configure(source: source, model: model)
+    }
+
+    final class Controller: UIViewController {
+        private var source = DocumentExporter.Source(text: "", flavor: .commonMark, fileURL: nil, title: "Untitled")
+        private weak var model: IOSDocumentFeaturesModel?
+
+        nonisolated deinit {}
+
+        func configure(source: DocumentExporter.Source, model: IOSDocumentFeaturesModel) {
+            self.source = source
+            self.model = model
+            applyDocumentProperties()
+            DispatchQueue.main.async { [weak self] in
+                self?.applyDocumentProperties()
+            }
+        }
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            applyDocumentProperties()
+        }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            applyDocumentProperties()
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            applyDocumentProperties()
+        }
+
+        func applyDocumentProperties() {
+            let provider: () -> UIActivityViewController = { [weak self] in
+                guard let self else {
+                    return UIActivityViewController(activityItems: [], applicationActivities: nil)
+                }
+                return IOSPresenter.makeDocumentActivityViewController(source: self.source, model: self.model)
+            }
+
+            var candidates: [UIViewController] = []
+            var current: UIViewController? = parent
+            while let vc = current {
+                candidates.append(vc)
+                current = vc.parent
+            }
+            if let navVCs = navigationController?.viewControllers {
+                for vc in navVCs where !candidates.contains(where: { $0 === vc }) {
+                    candidates.append(vc)
+                }
+            }
+
+            var updatedAny = false
+            for vc in candidates {
+                if let existing = vc.navigationItem.documentProperties {
+                    existing.activityViewControllerProvider = provider
+                    updatedAny = true
+                }
+            }
+
+            if !updatedAny, let host = navigationController?.topViewController ?? parent {
+                let properties: UIDocumentProperties
+                if let fileURL = source.fileURL {
+                    properties = UIDocumentProperties(url: fileURL)
+                } else {
+                    let metadata = LPLinkMetadata()
+                    metadata.title = source.title
+                    properties = UIDocumentProperties(metadata: metadata)
+                }
+                properties.activityViewControllerProvider = provider
+                host.navigationItem.documentProperties = properties
+            }
+        }
+    }
+}
+
+/// A transferable representation of a document for SwiftUI ShareLink, offering HTML, plain text,
+/// and the Markdown file in priority order.
+struct DocumentShareItem: Transferable {
+    let title: String
+    let text: String
+    let html: String
+    let fileURL: URL?
+
+    @MainActor
+    init(title: String, text: String, flavor: MarkdownFlavor, fileURL: URL?) {
+        self.title = title
+        self.text = text
+        let source = DocumentExporter.Source(text: text, flavor: flavor, fileURL: fileURL, title: title)
+        self.html = DocumentExporter.clipboardHTML(for: source)
+        self.fileURL = fileURL
+    }
+
+    init(title: String, text: String, html: String, fileURL: URL?) {
+        self.title = title
+        self.text = text
+        self.html = html
+        self.fileURL = fileURL
+    }
+
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(exportedContentType: .html) { item in
+            Data(item.html.utf8)
+        }
+        .suggestedFileName { item in
+            "\(item.title).html"
+        }
+        DataRepresentation(exportedContentType: .plainText) { item in
+            Data(item.text.utf8)
+        }
+        .suggestedFileName { item in
+            "\(item.title).txt"
+        }
+        FileRepresentation(exportedContentType: UTType(filenameExtension: "md") ?? .plainText) { item in
+            if let fileURL = item.fileURL {
+                return SentTransferredFile(fileURL)
+            } else {
+                let folder = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("Shared", isDirectory: true)
+                try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let temp = folder.appendingPathComponent(IOSDocumentFeaturesModel.fileName(item.title)).appendingPathExtension("md")
+                try? item.text.write(to: temp, atomically: true, encoding: .utf8)
+                return SentTransferredFile(temp)
+            }
+        }
     }
 }
 
@@ -389,60 +980,55 @@ final class IOSDocumentFeaturesModel {
 
     // MARK: Export
 
+    /// Typesets the document and writes the exported PDF or HTML file to a temporary folder.
+    static func writeExportFile(_ format: IOSExportFormat, source: DocumentExporter.Source) async throws -> URL {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Export", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let name = Self.fileName(source.title)
+        let url: URL
+        switch format {
+        case .pdf:
+            url = folder.appendingPathComponent(name).appendingPathExtension("pdf")
+            try await DocumentExporter.exportPDF(source).write(to: url)
+        case .html:
+            url = folder.appendingPathComponent(name).appendingPathExtension("html")
+            try await DocumentExporter.standaloneHTML(for: source).write(to: url, atomically: true, encoding: .utf8)
+        }
+        return url
+    }
+
     /// Typesets the document, writes it to a temporary file and offers it in the share sheet.
-    func export(_ format: IOSExportFormat, source: DocumentExporter.Source) {
+    func export(_ format: IOSExportFormat, source: DocumentExporter.Source, completion: ((Result<URL, Error>) -> Void)? = nil) {
         withAnimation { exporting = "Preparing \(format.rawValue)…" }
         Task {
             defer { withAnimation { exporting = nil } }
             do {
-                let folder = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("Export", isDirectory: true)
-                    .appendingPathComponent(UUID().uuidString, isDirectory: true)
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                let name = Self.fileName(source.title)
-                let url: URL
-                switch format {
-                case .pdf:
-                    url = folder.appendingPathComponent(name).appendingPathExtension("pdf")
-                    try await DocumentExporter.exportPDF(source).write(to: url)
-                case .html:
-                    url = folder.appendingPathComponent(name).appendingPathExtension("html")
-                    try await DocumentExporter.standaloneHTML(for: source).write(to: url, atomically: true, encoding: .utf8)
-                }
+                let url = try await Self.writeExportFile(format, source: source)
                 IOSPresenter.share([url], subject: source.title)
+                completion?(.success(url))
             } catch {
                 exportError = error.localizedDescription
+                completion?(.failure(error))
             }
-        }
-    }
-
-    func print(source: DocumentExporter.Source) {
-        withAnimation { exporting = "Preparing to Print…" }
-        Task {
-            do {
-                try await DocumentExporter.print(source) {
-                    withAnimation { exporting = nil }
-                }
-            } catch {
-                exportError = error.localizedDescription
-            }
-            withAnimation { exporting = nil }
         }
     }
 
     /// A file name without characters Files won't accept.
-    static func fileName(_ title: String) -> String {
+    nonisolated static func fileName(_ title: String) -> String {
         let cleaned = title.components(separatedBy: CharacterSet(charactersIn: "/:\\")).joined(separator: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? "Untitled" : cleaned
     }
 }
 
-/// The Outline button (primary, compact width) and the Document Info, Writing and Export items (overflow).
+/// The Outline button (primary, compact width) and the Document Info and Writing items (overflow).
+/// Export and Copy actions live in the system share sheet (#183).
 struct IOSDocumentToolbar: ToolbarContent {
     let model: IOSDocumentFeaturesModel
     let text: String
-    let source: () -> DocumentExporter.Source
+    var source: (() -> DocumentExporter.Source)? = nil
     let editor: IOSEditorController
     let regularWidth: Bool
     var distractionFree: Binding<Bool>? = nil
@@ -508,41 +1094,6 @@ struct IOSDocumentToolbar: ToolbarContent {
                 }
             } label: {
                 Label("Writing", systemImage: "viewfinder")
-            }
-        }
-        if !focusMode {
-            ToolbarItem(placement: .secondaryAction) {
-                Menu {
-                    Button {
-                        model.export(.pdf, source: source())
-                    } label: {
-                        Label("Export as PDF", systemImage: "doc.richtext")
-                    }
-                    Button {
-                        model.export(.html, source: source())
-                    } label: {
-                        Label("Export as HTML", systemImage: "chevron.left.forwardslash.chevron.right")
-                    }
-                    Button {
-                        model.print(source: source())
-                    } label: {
-                        Label("Print", systemImage: "printer")
-                    }
-                    Divider()
-                    Button {
-                        DocumentExporter.copyRichText(source())
-                    } label: {
-                        Label("Copy as Rich Text", systemImage: "doc.on.clipboard")
-                    }
-                    Button {
-                        DocumentExporter.copyHTML(source())
-                    } label: {
-                        Label("Copy HTML", systemImage: "curlybraces")
-                    }
-                } label: {
-                    Label("Export", systemImage: "square.and.arrow.up.on.square")
-                }
-                .disabled(model.exporting != nil)
             }
         }
     }
