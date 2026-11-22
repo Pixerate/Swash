@@ -493,6 +493,31 @@ nonisolated enum SwashShortcutsEngine {
         if let writeError { throw writeError }
     }
 
+    /// Reads, changes and writes `url` in one coordinated write, so an edit another app or an
+    /// open window makes between the read and the write can't be lost. A read that fails is an
+    /// error, never an empty document: writing the change over it would wipe the file.
+    @discardableResult
+    static func modifyText(at url: URL, _ change: (String) -> String) throws -> String {
+        let std = url.standardizedFileURL
+        _ = FolderAccessManager.shared.ensureAccess(for: std.deletingLastPathComponent())
+        var coordinatorError: NSError?
+        var result: Result<String, Error> = .failure(SwashShortcutsError.unreadableDocument(std.lastPathComponent))
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        coordinator.coordinate(writingItemAt: std, options: .forMerging, error: &coordinatorError) { coordinatedURL in
+            do {
+                let data = try Data(contentsOf: coordinatedURL)
+                guard let existing = SwashDocument.decode(data) else { throw CocoaError(.fileReadUnknownStringEncoding) }
+                let updated = change(existing)
+                try Data(updated.utf8).write(to: coordinatedURL, options: .atomic)
+                result = .success(updated)
+            } catch {
+                result = .failure(error)
+            }
+        }
+        if let coordinatorError { throw coordinatorError }
+        return try result.get()
+    }
+
     // MARK: Appending & Prepending
 
     private static let bulletPrefixRegex = try! NSRegularExpression(pattern: #"^\s*(?:[-*+]|\d+[.)])\s+"#)
@@ -1512,15 +1537,9 @@ struct AppendToDocumentIntent: AppIntent {
             throw SwashShortcutsError.documentNotFound(pathOrName)
         }
 
-        let existingText = (try? SwashShortcutsEngine.readText(at: targetURL)) ?? ""
-        let updatedText = SwashShortcutsEngine.insert(
-            text,
-            into: existingText,
-            position: position,
-            heading: heading,
-            style: style
-        )
-        try SwashShortcutsEngine.writeText(updatedText, to: targetURL)
+        let updatedText = try SwashShortcutsEngine.modifyText(at: targetURL) { existingText in
+            SwashShortcutsEngine.insert(text, into: existingText, position: position, heading: heading, style: style)
+        }
         return .result(value: SwashDocumentEntity(url: targetURL, text: updatedText))
     }
 }

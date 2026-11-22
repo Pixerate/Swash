@@ -317,6 +317,16 @@ check(
     "\(folderStats)"
 )
 
+// Appending is one coordinated read-modify-write, and a file it can't read is left alone
+let appendURL = root.appendingPathComponent("Append Target.md")
+try! SwashShortcutsEngine.writeText("# Log\n", to: appendURL)
+let appended = try? SwashShortcutsEngine.modifyText(at: appendURL) { $0 + "- one\n" }
+check("modifyText reads, changes and writes in one step", appended == "# Log\n- one\n" && (try? SwashShortcutsEngine.readText(at: appendURL)) == "# Log\n- one\n")
+let missingURL = root.appendingPathComponent("Missing.md")
+let failed = (try? SwashShortcutsEngine.modifyText(at: missingURL) { $0 + "appended" }) == nil
+check("modifyText throws when it can't read the file, and writes nothing",
+      failed && !fm.fileExists(atPath: missingURL.path))
+
 try? fm.removeItem(at: root)
 print(failures == 0 ? "SHORTCUTS: all checks passed" : "SHORTCUTS: \(failures) failure(s)")
 exit(failures == 0 ? 0 : 1)

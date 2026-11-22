@@ -74,6 +74,10 @@ func run() async -> Int32 {
     let bandleader = OnDeviceWritingBandleader(timeoutSeconds: 20)
     var rng = SplitMix64(state: seed)
     var restored = 0, missed = 0, wrong = 0, offered = 0, total = 0
+    // What the model said before the planner, to check the thresholds against (#167): for each
+    // injected word, the best suggestion on it; and every suggestion on a word that was right.
+    var onInjected: [(file: String, right: String, typed: String, replacement: String?, confidence: Double?, alternatives: [String])] = []
+    var falseAlarms: [(file: String, original: String, replacement: String, confidence: Double?)] = []
     let files = (try? FileManager.default.contentsOfDirectory(at: corpus, includingPropertiesForKeys: nil)) ?? []
     for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where file.pathExtension == "md" {
         let flavor: MarkdownFlavor = file.lastPathComponent.hasSuffix(".slack.md") ? .slack : .github
@@ -90,10 +94,24 @@ func run() async -> Int32 {
             stack.append(contentsOf: node.children)
         }
         var offeredHere: [PartnerEdit] = []
+        var bestOnInjected: [Int: JazzTextSuggestion] = [:]
+        var alarmsHere: [String: (original: String, replacement: String, confidence: Double?)] = [:]
         for range in paragraphs.sorted(by: { $0.location > $1.location }) {
             guard let context = BandleaderContextExtractor.extract(from: working, caret: NSMaxRange(range), flavor: flavor) else { continue }
             let request = JazzTextLeadRequest(paragraph: context.paragraph, before: context.before, after: context.after, flavor: flavor.jazzTextFlavor)
             guard let response = try? await bandleader.lead(request: request) else { continue }
+            let paragraphNS = context.paragraph as NSString
+            for suggestion in response.suggestions where suggestion.kind.isSpellingKind {
+                let local = NSRange(location: suggestion.range.start, length: suggestion.range.end - suggestion.range.start)
+                guard local.location >= 0, NSMaxRange(local) <= paragraphNS.length else { continue }
+                let said = paragraphNS.substring(with: local)
+                let at = NSRange(location: context.range.location + local.location, length: local.length)
+                if let index = injected.firstIndex(where: { NSIntersectionRange($0.range, at).length > 0 && $0.typed == said }) {
+                    if (suggestion.confidence ?? 0) >= (bestOnInjected[index]?.confidence ?? -1) { bestOnInjected[index] = suggestion }
+                } else {
+                    alarmsHere["\(at.location):\(suggestion.replacement)"] = (said, suggestion.replacement, suggestion.confidence)
+                }
+            }
             let plan = BandleaderSuggestionPlanner.plan(response: response, paragraph: context.paragraph, paragraphRange: context.range,
                                                         documentText: working, flavor: flavor, memory: BandleaderSessionMemory())
             offeredHere += plan.offeredEdits.filter { $0.bandleaderSuggestionKind?.isSpellingKind == true }
@@ -119,11 +137,38 @@ func run() async -> Int32 {
         }
         offered += offeredHere.count
         print("\(file.lastPathComponent): injected \(injected.count)")
+        for (index, word) in injected.enumerated() {
+            let best = bestOnInjected[index]
+            onInjected.append((file.lastPathComponent, word.right, word.typed, best?.replacement, best?.confidence, best?.alternatives ?? []))
+        }
+        falseAlarms += alarmsHere.values.map { (file.lastPathComponent, $0.original, $0.replacement, $0.confidence) }
     }
     let precision = restored + wrong == 0 ? 1 : Double(restored) / Double(restored + wrong)
     let recall = total == 0 ? 1 : Double(restored) / Double(total)
     print(String(format: "Context spelling: injected %d, restored %d, missed %d, wrong changes %d, offered %d, precision %.3f, recall %.3f",
                  total, restored, missed, wrong, offered, precision, recall))
+    // The model's own suggestions, before the planner: what each threshold would make of them
+    func conf(_ c: Double?) -> String { c.map { String(format: "%.2f", $0) } ?? "-" }
+    print("Suggestions on injected words (model output, before the planner):")
+    for item in onInjected {
+        let verdict: String
+        if let replacement = item.replacement {
+            let isRight = replacement.lowercased() == item.right.lowercased()
+                || item.alternatives.contains { $0.lowercased() == item.right.lowercased() }
+            verdict = (isRight ? "right" : "WRONG") + " -> \(replacement)" + (item.alternatives.isEmpty ? "" : " (or \(item.alternatives.joined(separator: ", ")))")
+        } else {
+            verdict = "no suggestion"
+        }
+        print("  \(item.file): \(item.typed) (should be \(item.right)): \(verdict), confidence \(conf(item.confidence))")
+    }
+    print("Suggestions on words that weren't injected:")
+    for alarm in falseAlarms { print("  \(alarm.file): \(alarm.original) -> \(alarm.replacement), confidence \(conf(alarm.confidence))") }
+    let rightOnes = onInjected.filter { item in
+        guard let r = item.replacement else { return false }
+        return r.lowercased() == item.right.lowercased() || item.alternatives.contains { $0.lowercased() == item.right.lowercased() }
+    }
+    print(String(format: "Model: suggested on %d of %d injected words, %d right; %d suggestions on words that weren't injected",
+                 onInjected.filter { $0.replacement != nil }.count, onInjected.count, rightOnes.count, falseAlarms.count))
     return 0
 }
 
