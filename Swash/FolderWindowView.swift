@@ -121,10 +121,10 @@ private struct FolderBrowserView: View {
             selectedResult = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-            workspace.save()
+            workspace.saveBeforeClosing()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { notification in
-            if (notification.object as? NSWindow) === window { workspace.save() }
+            if (notification.object as? NSWindow) === window { workspace.save(prompting: false) }
         }
         .alert("Swash", isPresented: Binding(
             get: { workspace.errorMessage != nil },
@@ -133,6 +133,29 @@ private struct FolderBrowserView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(workspace.errorMessage ?? "")
+        }
+        .alert(
+            "Conflict in “\(workspace.activeConflict?.file.lastPathComponent ?? "File")”",
+            isPresented: Binding(
+                get: { workspace.activeConflict != nil },
+                set: { if !$0 { workspace.dismissConflict() } }
+            ),
+            presenting: workspace.activeConflict
+        ) { conflict in
+            Button("Keep Mine") {
+                workspace.resolveConflict(keeping: .mine)
+            }
+            Button("Keep Theirs", role: .destructive) {
+                workspace.resolveConflict(keeping: .theirs)
+            }
+            Button("Save Mine as a Copy") {
+                workspace.resolveConflict(keeping: .copy)
+            }
+            Button("Cancel", role: .cancel) {
+                workspace.dismissConflict()
+            }
+        } message: { conflict in
+            Text("Another application changed this file on disk. Do you want to keep your changes or the changes made by the other application?")
         }
         .modifier(FileActionDialogs(workspace: workspace, renameTarget: $renameTarget, renameText: $renameText, trashTarget: $trashTarget))
     }
