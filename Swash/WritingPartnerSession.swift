@@ -2,7 +2,8 @@
 //  WritingPartnerSession.swift
 //  Swash
 //
-//  Connects the writing partner's Punctuate voice (WritingPartner.swift, #61) to the Mac editor.
+//  Connects the writing partner's Punctuate voice (WritingPartner.swift, #61) to an editor: the Mac's
+//  NSTextView or the iOS editors, through `WritingPartnerHost` (WritingPartnerHost.swift, #109).
 //  When the person types a space, punctuation or a blank line, the session asks the voice for
 //  fixes to what they just finished. The partner's cursor plays each fix out through the editor
 //  package's `AgentTextDirector` (#878): it selects the word, types the new one, and the edit lands
@@ -10,8 +11,8 @@
 //  it applied; typing on keeps it.
 //
 
-#if os(macOS)
-import AppKit
+import Foundation
+import CoreGraphics
 import NaturalLanguage
 import Observation
 import PixerateCore
@@ -42,13 +43,12 @@ final class WritingPartnerActiveVoice {
 
 /// The editor as the partner's director sees it: the raw Markdown, with the word the partner is
 /// typing shown in place of the word it replaces. The frames of typing are never written into the
-/// text view (that would leave the person's own typing with undo ranges that no longer fit, and
-/// publish half-typed words): `ghost` holds them and `WritingPartnerOverlay` draws them. Only the
-/// commit edits the text, as one undoable `applyEdit`.
+/// editor (that would leave the person's own typing with undo ranges that no longer fit, and
+/// publish half-typed words): `ghost` holds them and the host's canvas draws them. Only the
+/// commit edits the text, as one undoable `applyPartnerEdit`.
 @MainActor
 final class WritingPartnerTarget: AgentTextTarget {
-    weak var textView: NSTextView?
-    weak var coordinator: SwashTextView.Coordinator?
+    weak var host: (any WritingPartnerHost)?
     /// What the partner is typing: `range` of the raw text shows as `text`.
     private(set) var ghost: (range: NSRange, text: String)?
     /// Called when `ghost` changes, to redraw it.
@@ -58,15 +58,13 @@ final class WritingPartnerTarget: AgentTextTarget {
     /// Set when a commit couldn't be made (the person is composing with an input method).
     private(set) var commitSkipped = false
 
-    init(textView: NSTextView, coordinator: SwashTextView.Coordinator) {
-        self.textView = textView
-        self.coordinator = coordinator
+    init(host: any WritingPartnerHost) {
+        self.host = host
     }
 
-    /// The raw Markdown as it is in the text view.
+    /// The raw Markdown as it is in the editor.
     var realText: String {
-        guard let textView, let coordinator else { return "" }
-        return coordinator.rawText(of: textView)
+        host?.partnerRawText ?? ""
     }
 
     var agentText: String {
@@ -76,8 +74,8 @@ final class WritingPartnerTarget: AgentTextTarget {
     }
 
     var agentReadOnlyReason: String? {
-        guard let textView, coordinator != nil else { return "The editor was closed." }
-        return textView.isEditable ? nil : "The document can't be edited."
+        guard let host else { return "The editor was closed." }
+        return host.partnerCanEdit ? nil : "The document can't be edited."
     }
 
     func previewAgentTyping(in range: NSRange, with text: String) {
@@ -92,10 +90,10 @@ final class WritingPartnerTarget: AgentTextTarget {
         let real = realRange(forAgent: range)
         clearGhost()
         commitSkipped = false
-        guard let textView, let coordinator, !textView.hasMarkedText() else { commitSkipped = true; return }
+        guard let host, !host.partnerHasMarkedText else { commitSkipped = true; return }
         let current = realText as NSString
         guard NSMaxRange(real) <= current.length else { commitSkipped = true; return }
-        let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        let selection = host.partnerRawSelection
         let length = (text as NSString).length
         let caret: Int
         if selection.location >= NSMaxRange(real) {
@@ -105,10 +103,8 @@ final class WritingPartnerTarget: AgentTextTarget {
         } else {
             caret = selection.location
         }
-        textView.breakUndoCoalescing()
-        coordinator.applyEdit(in: textView, newRawText: current.replacingCharacters(in: real, with: text),
+        host.applyPartnerEdit(newRawText: current.replacingCharacters(in: real, with: text),
                               rawSelection: NSRange(location: caret, length: 0), actionName: actionName)
-        textView.breakUndoCoalescing()
         onCommit?(real, text, selection.location)
     }
 
@@ -153,11 +149,13 @@ final class WritingPartnerTarget: AgentTextTarget {
     }
 }
 
-/// Not isolated itself (the swiftc runners compile the editor in Swift 5 mode, where the coordinator
-/// isn't on the main actor); everything that touches the director runs on the main actor.
+/// Not isolated itself (the swiftc runners compile the editor in Swift 5 mode, where the Mac's
+/// coordinator isn't on the main actor); everything that touches the director runs on the main actor.
 final class WritingPartnerSession {
     /// Who the partner is, for its cursor.
     static let agent = AgentCaretInfo(id: "writing-partner", name: "Writing partner", color: "#AF52DE")
+    /// How long the partner's cursor takes to select a word before typing over it.
+    static let selectMs: Double = 180
 
     /// Word boundaries the person typed (raw-Markdown offsets) that haven't been looked at yet. More
     /// than one when they type faster than the run loop turns, or while the partner is busy.
@@ -172,10 +170,8 @@ final class WritingPartnerSession {
     /// The partner's undo steps since the person last typed, oldest first: typing keeps them all,
     /// undo takes back the newest.
     private var applied: [Step] = []
-    /// The text view's own autocorrect, saved while the partner has it off.
-    private var savedAutocorrect: Bool?
-    private weak var textView: NSTextView?
-    private weak var coordinator: SwashTextView.Coordinator?
+    /// The editor the partner last worked in.
+    private weak var currentHost: (any WritingPartnerHost)?
     private var undoObserver: NSObjectProtocol?
     private weak var observedUndoManager: UndoManager?
     private let defaults: UserDefaults
@@ -301,105 +297,80 @@ final class WritingPartnerSession {
     // MARK: - First-Run Introduction, Undo Reminder & Per-Document Pause (#112)
 
     /// Chooses a mode (`Automatically` or `Suggest`) from the first-run introduction and hides it.
-    func chooseIntroductionMode(_ chosenMode: WritingPartnerMode, in textView: NSTextView? = nil, coordinator: SwashTextView.Coordinator? = nil) {
+    func chooseIntroductionMode(_ chosenMode: WritingPartnerMode, in host: (any WritingPartnerHost)? = nil) {
         WritingPartnerDefaults.setIntroShown(true, defaults)
         defaults.set(chosenMode.rawValue, forKey: WritingPartnerDefaults.mode)
-        hideIntroduction(in: textView)
+        hideIntroduction(in: host)
     }
 
     /// Dismisses the first-run introduction ("Not now" / Escape), remembering `.off` in `UserDefaults`.
     @discardableResult
-    func dismissIntroduction(in textView: NSTextView? = nil) -> Bool {
+    func dismissIntroduction(in host: (any WritingPartnerHost)? = nil) -> Bool {
         guard hasActiveIntroduction else { return false }
         WritingPartnerDefaults.setIntroShown(true, defaults)
         defaults.set(WritingPartnerMode.off.rawValue, forKey: WritingPartnerDefaults.mode)
         pendingBoundaries = []
         cancelFix()
-        clearSuggestions(in: textView)
-        hideIntroduction(in: textView)
-        if let tv = textView ?? self.textView {
-            tv.inlinePredictionType = .default
-            if let saved = savedAutocorrect {
-                tv.isAutomaticSpellingCorrectionEnabled = saved
-                savedAutocorrect = nil
-            }
-        }
+        clearSuggestions(in: host)
+        hideIntroduction(in: host)
+        (host ?? currentHost)?.setSystemTextAssistsSuppressed(false)
         return true
     }
 
-    private func hideIntroduction(in textView: NSTextView? = nil) {
+    private func hideIntroduction(in host: (any WritingPartnerHost)? = nil) {
         guard hasActiveIntroduction else { return }
         hasActiveIntroduction = false
-        if let tv = textView ?? self.textView {
-            MainActor.assumeIsolated {
-                WritingPartnerOverlay.overlay(for: tv).hideIntroduction()
-            }
-        }
+        (host ?? currentHost)?.partnerCanvas?.hideIntroduction()
     }
 
     /// Dismisses the quiet reminder shown after the first undone fix.
     @discardableResult
-    func dismissUndoReminder(in textView: NSTextView? = nil) -> Bool {
+    func dismissUndoReminder(in host: (any WritingPartnerHost)? = nil) -> Bool {
         guard hasActiveUndoReminder else { return false }
         hasActiveUndoReminder = false
-        if let tv = textView ?? self.textView {
-            MainActor.assumeIsolated {
-                WritingPartnerOverlay.overlay(for: tv).hideUndoReminder()
-            }
-        }
+        (host ?? currentHost)?.partnerCanvas?.hideUndoReminder()
         return true
     }
 
     /// Pauses or resumes the writing partner for this document only, without changing `UserDefaults`.
-    func setPaused(_ paused: Bool, in textView: NSTextView? = nil) {
+    func setPaused(_ paused: Bool, in host: (any WritingPartnerHost)? = nil) {
         guard paused != isPaused else { return }
         isPaused = paused
         if paused {
             pendingBoundaries = []
             cancelFix()
             resetBandleaderSession()
-            clearSuggestions(in: textView)
+            clearSuggestions(in: host)
             if hasActiveSuggestion {
                 activeSuggestion = nil
-                if let tv = textView ?? self.textView {
-                    MainActor.assumeIsolated {
-                        WritingPartnerOverlay.overlay(for: tv).hideSuggestionPrompt()
-                    }
-                }
+                (host ?? currentHost)?.partnerCanvas?.hideSuggestionPrompt()
             }
-            hideIntroduction(in: textView)
-            dismissUndoReminder(in: textView)
-            if let tv = textView ?? self.textView {
-                tv.inlinePredictionType = .default
-                if let saved = savedAutocorrect {
-                    tv.isAutomaticSpellingCorrectionEnabled = saved
-                    savedAutocorrect = nil
-                }
-            }
+            hideIntroduction(in: host)
+            dismissUndoReminder(in: host)
+            (host ?? currentHost)?.setSystemTextAssistsSuppressed(false)
         }
         onPauseChange?(paused)
     }
 
     /// Toggles the per-document pause state and returns the new `isPaused` value.
     @discardableResult
-    func togglePaused(in textView: NSTextView? = nil) -> Bool {
-        setPaused(!isPaused, in: textView)
+    func togglePaused(in host: (any WritingPartnerHost)? = nil) -> Bool {
+        setPaused(!isPaused, in: host)
         return isPaused
     }
 
     /// Accepts the active structural suggestion, applying it as one undo step through the partner's cursor.
     func acceptActiveSuggestion() {
-        guard let active = activeSuggestion, let textView, let coordinator else { return }
+        guard let active = activeSuggestion, let host = currentHost else { return }
         let (suggestion, _, paragraphRange) = active
         activeSuggestion = nil
-        let overlay = WritingPartnerOverlay.overlay(for: textView)
-        overlay.hideSuggestionPrompt()
+        host.partnerCanvas?.hideSuggestionPrompt()
 
         let rawStart = paragraphRange.location + suggestion.range.start
         let rawEnd = paragraphRange.location + suggestion.range.end
         let rawLength = max(0, rawEnd - rawStart)
         let rawRange = NSRange(location: rawStart, length: rawLength)
-        let rawText = coordinator.rawText(of: textView) as NSString
+        let rawText = host.partnerRawText as NSString
         guard NSMaxRange(rawRange) <= rawText.length else { return }
         let original = rawText.substring(with: rawRange)
 
@@ -414,7 +385,7 @@ final class WritingPartnerSession {
             bandleaderSuggestionKind: suggestion.kind,
             bandleaderCheckId: suggestion.checkId
         )
-        play(Fix(remaining: [edit], boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
+        play(Fix(remaining: [edit], boundaries: [], isRetry: false), in: host)
     }
 
     /// Dismisses the active structural suggestion and teaches the bandleader for the session.
@@ -434,35 +405,29 @@ final class WritingPartnerSession {
             replacement: suggestion.replacement,
             checkId: suggestion.checkId
         ))
-        if let textView {
-            let overlay = WritingPartnerOverlay.overlay(for: textView)
-            overlay.hideSuggestionPrompt()
-        }
+        currentHost?.partnerCanvas?.hideSuggestionPrompt()
     }
 
-    /// The person is about to type `string` over `range` (storage offsets). Call only for their own
+    /// The person is about to type `string` over `raw` (raw-Markdown offsets). Call only for their own
     /// typing: not for Swash's edits, restyling, SwiftUI updates or Writing Tools.
-    func willType(_ string: String?, in range: NSRange, textView: NSTextView, coordinator: SwashTextView.Coordinator) {
-        self.textView = textView
-        self.coordinator = coordinator
+    func willType(_ string: String?, inRaw raw: NSRange, host: any WritingPartnerHost) {
+        currentHost = host
         if !marks.isEmpty {
-            let raw = coordinator.rawRange(forStorage: range, in: textView)
-            let isUndo = textView.undoManager.map { $0.isUndoing || $0.isRedoing } ?? false
-            moveMarks(through: raw, replacement: string ?? "", byPerson: !isUndo, in: textView, coordinator: coordinator)
+            let isUndo = host.partnerUndoManager.map { $0.isUndoing || $0.isRedoing } ?? false
+            moveMarks(through: raw, replacement: string ?? "", byPerson: !isUndo, in: host)
         }
         if hasActiveUndoReminder {
-            dismissUndoReminder(in: textView)
+            dismissUndoReminder(in: host)
         }
         if hasActiveSuggestion {
-            let overlay = WritingPartnerOverlay.overlay(for: textView)
-            overlay.hideSuggestionPrompt()
+            host.partnerCanvas?.hideSuggestionPrompt()
             activeSuggestion = nil
         }
-        if let undoManager = textView.undoManager, undoManager.isUndoing || undoManager.isRedoing {
+        if let undoManager = host.partnerUndoManager, undoManager.isUndoing || undoManager.isRedoing {
             pendingBoundaries = []
             formattingDirty = []
             cancelFix()
-            clearSuggestions(in: textView)
+            clearSuggestions(in: host)
             return
         }
         // First run (#112): the first time a document is edited, introduce the partner in place and
@@ -475,34 +440,22 @@ final class WritingPartnerSession {
         }
         if !isPaused, !WritingPartnerDefaults.introShown(defaults), WritingPartnerDefaults.mode(defaults) != .off {
             hasActiveIntroduction = true
-            let privacy = PartnerIntroductionView.privacyText(signedIn: WritingPartnerDefaults.provider(defaults) == .pixerate)
-            let announcement = "\(PartnerIntroductionView.noteText). \(privacy)"
+            let privacy = WritingPartnerCopy.privacy(signedIn: WritingPartnerDefaults.provider(defaults) == .pixerate)
+            let announcement = "\(WritingPartnerCopy.introduction). \(privacy)"
             lastAnnouncement = announcement
-            MainActor.assumeIsolated {
-                let targetRect = WritingPartnerOverlay.caretRect(at: range.location, in: textView)
-                    ?? NSRect(x: textView.textContainerOrigin.x, y: textView.textContainerOrigin.y, width: 2, height: 20)
-                let overlay = WritingPartnerOverlay.overlay(for: textView)
-                overlay.showIntroduction(
-                    at: targetRect,
-                    onChooseMode: { [weak self, weak textView, weak coordinator] chosenMode in
-                        self?.chooseIntroductionMode(chosenMode, in: textView, coordinator: coordinator)
-                    },
-                    onDismiss: { [weak self, weak textView] in
-                        self?.dismissIntroduction(in: textView)
-                    }
-                )
-                NSAccessibility.post(
-                    element: textView,
-                    notification: .announcementRequested,
-                    userInfo: [
-                        .announcement: announcement,
-                        .priority: NSAccessibilityPriorityLevel.medium.rawValue,
-                    ]
-                )
-            }
+            let targetRect = host.partnerCaretRect(atRaw: raw.location) ?? CGRect(x: 0, y: 0, width: 2, height: 20)
+            host.partnerCanvas?.showIntroduction(
+                at: targetRect,
+                onChooseMode: { [weak self, weak host] chosenMode in
+                    self?.chooseIntroductionMode(chosenMode, in: host)
+                },
+                onDismiss: { [weak self, weak host] in
+                    self?.dismissIntroduction(in: host)
+                }
+            )
+            host.partnerAnnounce(announcement)
             return
         }
-        let raw = coordinator.rawRange(forStorage: range, in: textView)
         let replacement = string ?? ""
         if fixInFlight != nil { MainActor.assumeIsolated { personWillEdit(raw, replacement: replacement) } }
         if !suggestions.isEmpty {
@@ -526,7 +479,7 @@ final class WritingPartnerSession {
                     // what they're meant to be doing (#113)
                     if suggestion.edit.rules.allSatisfy(\.isFormatting) { return suggestion }
                     if replacement.contains("\n") || raw.location - suggestion.triggerEnd > Self.suggestionReach {
-                        penalize(suggestion.edit, in: textView)
+                        penalize(suggestion.edit, in: host)
                         return nil
                     }
                     return suggestion
@@ -551,7 +504,7 @@ final class WritingPartnerSession {
                 activeMarkID = nil
                 isReviewing = false
             }
-            refreshSuggestions(in: textView, coordinator: coordinator)
+            refreshSuggestions(in: host)
         }
         if !applied.isEmpty {
             // Typing on after a fix keeps it in the voice that made it; editing over an applied
@@ -582,24 +535,16 @@ final class WritingPartnerSession {
         let isOn = mode != .off && !isPaused && !hasActiveIntroduction
         if !isOn {
             cancelFix()
-            clearSuggestions(in: textView)
+            clearSuggestions(in: host)
         } else if mode != .suggest, !suggestions.isEmpty {
             // In Automatic mode, keep lower-confidence bandleader suggestions that were offered
             // as underlined suggestions (#120) until accepted, edited, or dismissed.
             suggestions.removeAll { $0.edit.bandleaderSuggestionId == nil && $0.markID == nil }
-            refreshSuggestions(in: textView, coordinator: coordinator)
+            refreshSuggestions(in: host)
         }
-        // macOS's inline predictions and autocorrect also write at the caret, and the two together
-        // lose or corrupt fixes: while the partner is on it does the autocorrecting itself
-        let predictions: NSTextInputTraitType = isOn ? .no : .default
-        if textView.inlinePredictionType != predictions { textView.inlinePredictionType = predictions }
-        if isOn, savedAutocorrect == nil {
-            savedAutocorrect = textView.isAutomaticSpellingCorrectionEnabled
-            textView.isAutomaticSpellingCorrectionEnabled = false
-        } else if !isOn, let saved = savedAutocorrect {
-            textView.isAutomaticSpellingCorrectionEnabled = saved
-            savedAutocorrect = nil
-        }
+        // The system's inline predictions and autocorrect also write at the caret, and the two
+        // together lose or corrupt fixes: while the partner is on it does the autocorrecting itself
+        host.setSystemTextAssistsSuppressed(isOn)
 
         if isOn {
             formattingDirty = Self.move(ranges: formattingDirty, through: raw, replacement: replacement)
@@ -611,15 +556,15 @@ final class WritingPartnerSession {
         let charCode: unichar = (replacement as NSString).length > 0 ? (replacement as NSString).character(at: 0) : 0
         var enterEndedLine: Bool?
         if charCode == 0x0A {
-            let text = coordinator.rawText(of: textView) as NSString
+            let text = host.partnerRawText as NSString
             enterEndedLine = raw.location >= text.length || text.character(at: raw.location) == 0x0A
         }
 
         // Pause detection: record typing and back off while editing continues
         if isOn, hasPauseProvider {
-            let rawText = coordinator.rawText(of: textView)
+            let rawText = host.partnerRawText
             MainActor.assumeIsolated { WritingPartnerActiveVoice.shared.updateLanguage(for: rawText) }
-            if let extracted = BandleaderContextExtractor.extract(from: rawText, caret: raw.location, flavor: coordinator.parent.flavor) {
+            if let extracted = BandleaderContextExtractor.extract(from: rawText, caret: raw.location, flavor: host.partnerFlavor) {
                 lastKnownParagraphRange = extracted.range
                 lastKnownParagraphText = extracted.paragraph
                 pauseDetector.noteTyping(
@@ -629,12 +574,12 @@ final class WritingPartnerSession {
                     caret: raw.location,
                     enterEndedSentence: enterEndedLine ?? false
                 )
-                schedulePauseCheck(in: textView, coordinator: coordinator)
+                schedulePauseCheck(in: host)
             }
         }
 
-        guard isOn, let string, (string as NSString).length == 1, range.length == 0,
-              textView.selectedRange().length == 0, !textView.hasMarkedText() else {
+        guard isOn, let string, (string as NSString).length == 1, raw.length == 0,
+              host.partnerRawSelection.length == 0, !host.partnerHasMarkedText else {
             // Anything else (a paste, a deletion, macOS's text replacement) moves the text under the
             // pending offsets: move them with it, and drop any it replaced
             pendingBoundaries = Self.move(pendingBoundaries, through: raw, replacement: replacement)
@@ -648,17 +593,17 @@ final class WritingPartnerSession {
     /// The person's change landed. Fixes run on the next turn of the run loop, after the editor has
     /// published and styled the change, and one at a time: while the partner's cursor is playing a
     /// fix, new boundaries wait for it.
-    func didChange(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+    func didChange(in host: any WritingPartnerHost) {
         if WritingPartnerDefaults.mode(defaults) != .off && !isPaused && !hasActiveIntroduction && hasPauseProvider {
-            let rawText = coordinator.rawText(of: textView)
-            let rawSelection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
-            if let current = BandleaderContextExtractor.extract(from: rawText, caret: rawSelection.location, flavor: coordinator.parent.flavor) {
+            let rawText = host.partnerRawText
+            let rawSelection = host.partnerRawSelection
+            if let current = BandleaderContextExtractor.extract(from: rawText, caret: rawSelection.location, flavor: host.partnerFlavor) {
                 if let lastRange = lastKnownParagraphRange,
                    let lastText = lastKnownParagraphText,
                    lastRange.location != current.range.location,
                    NSIntersectionRange(lastRange, current.range).length == 0 {
                     pauseDetector.noteLeftParagraph(oldParagraph: lastText, oldRange: lastRange)
-                    triggerImmediatePause(in: textView, coordinator: coordinator)
+                    triggerImmediatePause(in: host)
                 } else {
                     pauseDetector.updatePendingParagraph(current.paragraph, range: current.range, caret: rawSelection.location)
                 }
@@ -667,28 +612,28 @@ final class WritingPartnerSession {
             }
         }
         guard !pendingBoundaries.isEmpty, !isScheduled, fixInFlight == nil else {
-            scheduleTidy(in: textView, coordinator: coordinator)
+            scheduleTidy(in: host)
             return
         }
         isScheduled = true
-        DispatchQueue.main.async { [weak self, weak textView, weak coordinator] in
+        DispatchQueue.main.async { [weak self, weak host] in
             guard let self else { return }
             self.isScheduled = false
-            guard let textView, let coordinator else { self.pendingBoundaries = []; return }
-            self.punctuate(in: textView, coordinator: coordinator)
+            guard let host else { self.pendingBoundaries = []; return }
+            self.punctuate(in: host)
         }
     }
 
-    private func punctuate(in textView: NSTextView, coordinator: SwashTextView.Coordinator, isRetry: Bool = false) {
+    private func punctuate(in host: any WritingPartnerHost, isRetry: Bool = false) {
         let boundaries = pendingBoundaries
         pendingBoundaries = []
         let mode = WritingPartnerDefaults.mode(defaults)
-        guard mode != .off, !isPaused, !hasActiveIntroduction, !textView.hasMarkedText(),
-              textView.window != nil, textView.isEditable else { return }
-        let raw = coordinator.rawText(of: textView)
-        let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        guard mode != .off, !isPaused, !hasActiveIntroduction, !host.partnerHasMarkedText,
+              host.partnerCanEdit else { return }
+        let raw = host.partnerRawText
+        let selection = host.partnerRawSelection
         guard selection.length == 0 else { return }
-        let flavor = coordinator.parent.flavor
+        let flavor = host.partnerFlavor
         let voice = WritingPartnerVoice(flavor: flavor)
         let stats = WritingPartnerStats.load(defaults, voice: voice)
         let spellingOn = WritingPartnerDefaults.spelling(defaults)
@@ -697,13 +642,11 @@ final class WritingPartnerSession {
             if rule == .spelling { return spellingOn }
             return WritingPartnerDefaults.isRuleEnabled(rule, self.defaults) && stats.isActive(rule)
         }
-        let checker = NSSpellChecker.shared
-        let tag = textView.spellCheckerDocumentTag
-        let spellingCorrection: (String, NSRange, String) -> String? = { [weak self] word, range, text in
+        let spellingCorrection: (String, NSRange, String) -> String? = { [weak self, weak host] word, range, text in
             if self?.sessionMemory.isKnownWord(word) == true { return nil }
-            return checker.correction(forWordRange: range, in: text, language: checker.language(), inSpellDocumentWithTag: tag)
+            return host?.partnerSpellingCorrection(forWordRange: range, in: text)
         }
-        let overlay = WritingPartnerOverlay.overlay(for: textView)
+        let overlay = host.partnerCanvas
 
         // Each boundary in order, on the text as the earlier ones left it
         var working = raw as NSString
@@ -725,7 +668,7 @@ final class WritingPartnerSession {
             }
 
             let text = working as String
-            let document = working == raw as NSString ? coordinator.formatting(for: text).document : MarkdownDocument.parse(text, flavor: flavor)
+            let document = working == raw as NSString ? host.partnerDocument(for: text) : MarkdownDocument.parse(text, flavor: flavor)
             if shift == 0, let range = partner.checkedRange(text: text, boundary: boundary, document: document) {
                 checked.append(range)
             }
@@ -761,57 +704,57 @@ final class WritingPartnerSession {
             // The sweep is for what it looked at and left alone. A word it is about to fix goes
             // straight to the selection: a sweep and then a selection over the same word reads as
             // the same thing drawn twice (#100).
-            overlay.sweep(checked.flatMap { WritingPartnerOverlay.rects(for: coordinator.storageRange(forRaw: $0, in: textView), in: textView) })
-            scheduleTidy(in: textView, coordinator: coordinator)
+            overlay?.sweep(checked.flatMap { host.partnerRects(forRaw: $0) })
+            scheduleTidy(in: host)
             return
         }
         if mode == .suggest {
-            offer(edits, triggerEnd: selection.location, in: textView, coordinator: coordinator)
+            offer(edits, triggerEnd: selection.location, in: host)
         } else {
-            play(Fix(remaining: edits, boundaries: boundaries, isRetry: isRetry), in: textView, coordinator: coordinator)
+            play(Fix(remaining: edits, boundaries: boundaries, isRetry: isRetry), in: host)
         }
     }
 
     // MARK: Formatting (#113)
 
     /// The caret moved: a block it left may be ready to tidy.
-    func selectionDidChange(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+    func selectionDidChange(in host: any WritingPartnerHost) {
         // A caret in one of the partner's marks shows its candidate (#128)
-        caretMovedForMarks(in: textView, coordinator: coordinator)
+        caretMovedForMarks(in: host)
         guard !formattingDirty.isEmpty else { return }
-        scheduleTidy(in: textView, coordinator: coordinator)
+        scheduleTidy(in: host)
     }
 
     /// Tidies on the next turn of the run loop, after punctuation has had its turn.
-    private func scheduleTidy(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+    private func scheduleTidy(in host: any WritingPartnerHost) {
         guard !formattingDirty.isEmpty, !isTidyScheduled else { return }
         isTidyScheduled = true
-        DispatchQueue.main.async { [weak self, weak textView, weak coordinator] in
+        DispatchQueue.main.async { [weak self, weak host] in
             guard let self else { return }
             self.isTidyScheduled = false
-            guard let textView, let coordinator else { return }
-            self.tidy(in: textView, coordinator: coordinator)
+            guard let host else { return }
+            self.tidy(in: host)
         }
     }
 
     /// Whether the Formatting voice plays in this editor: not for Slack (the Chat voice's), and in
     /// Source view only when turned on, since there the Markdown is what the person is looking at.
-    private func isFormattingOn(_ coordinator: SwashTextView.Coordinator) -> Bool {
-        coordinator.parent.flavor != .slack
-            && (coordinator.parent.isStyled || WritingPartnerDefaults.formattingInSource(defaults))
+    private func isFormattingOn(_ host: any WritingPartnerHost) -> Bool {
+        host.partnerFlavor != .slack
+            && (host.partnerIsStyled || WritingPartnerDefaults.formattingInSource(defaults))
     }
 
     /// Tidies the blocks the person changed and has since left. The block the caret is in waits.
-    private func tidy(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+    private func tidy(in host: any WritingPartnerHost) {
         let mode = WritingPartnerDefaults.mode(defaults)
         guard !formattingDirty.isEmpty, fixInFlight == nil, pendingBoundaries.isEmpty, !isScheduled,
-              mode != .off, !isPaused, !hasActiveIntroduction, !textView.hasMarkedText(),
-              textView.window != nil, textView.isEditable else { return }
-        guard isFormattingOn(coordinator) else { formattingDirty = []; return }
-        let raw = coordinator.rawText(of: textView)
-        let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+              mode != .off, !isPaused, !hasActiveIntroduction, !host.partnerHasMarkedText,
+              host.partnerCanEdit else { return }
+        guard isFormattingOn(host) else { formattingDirty = []; return }
+        let raw = host.partnerRawText
+        let selection = host.partnerRawSelection
         guard selection.length == 0 else { return }
-        let document = coordinator.formatting(for: raw).document
+        let document = host.partnerDocument(for: raw)
         // What touches the caret's block waits; the rest is tidied now
         let caretSpan = FormattingVoice.caretSpan(text: raw, document: document, caret: selection.location)
         let waiting = formattingDirty.filter { dirty in
@@ -825,7 +768,7 @@ final class WritingPartnerSession {
         let isActive: (PunctuationRule) -> Bool = { rule in
             WritingPartnerDefaults.isRuleEnabled(rule, self.defaults) && stats.isActive(rule)
         }
-        let fixes = FormattingVoice.edits(text: raw, document: document, flavor: coordinator.parent.flavor,
+        let fixes = FormattingVoice.edits(text: raw, document: document, flavor: host.partnerFlavor,
                                           regions: ready, caret: selection.location, isActive: isActive)
         guard !fixes.isEmpty else { return }
         let ns = raw as NSString
@@ -836,33 +779,33 @@ final class WritingPartnerSession {
                                playsInstantly: original.contains("\n") || fix.replacement.contains("\n") || fix.replacement.isEmpty)
         }
         if mode == .suggest {
-            offer(edits, triggerEnd: selection.location, in: textView, coordinator: coordinator)
+            offer(edits, triggerEnd: selection.location, in: host)
         } else {
-            play(Fix(remaining: edits, boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
+            play(Fix(remaining: edits, boundaries: [], isRetry: false), in: host)
         }
     }
 
     // MARK: Marks (#128)
 
     /// Marks `edits` (fixes the partner isn't sure of) instead of making or offering them.
-    private func addMarks(_ edits: [PartnerEdit], in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
-        let text = coordinator.rawText(of: textView) as NSString
+    private func addMarks(_ edits: [PartnerEdit], in host: any WritingPartnerHost) {
+        let text = host.partnerRawText as NSString
         let new = edits.map { edit -> PartnerUncertainMark in
             defer { nextMarkID += 1 }
             return PartnerUncertainMark(id: nextMarkID, edit: edit, candidates: [edit.replacement] + edit.alternatives)
         }
         let before = marks.count
         marks = PartnerMarks.adding(new, to: marks, kept: keptMarks, in: text)
-        refreshMarks(in: textView, coordinator: coordinator)
+        refreshMarks(in: host)
         if marks.count > before, WritingPartnerDefaults.announceMarks(defaults) {
-            announce("\(marks.count) to check", in: textView)
+            announce("\(marks.count) to check", in: host)
         }
     }
 
     /// Moves the marks through an edit. A mark the person edits is settled their way: it goes, and
     /// isn't made again here. One the partner's own edit replaced (an accepted candidate) just goes.
     private func moveMarks(through range: NSRange, replacement: String, byPerson: Bool,
-                           in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+                           in host: any WritingPartnerHost) {
         let (moved, edited) = PartnerMarks.moved(marks, through: range, replacement: replacement)
         marks = moved
         if byPerson { for mark in edited { keptMarks.insert(PartnerMarks.key(mark.original)) } }
@@ -880,33 +823,33 @@ final class WritingPartnerSession {
             return moved
         }
         if marks.isEmpty { isReviewing = false }
-        DispatchQueue.main.async { [weak self, weak textView, weak coordinator] in
-            guard let self, let textView, let coordinator else { return }
-            self.refreshMarks(in: textView, coordinator: coordinator)
+        DispatchQueue.main.async { [weak self, weak host] in
+            guard let self, let host else { return }
+            self.refreshMarks(in: host)
         }
     }
 
     /// Redraws the marks (not the one shown as a candidate) and reports their number.
-    func refreshMarks(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
-        let overlay = WritingPartnerOverlay.overlay(for: textView)
+    func refreshMarks(in host: any WritingPartnerHost) {
+        let overlay = host.partnerCanvas
         let rects = marks.filter { $0.id != activeMarkID }.flatMap {
-            WritingPartnerOverlay.rects(for: coordinator.storageRange(forRaw: $0.range, in: textView), in: textView)
+            host.partnerRects(forRaw: $0.range)
         }
-        overlay.showMarks(rects)
+        overlay?.showMarks(rects)
         onMarksChange?(marks.count)
     }
 
     /// Shows the mark at `index` with its candidate in place, in the manner of Suggest mode, and puts
     /// the caret just after it, so Tab or ⌥⏎ accepts and Esc keeps the text as written.
     private func showMark(at index: Int?, candidate: Int = 0, moveCaret: Bool = true,
-                          in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+                          in host: any WritingPartnerHost) {
         suggestions.removeAll { $0.markID != nil }
         guard let index, marks.indices.contains(index) else {
             activeMarkID = nil
-            if isReviewing { announce("Nothing left to check", in: textView) }
+            if isReviewing { announce("Nothing left to check", in: host) }
             isReviewing = false
-            refreshSuggestions(in: textView, coordinator: coordinator)
-            refreshMarks(in: textView, coordinator: coordinator)
+            refreshSuggestions(in: host)
+            refreshMarks(in: host)
             return
         }
         let mark = marks[index]
@@ -915,169 +858,155 @@ final class WritingPartnerSession {
         suggestions.append(Suggestion(edit: mark.edit(choosing: activeCandidate), triggerEnd: NSMaxRange(mark.range), markID: mark.id))
         suggestions.sort { $0.edit.range.location < $1.edit.range.location }
         if moveCaret {
-            let storage = coordinator.storageRange(forRaw: NSRange(location: NSMaxRange(mark.range), length: 0), in: textView)
             isMovingCaretToMark = true
-            textView.setSelectedRange(storage)
+            host.setPartnerRawSelection(NSRange(location: NSMaxRange(mark.range), length: 0), scrollToVisible: true)
             isMovingCaretToMark = false
-            textView.scrollRangeToVisible(storage)
         }
-        refreshSuggestions(in: textView, coordinator: coordinator)
-        refreshMarks(in: textView, coordinator: coordinator)
+        refreshSuggestions(in: host)
+        refreshMarks(in: host)
         let position = isReviewing ? "\(index + 1) of \(marks.count): " : ""
         let choice = mark.candidates.count > 1 ? " Showing “\(mark.candidates[activeCandidate])”." : ""
-        announce("To check \(position)\(mark.label).\(choice) Tab to accept, Escape to keep as written.", in: textView)
+        announce("To check \(position)\(mark.label).\(choice) Tab to accept, Escape to keep as written.", in: host)
     }
 
     private var isMovingCaretToMark = false
 
     /// Starts stepping through the marks from the first, in document order.
     @discardableResult
-    func reviewMarks(in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+    func reviewMarks(in host: any WritingPartnerHost) -> Bool {
         guard !marks.isEmpty, fixInFlight == nil else { return false }
         isReviewing = true
-        showMark(at: 0, in: textView, coordinator: coordinator)
+        showMark(at: 0, in: host)
         return true
     }
 
     /// Moves the review to the next (or previous) mark.
     @discardableResult
-    func stepMarks(by offset: Int, in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+    func stepMarks(by offset: Int, in host: any WritingPartnerHost) -> Bool {
         guard !marks.isEmpty, fixInFlight == nil else { return false }
         isReviewing = true
         let current = activeMarkID.flatMap { id in marks.firstIndex { $0.id == id } }
-        showMark(at: PartnerMarks.step(from: current, by: offset, count: marks.count), in: textView, coordinator: coordinator)
+        showMark(at: PartnerMarks.step(from: current, by: offset, count: marks.count), in: host)
         return true
     }
 
     /// Shows the shown mark's next candidate.
     @discardableResult
-    func nextCandidate(in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+    func nextCandidate(in host: any WritingPartnerHost) -> Bool {
         guard let id = activeMarkID, let index = marks.firstIndex(where: { $0.id == id }), marks[index].candidates.count > 1 else { return false }
         showMark(at: index, candidate: (activeCandidate + 1) % marks[index].candidates.count, moveCaret: false,
-                 in: textView, coordinator: coordinator)
+                 in: host)
         return true
     }
 
     /// Accepts `candidate` for the mark with `id` (from the context menu).
     @discardableResult
-    func acceptMark(id: Int, candidate: Int, in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+    func acceptMark(id: Int, candidate: Int, in host: any WritingPartnerHost) -> Bool {
         guard let index = marks.firstIndex(where: { $0.id == id }), fixInFlight == nil else { return false }
-        showMark(at: index, candidate: candidate, moveCaret: false, in: textView, coordinator: coordinator)
+        showMark(at: index, candidate: candidate, moveCaret: false, in: host)
         guard let shown = suggestions.first(where: { $0.markID == id }) else { return false }
         suggestions.removeAll { $0.markID == id }
-        refreshSuggestions(in: textView, coordinator: coordinator)
+        refreshSuggestions(in: host)
         activeMarkID = nil
-        play(Fix(remaining: [shown.edit], boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
+        play(Fix(remaining: [shown.edit], boundaries: [], isRetry: false), in: host)
         return true
     }
 
     /// Keeps the text as written for the mark with `id`: it goes, the same word or phrase isn't
     /// marked again in this document, and the rule that made it is less eager (as an undo is).
-    func keep(markID id: Int, alreadyPenalized: Bool = false, in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+    func keep(markID id: Int, alreadyPenalized: Bool = false, in host: any WritingPartnerHost) {
         guard let mark = marks.first(where: { $0.id == id }) else { return }
         suggestions.removeAll { $0.markID == id }
-        if !alreadyPenalized { penalize(mark.edit, in: textView) }
+        if !alreadyPenalized { penalize(mark.edit, in: host) }
         keptMarks.insert(PartnerMarks.key(mark.original))
         marks.removeAll { $0.id == id }
         let wasActive = activeMarkID == id
         if wasActive { activeMarkID = nil }
         if isReviewing, wasActive {
             let next = marks.firstIndex { $0.range.location >= mark.range.location }
-            showMark(at: next ?? (marks.isEmpty ? nil : 0), in: textView, coordinator: coordinator)
+            showMark(at: next ?? (marks.isEmpty ? nil : 0), in: host)
         } else {
-            refreshSuggestions(in: textView, coordinator: coordinator)
-            refreshMarks(in: textView, coordinator: coordinator)
+            refreshSuggestions(in: host)
+            refreshMarks(in: host)
         }
     }
 
     /// The mark under `point` (text view coordinates).
-    func mark(at point: NSPoint, in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> PartnerUncertainMark? {
+    func mark(at point: CGPoint, in host: any WritingPartnerHost) -> PartnerUncertainMark? {
         marks.first { mark in
-            WritingPartnerOverlay.rects(for: coordinator.storageRange(forRaw: mark.range, in: textView), in: textView)
+            host.partnerRects(forRaw: mark.range)
                 .contains { $0.insetBy(dx: -2, dy: -3).contains(point) }
         }
     }
 
     /// The caret moved: in a mark, its candidate is shown to settle on its own; out of it, hidden.
-    private func caretMovedForMarks(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+    private func caretMovedForMarks(in host: any WritingPartnerHost) {
         guard !marks.isEmpty, !isMovingCaretToMark, fixInFlight == nil else { return }
-        let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        let selection = host.partnerRawSelection
         let inside = selection.length == 0 ? PartnerMarks.index(at: selection.location, in: marks) : nil
         if let inside {
-            if marks[inside].id != activeMarkID { showMark(at: inside, moveCaret: false, in: textView, coordinator: coordinator) }
+            if marks[inside].id != activeMarkID { showMark(at: inside, moveCaret: false, in: host) }
         } else if activeMarkID != nil {
             activeMarkID = nil
             isReviewing = false
             suggestions.removeAll { $0.markID != nil }
-            refreshSuggestions(in: textView, coordinator: coordinator)
-            refreshMarks(in: textView, coordinator: coordinator)
+            refreshSuggestions(in: host)
+            refreshMarks(in: host)
         }
     }
 
-    private func announce(_ text: String, in textView: NSTextView) {
+    private func announce(_ text: String, in host: any WritingPartnerHost) {
         lastAnnouncement = text
-        NSAccessibility.post(element: textView, notification: .announcementRequested,
-                             userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+        host.partnerAnnounce(text)
     }
 
     // MARK: Suggestions (#103)
 
-    private func offer(_ edits: [PartnerEdit], triggerEnd: Int, in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
-        self.textView = textView
-        self.coordinator = coordinator
+    private func offer(_ edits: [PartnerEdit], triggerEnd: Int, in host: any WritingPartnerHost) {
+        currentHost = host
         for edit in edits {
             suggestions.removeAll { NSIntersectionRange($0.edit.range, edit.range).length > 0 }
             suggestions.append(Suggestion(edit: edit, triggerEnd: max(NSMaxRange(edit.range), triggerEnd)))
         }
         suggestions.sort { $0.edit.range.location < $1.edit.range.location }
-        refreshSuggestions(in: textView, coordinator: coordinator)
-        DispatchQueue.main.async { [weak self, weak textView, weak coordinator] in
-            guard let self, let textView, let coordinator else { return }
-            self.refreshSuggestions(in: textView, coordinator: coordinator)
+        refreshSuggestions(in: host)
+        DispatchQueue.main.async { [weak self, weak host] in
+            guard let self, let host else { return }
+            self.refreshSuggestions(in: host)
         }
         let summary = edits.map { "\($0.replacement) for \($0.original)" }.joined(separator: ", ")
         let announcement = "Suggestion: \(summary)"
         lastAnnouncement = announcement
-        NSAccessibility.post(
-            element: textView,
-            notification: .announcementRequested,
-            userInfo: [
-                .announcement: announcement,
-                .priority: NSAccessibilityPriorityLevel.medium.rawValue,
-            ]
-        )
+        host.partnerAnnounce(announcement)
     }
 
-    /// Redraws active suggestion underlines in `WritingPartnerOverlay`.
-    func refreshSuggestions(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
-        let overlay = WritingPartnerOverlay.overlay(for: textView)
+    /// Redraws active suggestion underlines on the host's canvas.
+    func refreshSuggestions(in host: any WritingPartnerHost) {
+        let overlay = host.partnerCanvas
         let rects = suggestions.flatMap {
-            WritingPartnerOverlay.rects(for: coordinator.storageRange(forRaw: $0.edit.range, in: textView), in: textView)
+            host.partnerRects(forRaw: $0.edit.range)
         }
-        overlay.showSuggestions(rects)
+        overlay?.showSuggestions(rects)
     }
 
     /// Removes all active suggestions without counting them against their rules.
-    func clearSuggestions(in textView: NSTextView?) {
+    func clearSuggestions(in host: (any WritingPartnerHost)?) {
         guard !suggestions.isEmpty else { return }
         suggestions = []
-        if let textView = textView ?? self.textView {
-            WritingPartnerOverlay.overlay(for: textView).showSuggestions([])
-        }
+        (host ?? currentHost)?.partnerCanvas?.showSuggestions([])
     }
 
     /// The suggestion drawn under `point` (text view coordinates), if any.
-    func suggestion(at point: NSPoint, in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Suggestion? {
+    func suggestion(at point: CGPoint, in host: any WritingPartnerHost) -> Suggestion? {
         suggestions.first { suggestion in
-            let storage = coordinator.storageRange(forRaw: suggestion.edit.range, in: textView)
-            return WritingPartnerOverlay.rects(for: storage, in: textView).contains { $0.insetBy(dx: -2, dy: -2).contains(point) }
+            return host.partnerRects(forRaw: suggestion.edit.range).contains { $0.insetBy(dx: -2, dy: -2).contains(point) }
         }
     }
 
     /// Suggestions that the current selection or caret is on or just after.
-    func suggestionsForCaret(in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> [Suggestion] {
+    func suggestionsForCaret(in host: any WritingPartnerHost) -> [Suggestion] {
         guard !suggestions.isEmpty else { return [] }
-        let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        let selection = host.partnerRawSelection
         if selection.length > 0 {
             return suggestions.filter { NSIntersectionRange(selection, $0.edit.range).length > 0 }
         }
@@ -1089,74 +1018,73 @@ final class WritingPartnerSession {
 
     /// Accepts the suggestion under `point` (pointer click).
     @discardableResult
-    func acceptSuggestion(at point: NSPoint, in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
-        guard let chosen = suggestion(at: point, in: textView, coordinator: coordinator) else { return false }
-        return accept([chosen], in: textView, coordinator: coordinator)
+    func acceptSuggestion(at point: CGPoint, in host: any WritingPartnerHost) -> Bool {
+        guard let chosen = suggestion(at: point, in: host) else { return false }
+        return accept([chosen], in: host)
     }
 
     /// Accepts the suggestion(s) at or just before the caret (Tab or ⌥⏎).
     @discardableResult
-    func acceptSuggestionAtCaret(in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
-        let matching = suggestionsForCaret(in: textView, coordinator: coordinator)
+    func acceptSuggestionAtCaret(in host: any WritingPartnerHost) -> Bool {
+        let matching = suggestionsForCaret(in: host)
         guard !matching.isEmpty else { return false }
-        return accept(matching, in: textView, coordinator: coordinator)
+        return accept(matching, in: host)
     }
 
     /// Accepts the suggestion at the caret/selection, or the latest active suggestion (Edit menu / VoiceOver).
     @discardableResult
-    func acceptSuggestion(in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
-        let matching = suggestionsForCaret(in: textView, coordinator: coordinator)
+    func acceptSuggestion(in host: any WritingPartnerHost) -> Bool {
+        let matching = suggestionsForCaret(in: host)
         let chosen = matching.isEmpty ? (suggestions.last.map { [$0] } ?? []) : matching
         guard !chosen.isEmpty else { return false }
-        return accept(chosen, in: textView, coordinator: coordinator)
+        return accept(chosen, in: host)
     }
 
-    private func accept(_ chosen: [Suggestion], in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+    private func accept(_ chosen: [Suggestion], in host: any WritingPartnerHost) -> Bool {
         guard !chosen.isEmpty, fixInFlight == nil else { return false }
         suggestions.removeAll { chosen.contains($0) }
         if let active = activeMarkID, chosen.contains(where: { $0.markID == active }) { activeMarkID = nil }
-        refreshSuggestions(in: textView, coordinator: coordinator)
-        play(Fix(remaining: chosen.map(\.edit), boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
+        refreshSuggestions(in: host)
+        play(Fix(remaining: chosen.map(\.edit), boundaries: [], isRetry: false), in: host)
         return true
     }
 
     /// Dismisses the suggestion at the caret (or all active suggestions) and counts it against its rules.
     @discardableResult
-    func dismissSuggestion(in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Bool {
+    func dismissSuggestion(in host: any WritingPartnerHost) -> Bool {
         guard !suggestions.isEmpty else { return false }
-        let matching = suggestionsForCaret(in: textView, coordinator: coordinator)
+        let matching = suggestionsForCaret(in: host)
         let toDismiss = matching.isEmpty ? suggestions : matching
         suggestions.removeAll { toDismiss.contains($0) }
-        for item in toDismiss { penalize(item.edit, in: textView) }
-        refreshSuggestions(in: textView, coordinator: coordinator)
+        for item in toDismiss { penalize(item.edit, in: host) }
+        refreshSuggestions(in: host)
         // Keeping a mark's text as written settles it, teaches the partner, and moves the review on
-        for item in toDismiss { if let id = item.markID { keep(markID: id, alreadyPenalized: true, in: textView, coordinator: coordinator) } }
+        for item in toDismiss { if let id = item.markID { keep(markID: id, alreadyPenalized: true, in: host) } }
         return true
     }
 
     // MARK: Playing a fix
 
-    /// The director for `textView`, made on first use and again if the editor changed.
+    /// The director for `host`, made on first use and again if the editor changed.
     @MainActor
-    private func director(for textView: NSTextView, coordinator: SwashTextView.Coordinator) -> (AgentTextDirector, WritingPartnerTarget) {
-        if let director, let target, target.textView === textView, target.coordinator === coordinator { return (director, target) }
-        let target = WritingPartnerTarget(textView: textView, coordinator: coordinator)
+    private func director(for host: any WritingPartnerHost) -> (AgentTextDirector, WritingPartnerTarget) {
+        if let director, let target, target.host === host { return (director, target) }
+        let target = WritingPartnerTarget(host: host)
         let director = AgentTextDirector(target: target, linger: 300)
-        let overlay = WritingPartnerOverlay.overlay(for: textView)
-        overlay.attach(carets: director.carets, target: target)
-        target.onGhostChange = { [weak overlay] in overlay?.render() }
+        let overlay = host.partnerCanvas
+        overlay?.attach(carets: director.carets, target: target)
+        target.onGhostChange = { [weak overlay] in overlay?.renderPartner() }
         target.onCommit = { [weak self] range, text, caret in self?.committed(range, text: text, caretBefore: caret) }
         self.director = director
         self.target = target
         return (director, target)
     }
 
-    private func play(_ fix: Fix, in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+    private func play(_ fix: Fix, in host: any WritingPartnerHost) {
         MainActor.assumeIsolated {
-            let (director, target) = director(for: textView, coordinator: coordinator)
+            let (director, target) = director(for: host)
             fixInFlight = fix
-            self.textView = textView
-            self.coordinator = coordinator
+            currentHost = host
             player = Task { @MainActor [weak self] in
                 await self?.run(director: director, target: target)
             }
@@ -1170,19 +1098,19 @@ final class WritingPartnerSession {
             fixInFlight = fix
             // The word it replaces is still where it was: the person may have changed it meanwhile
             let text = target.realText as NSString
-            guard WritingPartnerDefaults.mode(defaults) != .off, !isPaused, let textView = target.textView,
-                  !textView.hasMarkedText(), NSMaxRange(edit.range) <= text.length,
+            guard WritingPartnerDefaults.mode(defaults) != .off, !isPaused, let host = target.host,
+                  !host.partnerHasMarkedText, NSMaxRange(edit.range) <= text.length,
                   text.substring(with: edit.range) == edit.original else {
                 retry(fix)
                 return
             }
             pendingStep = edit
-            let animate = !WritingPartnerOverlay.reduceMotion && textView.window != nil && !edit.playsInstantly
+            let animate = !host.partnerReducesMotion && host.partnerIsOnScreen && !edit.playsInstantly
             let actionName = edit.actionName ?? WritingPartnerDefaults.actionName
             do {
                 try await director.perform(AgentTextEdit(from: edit.range.location, to: NSMaxRange(edit.range), text: edit.replacement),
                                            by: Self.agent, actionName: actionName,
-                                           options: AgentTypingOptions(selectMs: WritingPartnerOverlay.selectMs, animate: animate))
+                                           options: AgentTypingOptions(selectMs: Self.selectMs, animate: animate))
             } catch {
                 pendingStep = nil
                 target.clearGhost()
@@ -1207,7 +1135,7 @@ final class WritingPartnerSession {
         let closedSentence = pendingStep?.rules.contains(.terminalPunctuation) == true
         let rangeAfter = NSRange(location: range.location, length: (text as NSString).length)
         if let edit = pendingStep {
-            let voice = coordinator.map { WritingPartnerVoice(flavor: $0.parent.flavor) } ?? .punctuate
+            let voice = currentHost.map { WritingPartnerVoice(flavor: $0.partnerFlavor) } ?? .punctuate
             applied.append(Step(
                 voice: voice,
                 rules: edit.rules,
@@ -1233,8 +1161,8 @@ final class WritingPartnerSession {
                 ))
             }
         }
-        if !marks.isEmpty, let textView, let coordinator {
-            moveMarks(through: range, replacement: text, byPerson: false, in: textView, coordinator: coordinator)
+        if !marks.isEmpty, let host = currentHost {
+            moveMarks(through: range, replacement: text, byPerson: false, in: host)
         }
         let move = { (location: Int) -> Int in location >= NSMaxRange(range) ? location + delta : location }
         pendingBoundaries = pendingBoundaries.map { (move($0.location), $0.enterEndedLine) }
@@ -1246,9 +1174,9 @@ final class WritingPartnerSession {
         }
         // When the partner itself just closed a sentence, check any finished word immediately after it
         // so its first word gets a capital (#111).
-        if closedSentence, let textView, let coordinator {
-            let current = coordinator.rawText(of: textView) as NSString
-            let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        if closedSentence, let host = currentHost {
+            let current = host.partnerRawText as NSString
+            let selection = host.partnerRawSelection
             var scan = range.location + (text as NSString).length
             while scan < current.length, scan < selection.location {
                 let c = current.character(at: scan)
@@ -1276,18 +1204,18 @@ final class WritingPartnerSession {
                 }
                 return NSMaxRange(suggestion.edit.range) <= range.location ? suggestion : nil
             }
-            if let textView, let coordinator { refreshSuggestions(in: textView, coordinator: coordinator) }
+            if let host = currentHost { refreshSuggestions(in: host) }
         }
-        if let textView, let coordinator, hasPauseProvider {
-            let rawText = coordinator.rawText(of: textView)
-            let rawSelection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
-            if let current = BandleaderContextExtractor.extract(from: rawText, caret: rawSelection.location, flavor: coordinator.parent.flavor) {
+        if let host = currentHost, hasPauseProvider {
+            let rawText = host.partnerRawText
+            let rawSelection = host.partnerRawSelection
+            if let current = BandleaderContextExtractor.extract(from: rawText, caret: rawSelection.location, flavor: host.partnerFlavor) {
                 lastKnownParagraphRange = current.range
                 lastKnownParagraphText = current.paragraph
                 pauseDetector.updatePendingParagraph(current.paragraph, range: current.range, caret: rawSelection.location)
             }
         }
-        observeUndo(textView?.undoManager)
+        observeUndo(currentHost?.partnerUndoManager)
     }
 
     /// The person is about to change the text while a fix plays: move the fix with it.
@@ -1317,12 +1245,12 @@ final class WritingPartnerSession {
         fixInFlight = nil
         guard !fix.isCancelled, !fix.isRetry, !fix.boundaries.isEmpty,
               WritingPartnerDefaults.mode(defaults) == .automatic, !isPaused,
-              let textView, let coordinator, !textView.hasMarkedText() else {
+              let host = currentHost, !host.partnerHasMarkedText else {
             finish()
             return
         }
         pendingBoundaries = fix.boundaries + pendingBoundaries
-        punctuate(in: textView, coordinator: coordinator, isRetry: true)
+        punctuate(in: host, isRetry: true)
         if fixInFlight == nil { finish() }
     }
 
@@ -1330,14 +1258,14 @@ final class WritingPartnerSession {
     private func finish() {
         fixInFlight = nil
         player = nil
-        if isReviewing, activeMarkID == nil, let textView, let coordinator {
-            showMark(at: PartnerMarks.step(from: nil, by: 1, count: marks.count), in: textView, coordinator: coordinator)
+        if isReviewing, activeMarkID == nil, let host = currentHost {
+            showMark(at: PartnerMarks.step(from: nil, by: 1, count: marks.count), in: host)
         }
-        if let textView, let coordinator {
+        if let host = currentHost {
             if !pendingBoundaries.isEmpty {
-                didChange(in: textView, coordinator: coordinator)
+                didChange(in: host)
             } else {
-                scheduleTidy(in: textView, coordinator: coordinator)
+                scheduleTidy(in: host)
             }
         }
     }
@@ -1383,8 +1311,8 @@ final class WritingPartnerSession {
 
     /// Counts an undone or dismissed fix against its rules, tells the spell checker and session
     /// memory to leave any spelling words in it alone, and reports bandleader feedback (#120).
-    private func penalize(_ edit: PartnerEdit, in textView: NSTextView?) {
-        penalize(rules: edit.rules, spellingWords: edit.spellingWords, in: textView)
+    private func penalize(_ edit: PartnerEdit, in host: (any WritingPartnerHost)?) {
+        penalize(rules: edit.rules, spellingWords: edit.spellingWords, in: host)
         if let suggestionId = edit.bandleaderSuggestionId,
            let kind = edit.bandleaderSuggestionKind {
             sessionMemory.dismissWord(edit.original, replacement: edit.replacement, suggestionId: suggestionId)
@@ -1399,15 +1327,12 @@ final class WritingPartnerSession {
         }
     }
 
-    private func penalize(rules: [PunctuationRule], spellingWords: [String], in textView: NSTextView?) {
+    private func penalize(rules: [PunctuationRule], spellingWords: [String], in host: (any WritingPartnerHost)?) {
         var stats = WritingPartnerStats.load(defaults)
         for rule in rules where rule != .spelling { stats.undone(rule) }
         stats.save(defaults)
         sessionMemory.learnWords(spellingWords)
-        if let textView {
-            let tag = textView.spellCheckerDocumentTag
-            for word in spellingWords { NSSpellChecker.shared.ignoreWord(word, inSpellDocumentWithTag: tag) }
-        }
+        (host ?? currentHost)?.partnerIgnoreSpelling(spellingWords)
     }
 
     private func reportBandleaderFeedback(_ item: JazzTextFeedbackItem) {
@@ -1428,30 +1353,30 @@ final class WritingPartnerSession {
 
     // MARK: - Pause Scheduling & Bandleader Evaluation
 
-    private func schedulePauseCheck(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+    private func schedulePauseCheck(in host: any WritingPartnerHost) {
         pauseTask?.cancel()
         let delay = pauseDetector.pauseDelay
-        pauseTask = Task { @MainActor [weak self, weak textView, weak coordinator] in
+        pauseTask = Task { @MainActor [weak self, weak host] in
             do {
                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             } catch {
                 return
             }
-            guard let self, let textView, let coordinator else { return }
-            self.evaluatePause(in: textView, coordinator: coordinator)
+            guard let self, let host else { return }
+            self.evaluatePause(in: host)
         }
     }
 
-    private func triggerImmediatePause(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+    private func triggerImmediatePause(in host: any WritingPartnerHost) {
         pauseTask?.cancel()
-        pauseTask = Task { @MainActor [weak self, weak textView, weak coordinator] in
-            guard let self, let textView, let coordinator else { return }
-            self.evaluatePause(in: textView, coordinator: coordinator)
+        pauseTask = Task { @MainActor [weak self, weak host] in
+            guard let self, let host else { return }
+            self.evaluatePause(in: host)
         }
     }
 
     @MainActor
-    private func evaluatePause(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
+    private func evaluatePause(in host: any WritingPartnerHost) {
         pauseTask = nil
         guard WritingPartnerDefaults.mode(defaults) != .off, !isPaused, !hasActiveIntroduction else { return }
         let provider = WritingPartnerDefaults.provider(defaults)
@@ -1459,10 +1384,10 @@ final class WritingPartnerSession {
         guard override != nil || provider != .none else { return }
 
         guard let pause = pauseDetector.checkPause() else { return }
-        let rawText = coordinator.rawText(of: textView)
+        let rawText = host.partnerRawText
         let detectedLanguage = GrammarLanguageSupport.detectLanguage(in: rawText)
         WritingPartnerActiveVoice.shared.documentLanguage = detectedLanguage
-        guard let extracted = BandleaderContextExtractor.extract(from: rawText, caret: pause.caret, flavor: coordinator.parent.flavor) else { return }
+        guard let extracted = BandleaderContextExtractor.extract(from: rawText, caret: pause.caret, flavor: host.partnerFlavor) else { return }
 
         let stats = WritingPartnerStats.load(defaults)
         let spellingOn = WritingPartnerDefaults.spelling(defaults)
@@ -1472,16 +1397,16 @@ final class WritingPartnerSession {
             paragraph: extracted.paragraph,
             before: extracted.before,
             after: extracted.after,
-            flavor: coordinator.parent.flavor.jazzTextFlavor,
+            flavor: host.partnerFlavor.jazzTextFlavor,
             voices: voices,
             language: detectedLanguage == .english ? nil : detectedLanguage.rawValue,
             feedback: recentFeedback
         )
 
         leadTask?.cancel()
-        leadTask = Task { @MainActor [weak self, weak textView, weak coordinator] in
+        leadTask = Task { @MainActor [weak self, weak host] in
             defer { self?.leadTask = nil }
-            guard let self, let textView, let coordinator else { return }
+            guard let self, let host else { return }
             guard let result = await WritingBandleaderFactory.leadWithFallback(
                 request: request,
                 provider: provider,
@@ -1495,8 +1420,7 @@ final class WritingPartnerSession {
                 result.response,
                 for: extracted.paragraph,
                 paragraphRange: extracted.range,
-                in: textView,
-                coordinator: coordinator
+                in: host
             )
         }
     }
@@ -1506,20 +1430,19 @@ final class WritingPartnerSession {
         _ response: JazzTextLeadResponse,
         for paragraph: String,
         paragraphRange: NSRange,
-        in textView: NSTextView,
-        coordinator: SwashTextView.Coordinator
+        in host: any WritingPartnerHost
     ) {
         let mode = WritingPartnerDefaults.mode(defaults)
         guard mode != .off, !isPaused, !hasActiveIntroduction else { return }
         let spellingOn = WritingPartnerDefaults.spelling(defaults)
-        let rawText = coordinator.rawText(of: textView)
+        let rawText = host.partnerRawText
 
         let plan = BandleaderSuggestionPlanner.plan(
             response: response,
             paragraph: paragraph,
             paragraphRange: paragraphRange,
             documentText: rawText,
-            flavor: coordinator.parent.flavor,
+            flavor: host.partnerFlavor,
             mode: mode,
             spellingEnabled: spellingOn,
             memory: sessionMemory
@@ -1527,22 +1450,19 @@ final class WritingPartnerSession {
 
         self.paragraphVoiceSettings = plan.voiceSettings
 
-        // Register personal and team vocabulary words with NSSpellChecker so they are neither
-        // flagged with red underlines nor "corrected" away in this document (#120).
+        // Register personal and team vocabulary words with the system spell checker so they are
+        // neither flagged with red underlines nor "corrected" away in this document (#120).
         if !plan.vocabulary.isEmpty {
-            let tag = textView.spellCheckerDocumentTag
-            for word in plan.vocabulary {
-                NSSpellChecker.shared.ignoreWord(word, inSpellDocumentWithTag: tag)
-            }
+            host.partnerIgnoreSpelling(plan.vocabulary)
         }
 
         // Pause-tier grammar corrections (#111): above the threshold they play through the partner's
         // cursor, below it they're offered. A correction that overlaps one of the plan's is dropped.
-        let selection = coordinator.rawRange(forStorage: textView.selectedRange(), in: textView)
+        let selection = host.partnerRawSelection
         var grammarAutomatic: [PartnerEdit] = []
         var grammarOffered: [PartnerEdit] = []
         if !response.grammar.isEmpty {
-            let flavor = coordinator.parent.flavor
+            let flavor = host.partnerFlavor
             let stats = WritingPartnerStats.load(defaults, voice: WritingPartnerVoice(flavor: flavor))
             let isActive: (PunctuationRule) -> Bool = { [defaults = self.defaults] rule in
                 WritingPartnerDefaults.isRuleEnabled(rule, defaults) && stats.isActive(rule)
@@ -1573,13 +1493,13 @@ final class WritingPartnerSession {
         if !automaticEdits.isEmpty, !marks.isEmpty {
             // The partner became sure: its fix replaces the mark
             marks.removeAll { mark in automaticEdits.contains { NSIntersectionRange($0.range, mark.range).length > 0 } }
-            refreshMarks(in: textView, coordinator: coordinator)
+            refreshMarks(in: host)
         }
         if !offeredEdits.isEmpty {
             if marking {
-                addMarks(offeredEdits, in: textView, coordinator: coordinator)
+                addMarks(offeredEdits, in: host)
             } else {
-                offer(offeredEdits, triggerEnd: selection.location, in: textView, coordinator: coordinator)
+                offer(offeredEdits, triggerEnd: selection.location, in: host)
             }
         }
 
@@ -1589,7 +1509,7 @@ final class WritingPartnerSession {
                 inFlight.remaining.append(contentsOf: automaticEdits)
                 fixInFlight = inFlight
             } else {
-                play(Fix(remaining: automaticEdits, boundaries: [], isRetry: false), in: textView, coordinator: coordinator)
+                play(Fix(remaining: automaticEdits, boundaries: [], isRetry: false), in: host)
             }
         }
 
@@ -1606,21 +1526,19 @@ final class WritingPartnerSession {
                                        rules: [], spellingWords: [], actionName: WritingPartnerDefaults.suggestionActionName,
                                        bandleaderSuggestionId: suggestion.effectiveId, bandleaderSuggestionKind: suggestion.kind,
                                        bandleaderCheckId: suggestion.checkId, confidence: confidence)
-                addMarks([edit], in: textView, coordinator: coordinator)
+                addMarks([edit], in: host)
             }
             return
         }
 
         self.activeSuggestion = (suggestion: suggestion, paragraph: paragraph, paragraphRange: paragraphRange)
 
-        let overlay = WritingPartnerOverlay.overlay(for: textView)
         let rawStart = paragraphRange.location + suggestion.range.start
         let rawEnd = paragraphRange.location + suggestion.range.end
-        let storageRange = coordinator.storageRange(forRaw: NSRange(location: rawStart, length: max(0, rawEnd - rawStart)), in: textView)
-        let rects = WritingPartnerOverlay.rects(for: storageRange, in: textView)
-        let targetRect = rects.last ?? WritingPartnerOverlay.caretRect(at: storageRange.location, in: textView) ?? NSRect(x: 20, y: 20, width: 100, height: 20)
+        let rects = host.partnerRects(forRaw: NSRange(location: rawStart, length: max(0, rawEnd - rawStart)))
+        let targetRect = rects.last ?? host.partnerCaretRect(atRaw: rawStart) ?? CGRect(x: 20, y: 20, width: 100, height: 20)
 
-        overlay.showSuggestionPrompt(
+        host.partnerCanvas?.showSuggestionPrompt(
             suggestion: suggestion,
             at: targetRect,
             onAccept: { [weak self] in self?.acceptActiveSuggestion() },
@@ -1658,8 +1576,8 @@ final class WritingPartnerSession {
     }
 
     @MainActor
-    func triggerPauseCheckForTesting(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
-        evaluatePause(in: textView, coordinator: coordinator)
+    func triggerPauseCheckForTesting(in host: any WritingPartnerHost) {
+        evaluatePause(in: host)
     }
 
     // MARK: Undo
@@ -1687,10 +1605,7 @@ final class WritingPartnerSession {
         for rule in step.rules where rule != .spelling { stats.undone(rule) }
         stats.save(defaults, voice: step.voice)
         sessionMemory.learnWords(step.spellingWords)
-        if let textView {
-            let tag = textView.spellCheckerDocumentTag
-            for word in step.spellingWords { NSSpellChecker.shared.ignoreWord(word, inSpellDocumentWithTag: tag) }
-        }
+        currentHost?.partnerIgnoreSpelling(step.spellingWords)
         if let suggestionId = step.bandleaderSuggestionId,
            let kind = step.bandleaderSuggestionKind {
             sessionMemory.dismissWord(step.original, replacement: step.replacement, suggestionId: suggestionId)
@@ -1709,47 +1624,34 @@ final class WritingPartnerSession {
         if !WritingPartnerDefaults.undoReminderShown(defaults) {
             WritingPartnerDefaults.setUndoReminderShown(true, defaults)
             hasActiveUndoReminder = true
-            let announcement = PartnerUndoReminderView.messageText
-            lastAnnouncement = announcement
-            if let textView {
-                let rawLength = (coordinator?.rawText(of: textView) as NSString?)?.length ?? 0
-                let rawCaret = NSRange(location: min(step.caretBefore, rawLength), length: 0)
-                let storageCaret = coordinator?.storageRange(forRaw: rawCaret, in: textView).location ?? 0
-                MainActor.assumeIsolated {
-                    let targetRect = WritingPartnerOverlay.caretRect(at: storageCaret, in: textView)
-                        ?? NSRect(x: textView.textContainerOrigin.x, y: textView.textContainerOrigin.y, width: 2, height: 20)
-                    let overlay = WritingPartnerOverlay.overlay(for: textView)
-                    overlay.showUndoReminder(
-                        at: targetRect,
-                        onPause: { [weak self, weak textView] in
-                            guard let self else { return }
-                            self.dismissUndoReminder(in: textView)
-                            self.setPaused(true, in: textView)
-                        },
-                        onDismiss: { [weak self, weak textView] in
-                            self?.dismissUndoReminder(in: textView)
-                        }
-                    )
-                    NSAccessibility.post(
-                        element: textView,
-                        notification: .announcementRequested,
-                        userInfo: [
-                            .announcement: announcement,
-                            .priority: NSAccessibilityPriorityLevel.medium.rawValue,
-                        ]
-                    )
-                }
+            if let host = currentHost {
+                let announcement = host.partnerUndoReminderText
+                lastAnnouncement = announcement
+                let rawLength = (host.partnerRawText as NSString).length
+                let targetRect = host.partnerCaretRect(atRaw: min(step.caretBefore, rawLength))
+                    ?? CGRect(x: 0, y: 0, width: 2, height: 20)
+                host.partnerCanvas?.showUndoReminder(
+                    at: targetRect,
+                    text: announcement,
+                    onPause: { [weak self, weak host] in
+                        guard let self else { return }
+                        self.dismissUndoReminder(in: host)
+                        self.setPaused(true, in: host)
+                    },
+                    onDismiss: { [weak self, weak host] in
+                        self?.dismissUndoReminder(in: host)
+                    }
+                )
+                host.partnerAnnounce(announcement)
             }
         }
         // Undo selects the restored word; put the caret back where the person was typing, after
         // the editor has restyled the change
         let caret = step.caretBefore
         DispatchQueue.main.async { [weak self] in
-            guard let self, let textView = self.textView, let coordinator = self.coordinator else { return }
-            let length = (coordinator.rawText(of: textView) as NSString).length
-            let raw = NSRange(location: min(caret, length), length: 0)
-            textView.setSelectedRange(coordinator.storageRange(forRaw: raw, in: textView))
+            guard let self, let host = self.currentHost else { return }
+            let length = (host.partnerRawText as NSString).length
+            host.setPartnerRawSelection(NSRange(location: min(caret, length), length: 0), scrollToVisible: false)
         }
     }
 }
-#endif

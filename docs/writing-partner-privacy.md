@@ -6,16 +6,18 @@ Swash's writing partner works in tiers. This page lists, for each one, what leav
 
 The fixes made while you type all run on your device, with or without Swash Pro or an account. These are capital I, apostrophes, sentence capitals, full stops and question marks, `OK`, commas before "but", and spelling. The rules come from Pixerate's open editor package (`TextMechanics`). Spelling uses the system spell checker, in place of its autocorrect.
 
-## When you pause, on your Mac (macOS 26 and later)
+## When you pause, on your device (macOS 26 or iOS 26 and later)
 
-With Apple Intelligence available, the on-device tier reads the paragraph you just finished with Apple's on-device model. It fixes spelling and wrong words from context, tells a poem or list apart from prose, and suggests simple structure. **Nothing is sent anywhere**: the model runs on your Mac, and it reads only that paragraph. It keeps no memory between paragraphs.
+With Apple Intelligence available, the on-device tier reads the paragraph you just finished with Apple's on-device model. It fixes spelling and wrong words from context, tells a poem or list apart from prose, and suggests simple structure. **Nothing is sent anywhere**: the model runs on your Mac, iPhone or iPad, and it reads only that paragraph. It keeps no memory between paragraphs.
+
+With Swash Pro, this tier also takes over when Pixerate can't be reached: if a pause request gets no answer within a few seconds, the paragraph is read on your device instead, and nothing more is sent until the next pause.
 
 ## When you pause, through Pixerate (Swash Pro)
 
 Swash sends a writing-partner request to Pixerate only when **all** of these are true:
 
 - you have **Swash Pro** (bought in the App Store, shared through Family Sharing, or unlocked by signing in to an optional Pixerate account with Pixerate Pro or a complimentary grant);
-- the writing partner is on (Settings › Writing);
+- the writing partner is on (Settings › Writing on the Mac, Settings › Writing Partner on iPhone and iPad);
 - you've paused after finishing a sentence or leaving a paragraph.
 
 **No Pixerate account is required.** In the App Store version of Swash, StoreKit's signed `AppTransaction` and subscription transaction JWS (`signedTransactionInfo`) are verified with Pixerate to mint an App Store customer session (`X-Pixerate-App-Store-Customer`) and assign the short Support ID shown in Settings › Account.

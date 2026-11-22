@@ -27,6 +27,17 @@ final class IOSEditorController {
 
     var isAttached: Bool { textView != nil }
 
+    /// Whether the writing partner is paused for this document (#112, #109). Kept here rather than
+    /// in the editor's session, so switching between Source and Formatted keeps it.
+    private(set) var partnerPaused = false
+    /// Called when the partner pauses or resumes itself (the undo reminder's Pause button).
+    var onPartnerPauseChange: ((Bool) -> Void)?
+
+    func setPartnerPaused(_ paused: Bool) {
+        partnerPaused = paused
+        textView?.writingPartner?.setPaused(paused, in: textView?.writingPartnerHost)
+    }
+
     var selection: NSRange {
         textView?.markdownSelection ?? NSRange(location: 0, length: 0)
     }
@@ -38,6 +49,14 @@ final class IOSEditorController {
     func attach(_ textView: MarkdownEditingTextView) {
         self.textView = textView
         textView.controller = self
+        if let partner = textView.writingPartner {
+            if partner.isPaused != partnerPaused { partner.setPaused(partnerPaused, in: textView.writingPartnerHost) }
+            partner.onPauseChange = { [weak self] paused in
+                guard let self, paused != self.partnerPaused else { return }
+                self.partnerPaused = paused
+                self.onPartnerPauseChange?(paused)
+            }
+        }
     }
 
     func focus() {
@@ -56,6 +75,9 @@ class MarkdownEditingTextView: UITextView {
     var flavor: MarkdownFlavor = .github
     /// The document's file URL, for resolving relative and `[[wiki]]` note links in its folder.
     var baseURL: URL?
+    /// The writing partner and this editor as its host, set by the editor's coordinator (#109).
+    weak var writingPartner: WritingPartnerSession?
+    weak var writingPartnerHost: IOSWritingPartnerHost?
 
     /// The selection in raw-Markdown offsets.
     var markdownSelection: NSRange { selectedRange }
@@ -109,10 +131,77 @@ class MarkdownEditingTextView: UITextView {
         let outdent = UIKeyCommand(input: "\t", modifierFlags: .shift, action: #selector(outdentLine))
         indent.wantsPriorityOverSystemBehavior = true
         outdent.wantsPriorityOverSystemBehavior = true
-        return (super.keyCommands ?? []) + [indent, outdent]
+        var commands = (super.keyCommands ?? []) + [indent, outdent]
+        if let partner = writingPartner, partner.hasActiveIntroduction || partner.hasActiveUndoReminder
+            || partner.hasActiveSuggestion || !partner.suggestions.isEmpty {
+            let escape = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(dismissPartner))
+            escape.wantsPriorityOverSystemBehavior = true
+            commands.append(escape)
+        }
+        if writingPartner?.hasActiveSuggestion == true {
+            let accept = UIKeyCommand(input: "\r", modifierFlags: .alternate, action: #selector(acceptPartnerSuggestion))
+            accept.discoverabilityTitle = "Accept Suggestion"
+            commands.append(accept)
+        }
+        return commands
+    }
+
+    // MARK: Writing partner
+
+    /// Tab accepts the partner's suggestion at the caret (as on the Mac) before it indents.
+    @discardableResult
+    func acceptPartnerSuggestionAtCaret() -> Bool {
+        guard let partner = writingPartner, let host = writingPartnerHost else { return false }
+        if partner.hasActiveSuggestion {
+            partner.acceptActiveSuggestion()
+            return true
+        }
+        return partner.acceptSuggestionAtCaret(in: host)
+    }
+
+    @objc private func acceptPartnerSuggestion() {
+        acceptPartnerSuggestionAtCaret()
+    }
+
+    /// Esc: closes the partner's note, or dismisses the suggestion at the caret.
+    @objc private func dismissPartner() {
+        guard let partner = writingPartner, let host = writingPartnerHost else { return }
+        if partner.dismissIntroduction(in: host) { return }
+        if partner.dismissUndoReminder(in: host) { return }
+        if partner.hasActiveSuggestion {
+            partner.dismissActiveSuggestion()
+            return
+        }
+        partner.dismissSuggestion(in: host)
+    }
+
+    /// The partner's actions for the edit menu: a suggestion at the caret, the marks to check.
+    func writingPartnerMenu() -> UIMenu? {
+        guard let partner = writingPartner, let host = writingPartnerHost else { return nil }
+        var actions: [UIMenuElement] = []
+        let atCaret = partner.suggestionsForCaret(in: host)
+        if let suggestion = atCaret.last {
+            let isMark = suggestion.markID != nil
+            actions.append(UIAction(title: "Use “\(suggestion.edit.replacement)”", image: UIImage(systemName: "checkmark")) { [weak self] _ in
+                self?.acceptPartnerSuggestionAtCaret()
+            })
+            actions.append(UIAction(title: isMark ? "Keep as Written" : "Dismiss Suggestion", image: UIImage(systemName: "xmark")) { [weak partner, weak host] _ in
+                guard let partner, let host else { return }
+                partner.dismissSuggestion(in: host)
+            })
+        }
+        if !partner.marks.isEmpty, atCaret.isEmpty {
+            let count = partner.marks.count
+            actions.append(UIAction(title: count == 1 ? "Check 1 Mark" : "Check \(count) Marks", image: UIImage(systemName: "text.badge.checkmark")) { [weak partner, weak host] _ in
+                guard let partner, let host else { return }
+                partner.reviewMarks(in: host)
+            })
+        }
+        return actions.isEmpty ? nil : UIMenu(title: "Writing Partner", options: .displayInline, children: actions)
     }
 
     @objc private func indentLine() {
+        if acceptPartnerSuggestionAtCaret() { return }
         if let edit = MarkdownEditingCommands.indent(text: markdownText, selection: markdownSelection) {
             applyMarkdownEdit(edit, actionName: "Indent")
         } else {
@@ -132,6 +221,9 @@ class MarkdownEditingTextView: UITextView {
     /// no ⌘-click), and the Format submenu.
     func editMenu(for range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
         var actions = suggestedActions
+        if let partner = writingPartnerMenu() {
+            actions.insert(partner, at: 0)
+        }
         if let note = noteURL(at: markdownSelection) {
             let open = UIAction(title: "Open Note", image: UIImage(systemName: "doc.text")) { _ in
                 DocumentOpener.open(note)
