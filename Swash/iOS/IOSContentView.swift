@@ -190,6 +190,7 @@ struct IOSContentView: View {
         .toolbar { toolbar }
         .toolbar(distractionFree ? .hidden : .visible, for: .navigationBar)
         .toolbarRole(.editor)
+        .background(DocumentShareBridge(source: exportSource, model: features))
     }
 
     /// The editors ignore the top safe area so text scrolls under the bar; `topInset` is the
@@ -293,21 +294,23 @@ struct IOSContentView: View {
         }
     }
 
-    /// Shares the document file, so the share sheet shows its thumbnail and name; an unsaved
-    /// document shares its Markdown. Its own toolbar item, never in the overflow menu, where a
-    /// share sheet has no source view to anchor to.
+    /// Shares the document through the system share sheet (`IOSPresenter.shareDocument`),
+    /// providing multiple representations (formatted text for Notes, plain text for Messages,
+    /// Mail and Notion, the `.md` file for AirDrop and Save to Files, and a print formatter for
+    /// Print) along with custom actions for Export as PDF, Export as HTML, Copy as Rich Text,
+    /// and Copy HTML (GOTCHAS #55, #183).
     @ViewBuilder
     private var shareLink: some View {
-        if let fileURL {
-            ShareLink(item: fileURL, subject: Text(documentTitle)) {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-        } else {
-            ShareLink(item: document.text, subject: Text(documentTitle),
-                      preview: SharePreview(documentTitle)) {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
+        Button {
+            presentShareSheet()
+        } label: {
+            Label("Share", systemImage: "square.and.arrow.up")
         }
+        .disabled(features.exporting != nil)
+    }
+
+    private func presentShareSheet() {
+        IOSPresenter.shareDocument(source: exportSource, model: features)
     }
 
     /// Changing flavour converts the text in place, as on the Mac.
