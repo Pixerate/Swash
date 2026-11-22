@@ -34,7 +34,14 @@ struct CreateDocumentIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & OpensIntent {
-        let fileName = "\(title).md".replacingOccurrences(of: "/", with: "-")
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTitle: String
+        if trimmed.isEmpty || trimmed == "Untitled" || trimmed == "Untitled Note" || trimmed == "Shared Note" {
+            resolvedTitle = MarkdownTitleSuggestion.suggest(from: content) ?? "Untitled Note"
+        } else {
+            resolvedTitle = trimmed
+        }
+        let fileName = "\(MarkdownTitleSuggestion.cleanFileName(resolvedTitle)).md"
         #if os(macOS)
         let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
         try content.write(to: fileURL, atomically: true, encoding: .utf8)
@@ -42,7 +49,7 @@ struct CreateDocumentIntent: AppIntent {
         #else
         // Saved to Documents (On My iPhone › Swash) and opened in the document browser
         _ = fileName
-        let fileURL = try DocumentOpener.createDocument(title: title, text: content)
+        let fileURL = try DocumentOpener.createDocument(title: resolvedTitle, text: content)
         DocumentOpener.open(fileURL)
         #endif
         

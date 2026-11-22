@@ -429,9 +429,7 @@ final class IOSDocumentFeaturesModel {
 
     /// A file name without characters Files won't accept.
     static func fileName(_ title: String) -> String {
-        let cleaned = title.components(separatedBy: CharacterSet(charactersIn: "/:\\")).joined(separator: "-")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? "Untitled" : cleaned
+        MarkdownTitleSuggestion.cleanFileName(title)
     }
 }
 

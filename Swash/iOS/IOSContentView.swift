@@ -61,6 +61,15 @@ struct IOSContentView: View {
 
     var body: some View {
         documentLayout
+        .toolbarTitleMenu {
+            if let suggestion = titleSuggestion, canRenameToSuggestion {
+                Button {
+                    renameDocument(to: suggestion)
+                } label: {
+                    Label("Rename to “\(suggestion)”", systemImage: "pencil")
+                }
+            }
+        }
         .modifier(IOSDocumentFeatures(model: features, text: document.text, editor: editor))
         .sheet(isPresented: $showingSettings) {
             IOSSettingsView()
@@ -328,6 +337,45 @@ struct IOSContentView: View {
             return name
         }
         return "Untitled"
+    }
+
+    private var titleSuggestion: String? {
+        MarkdownTitleSuggestion.suggest(from: document.text)
+    }
+
+    private var canRenameToSuggestion: Bool {
+        guard let suggestion = titleSuggestion, !suggestion.isEmpty else { return false }
+        return documentTitle != suggestion
+    }
+
+    private func renameDocument(to newTitle: String) {
+        guard let sourceURL = fileURL else { return }
+        let ext = sourceURL.pathExtension.isEmpty ? "md" : sourceURL.pathExtension
+        let sanitized = IOSDocumentFeaturesModel.fileName(newTitle)
+        let parentFolder = sourceURL.deletingLastPathComponent()
+        var destinationURL = parentFolder.appendingPathComponent(sanitized).appendingPathExtension(ext)
+        if destinationURL.standardizedFileURL == sourceURL.standardizedFileURL { return }
+
+        var counter = 2
+        while FileManager.default.fileExists(atPath: destinationURL.path) && destinationURL.standardizedFileURL != sourceURL.standardizedFileURL {
+            destinationURL = parentFolder.appendingPathComponent("\(sanitized) \(counter)").appendingPathExtension(ext)
+            counter += 1
+        }
+
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer { if isAccessing { sourceURL.stopAccessingSecurityScopedResource() } }
+
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinatorError: NSError?
+        coordinator.coordinate(writingItemAt: sourceURL, options: .forMoving,
+                               writingItemAt: destinationURL, options: .forReplacing,
+                               error: &coordinatorError) { newSourceURL, newDestinationURL in
+            do {
+                try FileManager.default.moveItem(at: newSourceURL, to: newDestinationURL)
+            } catch {
+                print("Failed to rename document from \(newSourceURL) to \(newDestinationURL): \(error)")
+            }
+        }
     }
 
     private func folderAccessBanner(for folderURL: URL) -> some View {
