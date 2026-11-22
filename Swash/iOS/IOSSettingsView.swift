@@ -14,6 +14,13 @@ struct IOSSettingsView: View {
     @AppStorage("markdownFlavor") private var markdownFlavor: MarkdownFlavor = .github
     @Environment(\.dismiss) private var dismiss
 
+    private var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "–"
+        let build = info?["CFBundleVersion"] as? String ?? "–"
+        return "\(version) (\(build))"
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -30,7 +37,7 @@ struct IOSSettingsView: View {
                     StickerSetsSection()
                 }
                 Section {
-                    LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
+                    LabeledContent("Version", value: versionString)
                 }
             }
             .navigationTitle("Settings")
