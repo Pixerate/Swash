@@ -32,7 +32,8 @@ struct WritingOptions: Equatable {
     static let readableWidth: CGFloat = EditorTypography.readableWidth
 }
 
-enum WritingDefaults {
+/// Defaults keys only; nonisolated so intents can read them off the main actor.
+nonisolated enum WritingDefaults {
     static let focusMode = "focusMode"
     static let focusUnit = "focusUnit"
     static let typewriterScrolling = "typewriterScrolling"

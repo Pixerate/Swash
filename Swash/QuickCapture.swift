@@ -40,18 +40,20 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
         let panel = self.panel ?? makePanel()
         self.panel = panel
         let targetTitle = target?.window != nil ? target?.title : nil
-        let session = QuickNoteTidySession()
+        let session = self.session ?? QuickNoteTidySession()
         self.session = session
         panel.contentView = NSHostingView(rootView: QuickCaptureView(
             targetTitle: targetTitle,
             session: session,
             onCreate: { [weak self] text in
+                self?.clearDraft()
                 self?.close()
                 NSApp.activate()
                 NewDocumentSeed.createDocument(with: text)
             },
             onAppend: { [weak self] text in
                 guard let self = self, let target = self.target, let window = target.window else { return }
+                self.clearDraft()
                 self.close()
                 NSApp.activate()
                 window.makeKeyAndOrderFront(nil)
@@ -69,6 +71,11 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
 
     func close() {
         panel?.orderOut(nil)
+    }
+
+    func clearDraft() {
+        session?.clear()
+        session = nil
     }
 
     private func makePanel() -> NSPanel {
@@ -100,11 +107,10 @@ private final class QuickCapturePanel: NSPanel {
 
 struct QuickCaptureView: View {
     let targetTitle: String?
+    let session: QuickNoteTidySession
     let onCreate: (String) -> Void
     let onAppend: (String) -> Void
     let onCancel: () -> Void
-
-    @State private var session: QuickNoteTidySession
 
     init(
         targetTitle: String?,
@@ -120,7 +126,7 @@ struct QuickCaptureView: View {
         let resolvedSession = session ?? QuickNoteTidySession()
         resolvedSession.onCreate = onCreate
         resolvedSession.onAppend = onAppend
-        _session = State(initialValue: resolvedSession)
+        self.session = resolvedSession
     }
 
     var body: some View {
@@ -284,8 +290,12 @@ struct QuickNoteTextView: NSViewRepresentable {
             textView.string = session.text
             textView.delegate = context.coordinator
             session.textView = textView
+            let endLocation = (session.text as NSString).length
+            textView.setSelectedRange(NSRange(location: endLocation, length: 0))
             DispatchQueue.main.async {
                 textView.window?.makeFirstResponder(textView)
+                let currentEnd = (textView.string as NSString).length
+                textView.setSelectedRange(NSRange(location: currentEnd, length: 0))
             }
         }
         return scrollView
@@ -481,7 +491,7 @@ struct SwashMenuBarMenu: View {
 #Preview("Quick Capture Panel") {
     QuickCaptureView(
         targetTitle: "My Notes.md",
-        session: QuickNoteTidySession(),
+        session: QuickNoteTidySession(draftKey: nil),
         onCreate: { _ in },
         onAppend: { _ in },
         onCancel: {}

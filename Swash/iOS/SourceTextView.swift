@@ -116,11 +116,14 @@ struct SourceTextView: UIViewRepresentable {
         func textViewDidChange(_ textView: UITextView) {
             parent.text = textView.text
             if let host = partnerHost, !host.isApplyingPartnerEdit { writingPartner.didChange(in: host) }
+            (textView as? MarkdownEditingTextView)?.refreshFormattingBarState()
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
-            guard let textView = textView as? MarkdownEditingTextView, !textView.isApplyingEdit, let host = partnerHost else { return }
-            writingPartner.selectionDidChange(in: host)
+            if let textView = textView as? MarkdownEditingTextView, !textView.isApplyingEdit, let host = partnerHost {
+                writingPartner.selectionDidChange(in: host)
+            }
+            (textView as? MarkdownEditingTextView)?.refreshFormattingBarState()
         }
 
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {

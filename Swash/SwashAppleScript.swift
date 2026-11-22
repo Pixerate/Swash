@@ -84,9 +84,11 @@ final class SwashAppendToNoteCommand: NSScriptCommand {
         let position: SwashInsertPosition = heading.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .end : .underHeading
         do {
             let (url, _) = try SwashShortcutsEngine.findOrCreateDocument(pathOrTitle: pathOrTitle)
-            let existing = (try? SwashShortcutsEngine.readText(at: url)) ?? ""
-            let updated = SwashShortcutsEngine.insert(entry, into: existing, position: position, heading: heading, style: style)
-            try SwashShortcutsEngine.writeText(updated, to: url)
+            // One coordinated read-modify-write: a failed read throws instead of overwriting the
+            // note with just this entry
+            _ = try SwashShortcutsEngine.modifyText(at: url) { existing in
+                SwashShortcutsEngine.insert(entry, into: existing, position: position, heading: heading, style: style)
+            }
             return url.path
         } catch {
             scriptErrorNumber = NSInternalScriptError

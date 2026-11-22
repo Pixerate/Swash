@@ -169,6 +169,26 @@ nonisolated enum SwashShortcutsError: LocalizedError {
 /// Pure, cross-platform engine backing Swash's Shortcuts App Intents and AppleScript commands.
 nonisolated enum SwashShortcutsEngine {
 
+    // MARK: Main-Actor Helpers
+
+    /// Runs `work` on the main actor and waits for it. Intents call the engine off the main
+    /// actor, while `FolderAccessManager` and `MarkdownParser` are main-actor isolated.
+    static func onMain<T: Sendable>(_ work: @MainActor @Sendable () -> T) -> T {
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated(work)
+        }
+        return DispatchQueue.main.sync { MainActor.assumeIsolated(work) }
+    }
+
+    /// Starts security-scoped access to `folder` through `FolderAccessManager`, if granted.
+    static func ensureFolderAccess(_ folder: URL) {
+        onMain { _ = FolderAccessManager.shared.ensureAccess(for: folder) }
+    }
+
+    static func detectFlavor(_ markdown: String) -> MarkdownFlavor {
+        onMain { MarkdownParser.detectFlavor(markdown) }
+    }
+
     // MARK: Document Discovery & Resolution
 
     /// Returns the candidate root directories where Swash looks for Markdown documents:
@@ -198,7 +218,7 @@ nonisolated enum SwashShortcutsEngine {
         if let bookmarked = defaults.dictionary(forKey: "swash_security_scoped_folder_bookmarks") as? [String: Data] {
             for path in bookmarked.keys.sorted() {
                 let folderURL = URL(fileURLWithPath: path)
-                _ = FolderAccessManager.shared.ensureAccess(for: folderURL)
+                ensureFolderAccess(folderURL)
                 add(folderURL)
             }
         }
@@ -209,7 +229,7 @@ nonisolated enum SwashShortcutsEngine {
     static func defaultWritableRoot(from roots: [URL]? = nil) throws -> URL {
         if let first = roots?.first {
             let std = first.standardizedFileURL
-            _ = FolderAccessManager.shared.ensureAccess(for: std)
+            ensureFolderAccess(std)
             try FileManager.default.createDirectory(at: std, withIntermediateDirectories: true)
             return std
         }
@@ -235,7 +255,7 @@ nonisolated enum SwashShortcutsEngine {
 
         for root in effectiveRoots {
             let std = root.standardizedFileURL
-            _ = FolderAccessManager.shared.ensureAccess(for: std)
+            ensureFolderAccess(std)
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: std.path, isDirectory: &isDir) else { continue }
             if isDir.boolValue {
@@ -253,7 +273,7 @@ nonisolated enum SwashShortcutsEngine {
     static func documentSummary(for url: URL, text: String? = nil, roots: [URL] = []) -> SwashDocumentSummary {
         let std = url.standardizedFileURL
         let parent = std.deletingLastPathComponent()
-        _ = FolderAccessManager.shared.ensureAccess(for: parent)
+        ensureFolderAccess(parent)
         let content = text ?? (try? readText(at: std)) ?? ""
         let values = try? std.resourceValues(forKeys: [.contentModificationDateKey])
         let modified = values?.contentModificationDate
@@ -374,7 +394,7 @@ nonisolated enum SwashShortcutsEngine {
         if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") {
             let expanded = (trimmed as NSString).expandingTildeInPath
             let direct = URL(fileURLWithPath: expanded).standardizedFileURL
-            _ = FolderAccessManager.shared.ensureAccess(for: direct.deletingLastPathComponent())
+            ensureFolderAccess(direct.deletingLastPathComponent())
             var isDir: ObjCBool = false
             if FileManager.default.fileExists(atPath: direct.path, isDirectory: &isDir), !isDir.boolValue {
                 return direct
@@ -385,6 +405,9 @@ nonisolated enum SwashShortcutsEngine {
                     return withMD
                 }
             }
+            // A path names one file: when it's gone (moved, or access lapsed), don't fall back to
+            // some other note with the same title, or an append would land in the wrong file
+            return nil
         }
 
         let effectiveRoots = roots ?? defaultRootFolders()
@@ -393,7 +416,7 @@ nonisolated enum SwashShortcutsEngine {
         // 2. Direct relative path under any root
         for root in effectiveRoots {
             let candidate = root.standardizedFileURL.appendingPathComponent(relative).standardizedFileURL
-            _ = FolderAccessManager.shared.ensureAccess(for: candidate.deletingLastPathComponent())
+            ensureFolderAccess(candidate.deletingLastPathComponent())
             var isDir: ObjCBool = false
             if FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir), !isDir.boolValue {
                 return candidate
@@ -452,7 +475,7 @@ nonisolated enum SwashShortcutsEngine {
     /// Reads a Markdown document from disk using `NSFileCoordinator` and `SwashDocument.decode`.
     static func readText(at url: URL) throws -> String {
         let std = url.standardizedFileURL
-        _ = FolderAccessManager.shared.ensureAccess(for: std.deletingLastPathComponent())
+        ensureFolderAccess(std.deletingLastPathComponent())
         var coordinatorError: NSError?
         var readResult: Result<String, Error> = .failure(SwashShortcutsError.unreadableDocument(std.lastPathComponent))
         let coordinator = NSFileCoordinator(filePresenter: nil)
@@ -477,7 +500,7 @@ nonisolated enum SwashShortcutsEngine {
     static func writeText(_ text: String, to url: URL) throws {
         let std = url.standardizedFileURL
         let folder = std.deletingLastPathComponent()
-        _ = FolderAccessManager.shared.ensureAccess(for: folder)
+        ensureFolderAccess(folder)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         var coordinatorError: NSError?
         var writeError: Error?
@@ -499,7 +522,7 @@ nonisolated enum SwashShortcutsEngine {
     @discardableResult
     static func modifyText(at url: URL, _ change: (String) -> String) throws -> String {
         let std = url.standardizedFileURL
-        _ = FolderAccessManager.shared.ensureAccess(for: std.deletingLastPathComponent())
+        ensureFolderAccess(std.deletingLastPathComponent())
         var coordinatorError: NSError?
         var result: Result<String, Error> = .failure(SwashShortcutsError.unreadableDocument(std.lastPathComponent))
         let coordinator = NSFileCoordinator(filePresenter: nil)
@@ -902,7 +925,7 @@ nonisolated enum SwashShortcutsEngine {
         flavor: MarkdownFlavor? = nil,
         title: String = "Document"
     ) -> String {
-        let effectiveFlavor = flavor ?? MarkdownParser.detectFlavor(markdown)
+        let effectiveFlavor = flavor ?? detectFlavor(markdown)
         switch format {
         case .markdown:
             return markdown
@@ -937,7 +960,7 @@ nonisolated enum SwashShortcutsEngine {
 
     /// Extracts plain text from leaf blocks without Markdown syntax.
     static func plainText(from markdown: String, flavor: MarkdownFlavor? = nil) -> String {
-        let effectiveFlavor = flavor ?? MarkdownParser.detectFlavor(markdown)
+        let effectiveFlavor = flavor ?? detectFlavor(markdown)
         var lines: [String] = []
         func visit(_ node: MarkdownNode) {
             switch node.kind {
@@ -963,8 +986,8 @@ nonisolated enum SwashShortcutsEngine {
         from source: MarkdownFlavor? = nil,
         to target: MarkdownFlavor
     ) -> String {
-        let effectiveSource = source ?? MarkdownParser.detectFlavor(markdown)
-        return MarkdownParser.convert(markdown, from: effectiveSource, to: target)
+        let effectiveSource = source ?? detectFlavor(markdown)
+        return onMain { MarkdownParser.convert(markdown, from: effectiveSource, to: target) }
     }
 
     // MARK: To-Dos, Outline & Statistics
@@ -980,17 +1003,27 @@ nonisolated enum SwashShortcutsEngine {
         let normalized = markdown
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
-        let codeRanges = MarkdownParser.codeRanges(in: normalized)
         let lines = normalized.components(separatedBy: "\n")
+        // Lines inside code blocks, found on the main actor (where `MarkdownParser` lives)
+        let codeLines: Set<Int> = onMain {
+            let codeRanges = MarkdownParser.codeRanges(in: normalized)
+            var result: Set<Int> = []
+            var offset = 0
+            for (index, line) in normalized.components(separatedBy: "\n").enumerated() {
+                let length = (line as NSString).length
+                if codeRanges.blockIntersects(NSRange(location: offset, length: length)) { result.insert(index) }
+                offset += length + 1
+            }
+            return result
+        }
         var items: [SwashTodoItem] = []
         var offset = 0
 
         for (index, line) in lines.enumerated() {
             let length = (line as NSString).length
-            let lineRange = NSRange(location: offset, length: length)
             defer { offset += length + 1 }
 
-            guard !codeRanges.blockIntersects(lineRange) else { continue }
+            guard !codeLines.contains(index) else { continue }
             let nsLine = line as NSString
             guard let match = taskLineRegex.firstMatch(in: line, range: NSRange(location: 0, length: nsLine.length)) else {
                 continue
@@ -1098,6 +1131,15 @@ nonisolated enum SwashShortcutsEngine {
 // MARK: - App Intents, Entities & Shortcuts
 
 #if !SWASH_SHORTCUTS_TEST_RUNNER
+
+/// Runs `body` with the folder a Shortcut picked, holding its security-scoped access meanwhile:
+/// a picked folder is only readable (and writable) between start and stop.
+nonisolated func withPickedFolder<T>(_ folder: IntentFile?, _ body: (URL?) throws -> T) rethrows -> T {
+    guard let url = folder?.fileURL else { return try body(nil) }
+    let accessing = url.startAccessingSecurityScopedResource()
+    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+    return try body(url)
+}
 
 nonisolated extension MarkdownWrapperStyle: AppEnum {
     static var typeDisplayRepresentation: TypeDisplayRepresentation = "Markdown Style"
@@ -1410,16 +1452,17 @@ struct FindOrCreateDocumentIntent: AppIntent {
     @Parameter(title: "Initial Content", default: "")
     var initialContent: String
 
-    @Parameter(title: "Folder")
+    @Parameter(title: "Folder", supportedContentTypes: [.folder])
     var folder: IntentFile?
 
     func perform() async throws -> some IntentResult & ReturnsValue<SwashDocumentEntity> {
-        let rootURL = folder?.fileURL
-        let (url, _) = try SwashShortcutsEngine.findOrCreateDocument(
-            pathOrTitle: pathOrTitle,
-            initialContent: initialContent,
-            in: rootURL
-        )
+        let (url, _) = try withPickedFolder(folder) { rootURL in
+            try SwashShortcutsEngine.findOrCreateDocument(
+                pathOrTitle: pathOrTitle,
+                initialContent: initialContent,
+                in: rootURL
+            )
+        }
         return .result(value: SwashDocumentEntity(url: url))
     }
 }
@@ -1441,16 +1484,19 @@ struct CreateDocumentFromTemplateIntent: AppIntent {
     @Parameter(title: "Variables (key=value per line)", default: "")
     var variables: String
 
-    @Parameter(title: "Folder")
+    @Parameter(title: "Folder", supportedContentTypes: [.folder])
     var folder: IntentFile?
 
     func perform() async throws -> some IntentResult & ReturnsValue<SwashDocumentEntity> {
-        let clipboard = await SwashLiveDocuments.currentClipboardString()
         let parsedVars = SwashShortcutsEngine.parseVariables(variables)
         let now = Date()
         let rawTitlePattern = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? SwashShortcutsEngine.defaultTitlePattern(for: template)
             : title
+        let bodyTemplate = SwashShortcutsEngine.templateBody(for: template, customBody: customTemplate)
+        // Reading the pasteboard asks for permission on iOS: only when the template uses it
+        let usesClipboard = [rawTitlePattern, bodyTemplate].contains { $0.localizedCaseInsensitiveContains("clipboard") }
+        let clipboard = usesClipboard ? await SwashLiveDocuments.currentClipboardString() : ""
         let expandedPath = SwashShortcutsEngine.expandTemplate(
             rawTitlePattern,
             title: title,
@@ -1459,7 +1505,6 @@ struct CreateDocumentFromTemplateIntent: AppIntent {
             date: now
         )
         let noteTitle = URL(fileURLWithPath: expandedPath).deletingPathExtension().lastPathComponent
-        let bodyTemplate = SwashShortcutsEngine.templateBody(for: template, customBody: customTemplate)
         let expandedBody = SwashShortcutsEngine.expandTemplate(
             bodyTemplate,
             title: noteTitle,
@@ -1467,11 +1512,13 @@ struct CreateDocumentFromTemplateIntent: AppIntent {
             clipboard: clipboard,
             date: now
         )
-        let (url, _) = try SwashShortcutsEngine.findOrCreateDocument(
-            pathOrTitle: expandedPath,
-            initialContent: expandedBody,
-            in: folder?.fileURL
-        )
+        let (url, _) = try withPickedFolder(folder) { rootURL in
+            try SwashShortcutsEngine.findOrCreateDocument(
+                pathOrTitle: expandedPath,
+                initialContent: expandedBody,
+                in: rootURL
+            )
+        }
         return .result(value: SwashDocumentEntity(url: url))
     }
 }
@@ -1555,20 +1602,19 @@ struct FindDocumentsIntent: AppIntent {
     @Parameter(title: "Search Scope", default: .nameAndContent)
     var scope: SwashSearchScope
 
-    @Parameter(title: "Folder")
+    @Parameter(title: "Folder", supportedContentTypes: [.folder])
     var folder: IntentFile?
 
     @Parameter(title: "Limit", default: 20)
     var limit: Int
 
     func perform() async throws -> some IntentResult & ReturnsValue<[SwashDocumentEntity]> {
-        let roots = folder?.fileURL.map { [$0] }
-        let summaries = SwashShortcutsEngine.findDocuments(
+        let summaries = withPickedFolder(folder) { folderURL in SwashShortcutsEngine.findDocuments(
             query: query,
             scope: scope,
-            in: roots,
+            in: folderURL.map { [$0] },
             limit: max(1, min(limit, 200))
-        )
+        ) }
         return .result(value: summaries.map(SwashDocumentEntity.init(summary:)))
     }
 }
@@ -1746,7 +1792,7 @@ struct GetTodosIntent: AppIntent {
     @Parameter(title: "Document")
     var document: SwashDocumentEntity?
 
-    @Parameter(title: "Folder")
+    @Parameter(title: "Folder", supportedContentTypes: [.folder])
     var folder: IntentFile?
 
     @Parameter(title: "Status", default: .open)
@@ -1758,9 +1804,10 @@ struct GetTodosIntent: AppIntent {
             let text = try SwashShortcutsEngine.readText(at: document.fileURL)
             items = SwashShortcutsEngine.extractTodos(from: text, status: status, file: document.fileURL)
         } else {
-            let roots = folder?.fileURL.map { [$0] }
-            let files = SwashShortcutsEngine.discoverFiles(in: roots)
-            items = SwashShortcutsEngine.extractTodos(in: files, status: status)
+            items = withPickedFolder(folder) { folderURL in
+                let files = SwashShortcutsEngine.discoverFiles(in: folderURL.map { [$0] })
+                return SwashShortcutsEngine.extractTodos(in: files, status: status)
+            }
         }
         return .result(value: items.map(\.text))
     }
@@ -1819,7 +1866,7 @@ struct GetDocumentStatisticsIntent: AppIntent {
     @Parameter(title: "Document")
     var document: SwashDocumentEntity?
 
-    @Parameter(title: "Folder")
+    @Parameter(title: "Folder", supportedContentTypes: [.folder])
     var folder: IntentFile?
 
     @Parameter(title: "Markdown Text (if no Document or Folder)", default: "")
@@ -1830,9 +1877,10 @@ struct GetDocumentStatisticsIntent: AppIntent {
         if let document {
             let content = try SwashShortcutsEngine.readText(at: document.fileURL)
             stats = SwashShortcutsEngine.calculateStatistics(for: content)
-        } else if let folderURL = folder?.fileURL {
-            let files = SwashShortcutsEngine.discoverFiles(in: [folderURL])
-            stats = SwashShortcutsEngine.calculateStatistics(forFiles: files)
+        } else if folder != nil {
+            stats = withPickedFolder(folder) { folderURL in
+                SwashShortcutsEngine.calculateStatistics(forFiles: SwashShortcutsEngine.discoverFiles(in: folderURL.map { [$0] }))
+            }
         } else {
             stats = SwashShortcutsEngine.calculateStatistics(for: text)
         }
