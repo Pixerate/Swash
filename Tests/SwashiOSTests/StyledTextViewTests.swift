@@ -301,6 +301,117 @@ final class StyledTextViewTests: XCTestCase {
         XCTAssertFalse(e.textView.isShowingFormatPanel, "the keyboard comes back the next time editing starts")
     }
 
+    func testRecentFormatCommandsStoreOrderingCapAndPersistence() throws {
+        let suiteName = "SwashRecentFormatTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = RecentFormatCommands(defaults: defaults)
+        XCTAssertEqual(
+            store.commands,
+            [.bold, .italic, .link, .bulletList, .heading(1)],
+            "seeds with sensible defaults when UserDefaults is empty"
+        )
+
+        // Using an existing command moves it to the front without duplicating
+        store.record(.link)
+        XCTAssertEqual(store.commands, [.link, .bold, .italic, .bulletList, .heading(1)])
+
+        // Using a new variant adds it at the front, reaching the cap of 6
+        store.record(.heading(2))
+        XCTAssertEqual(store.commands, [.heading(2), .link, .bold, .italic, .bulletList, .heading(1)])
+        XCTAssertEqual(store.commands.count, RecentFormatCommands.maxCount)
+
+        // Recording beyond the cap drops the oldest command
+        store.record(.quote)
+        XCTAssertEqual(store.commands, [.quote, .heading(2), .link, .bold, .italic, .bulletList])
+        XCTAssertEqual(store.commands.count, RecentFormatCommands.maxCount)
+
+        store.record(.taskList)
+        XCTAssertEqual(store.commands, [.taskList, .quote, .heading(2), .link, .bold, .italic])
+
+        // Unavailable commands on iOS are ignored
+        store.record(.table)
+        store.record(.footnote)
+        XCTAssertEqual(store.commands, [.taskList, .quote, .heading(2), .link, .bold, .italic])
+
+        // Persists across store instances (simulating app relaunch)
+        let relaunched = RecentFormatCommands(defaults: defaults)
+        XCTAssertEqual(relaunched.commands, [.taskList, .quote, .heading(2), .link, .bold, .italic])
+
+        // Reset restores the default seed
+        relaunched.reset()
+        XCTAssertEqual(relaunched.commands, RecentFormatCommands.defaultCommands)
+    }
+
+    func testKeyboardBarShowsRecentFormatsAndSelectedState() throws {
+        let suiteName = "SwashKeyboardBarTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let e = try editor("Plain\n\n**bold** and [site](https://example.com)\n\n## Subheading\n\n1. first")
+        e.textView.recentFormats = RecentFormatCommands(defaults: defaults)
+
+        XCTAssertEqual(
+            e.textView.recentFormatButtons.map { $0.accessibilityLabel },
+            ["Bold", "Italic", "Link", "Bullet List", "Heading 1"],
+            "initial bar shows the seeded recent commands"
+        )
+
+        // Using Heading 2 puts that variant at the front of the bar and applies it to "Plain"
+        e.caret(after: "Plain")
+        e.textView.invokeFormatCommand(.heading(2))
+        e.pump()
+        XCTAssertEqual(
+            e.textView.recentFormatButtons.map { $0.accessibilityLabel },
+            ["Heading 2", "Bold", "Italic", "Link", "Bullet List", "Heading 1"]
+        )
+        XCTAssertEqual(e.textView.recentButton(for: .heading(2))?.isSelected, true, "Heading 2 button shows selected on the heading line")
+
+        // Exceeding 6 recents caps the bar at 6 recent buttons
+        e.textView.invokeFormatCommand(.numberedList)
+        e.pump()
+        XCTAssertEqual(e.textView.recentFormatButtons.count, RecentFormatCommands.maxCount)
+        XCTAssertEqual(e.textView.recentFormatButtons.first?.accessibilityLabel, "Numbered List")
+        XCTAssertNil(e.textView.recentButton(for: .heading(1)), "oldest recent dropped past cap")
+        XCTAssertEqual(e.textView.recentButton(for: .numberedList)?.isSelected, true)
+
+        // Caret inside **bold** selects the Bold button and clears Numbered List
+        e.caret(after: "**bo")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertEqual(e.textView.recentButton(for: .bold)?.isSelected, true)
+        XCTAssertEqual(e.textView.recentButton(for: .numberedList)?.isSelected, false)
+        XCTAssertEqual(e.textView.recentButton(for: .heading(2))?.isSelected, false)
+
+        // Caret inside link selects the Link button
+        e.caret(after: "[si")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertEqual(e.textView.recentButton(for: .link)?.isSelected, true)
+        XCTAssertEqual(e.textView.recentButton(for: .bold)?.isSelected, false)
+    }
+
+    func testFormatPanelOffersEveryAvailableIOSFormatGroupedByManifestGroup() throws {
+        let panelEntries = FormatManifestLayout.formatPanelEntries
+        let expectedMenuEntries = FormatManifest.entries(for: .menu).filter(\.command.isAvailableOnIOS)
+        XCTAssertEqual(panelEntries.map(\.command), expectedMenuEntries.map(\.command))
+        XCTAssertTrue(panelEntries.allSatisfy(\.command.isAvailableOnIOS))
+
+        let allAvailableCommands: [FormatCommand] = [
+            .bold, .italic, .strikethrough, .code, .link,
+            .heading(1), .heading(2), .heading(3), .paragraph,
+            .bulletList, .numberedList, .taskList, .quote, .codeBlock,
+        ]
+        for command in allAvailableCommands {
+            XCTAssertTrue(panelEntries.contains { $0.command == command }, "panel includes \(command)")
+        }
+
+        let panel = FormatPanel(entries: panelEntries, activeFormats: [.bold, .heading(2)], apply: { _ in }, close: {})
+        XCTAssertEqual(panel.textStyles.map(\.command), [.heading(1), .heading(2), .heading(3), .paragraph])
+        XCTAssertEqual(panel.groups.count, 2)
+        XCTAssertEqual(panel.groups.first?.map(\.command), [.bold, .italic, .strikethrough, .code, .link])
+        XCTAssertEqual(panel.groups.last?.map(\.command), [.bulletList, .numberedList, .taskList, .quote, .codeBlock])
+    }
+
     // MARK: "/" block menu
 
     private func blockMenuButtons(in e: EditorHarness) -> [String: UIButton] {

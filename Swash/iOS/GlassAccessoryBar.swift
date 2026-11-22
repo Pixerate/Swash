@@ -17,17 +17,22 @@ import PixerateMarkdown
 class GlassAccessoryBar: UIView {
     static let height: CGFloat = 60
 
+    private let stack: UIStackView
+
+    /// The scrolling item views currently arranged in the bar.
+    var itemViews: [UIView] { stack.arrangedSubviews }
+
     /// - Parameters:
     ///   - items: The scrolling items, in order.
     ///   - trailing: A button kept at the trailing edge in its own glass circle (Hide Keyboard, Close).
     ///   - groupedInCapsule: Puts the items in one glass capsule (plain buttons inside), as the
     ///     system keyboard toolbars do. Otherwise each item brings its own glass (chips).
     init(items: [UIView], trailing: UIButton?, groupedInCapsule: Bool) {
+        stack = UIStackView(arrangedSubviews: items)
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.height))
         autoresizingMask = .flexibleWidth
         backgroundColor = .clear
 
-        let stack = UIStackView(arrangedSubviews: items)
         stack.axis = .horizontal
         stack.alignment = .center
         stack.spacing = groupedInCapsule ? 2 : 8
@@ -102,6 +107,17 @@ class GlassAccessoryBar: UIView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    /// Replaces the scrolling items in place without recreating the bar.
+    func setItems(_ items: [UIView]) {
+        for view in stack.arrangedSubviews {
+            stack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        for item in items {
+            stack.addArrangedSubview(item)
+        }
+    }
+
     /// A plain icon button for a capsule bar.
     static func iconButton(symbol: String, label: String, action: UIAction? = nil, menu: UIMenu? = nil) -> UIButton {
         var configuration = UIButton.Configuration.plain()
@@ -111,6 +127,11 @@ class GlassAccessoryBar: UIView {
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
         // Not `primaryAction:` in the initializer, which would show the action's title too
         let button = UIButton(configuration: configuration)
+        button.configurationUpdateHandler = { button in
+            var configuration = button.configuration
+            configuration?.baseForegroundColor = button.isSelected ? .tintColor : .label
+            button.configuration = configuration
+        }
         if let action { button.addAction(action, for: .primaryActionTriggered) }
         if let menu {
             button.menu = menu
@@ -147,10 +168,16 @@ private extension NSLayoutConstraint {
 /// The format panel that replaces the keyboard when Aa is tapped, as in Notes: text styles,
 /// inline formats and block types in one place, at keyboard height.
 final class FormatPanelInputView: UIInputView {
+    private let entries: [FormatMenuEntry]
+    private let apply: (FormatCommand) -> Void
+    private let close: () -> Void
     private let host: UIHostingController<FormatPanel>
 
-    init(entries: [FormatMenuEntry], apply: @escaping (FormatCommand) -> Void, close: @escaping () -> Void) {
-        host = UIHostingController(rootView: FormatPanel(entries: entries, apply: apply, close: close))
+    init(entries: [FormatMenuEntry], activeFormats: Set<FormatCommand> = [], apply: @escaping (FormatCommand) -> Void, close: @escaping () -> Void) {
+        self.entries = entries
+        self.apply = apply
+        self.close = close
+        host = UIHostingController(rootView: FormatPanel(entries: entries, activeFormats: activeFormats, apply: apply, close: close))
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: 300), inputViewStyle: .keyboard)
         allowsSelfSizing = true
         autoresizingMask = .flexibleWidth
@@ -166,6 +193,10 @@ final class FormatPanelInputView: UIInputView {
         ])
     }
 
+    func update(activeFormats: Set<FormatCommand>) {
+        host.rootView = FormatPanel(entries: entries, activeFormats: activeFormats, apply: apply, close: close)
+    }
+
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
@@ -175,20 +206,23 @@ final class FormatPanelInputView: UIInputView {
 /// and icons are Swash's.
 struct FormatPanel: View {
     let entries: [FormatMenuEntry]
+    var activeFormats: Set<FormatCommand> = []
     let apply: (FormatCommand) -> Void
     let close: () -> Void
 
-    private var textStyles: [FormatMenuEntry] {
+    var textStyles: [FormatMenuEntry] {
         entries.filter {
             if case .heading = $0.command { return true }
             return $0.command == .paragraph
         }
     }
-    private var inline: [FormatMenuEntry] { entries.filter(\.command.isInlineFormat) }
-    private var blocks: [FormatMenuEntry] {
-        entries.filter { entry in
-            !entry.command.isInlineFormat && !textStyles.contains { $0.command == entry.command }
+
+    /// Non-text-style entries split by their manifest group (`Format`, `Block`, `Insert`).
+    var groups: [[FormatMenuEntry]] {
+        let rest = entries.filter { entry in
+            !textStyles.contains { $0.command == entry.command }
         }
+        return FormatManifestLayout.groups(rest)
     }
 
     var body: some View {
@@ -208,25 +242,25 @@ struct FormatPanel: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(textStyles, id: \.label) { entry in
+                        let isSelected = activeFormats.contains(entry.command)
                         Button { apply(entry.command) } label: {
                             Text(entry.label)
                                 .font(Self.font(for: entry.command))
+                                .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
                                 .lineLimit(1)
                         }
                         .buttonStyle(.glass)
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
                     }
                 }
                 .padding(.vertical, 2)
             }
             .scrollClipDisabled()
-            GlassEffectContainer {
-                HStack(spacing: 8) {
-                    ForEach(inline, id: \.label) { entry in iconButton(entry) }
-                }
-            }
-            GlassEffectContainer {
-                HStack(spacing: 8) {
-                    ForEach(blocks, id: \.label) { entry in iconButton(entry) }
+            ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                GlassEffectContainer {
+                    HStack(spacing: 8) {
+                        ForEach(group, id: \.label) { entry in iconButton(entry) }
+                    }
                 }
             }
             Spacer(minLength: 0)
@@ -236,13 +270,16 @@ struct FormatPanel: View {
     }
 
     private func iconButton(_ entry: FormatMenuEntry) -> some View {
-        Button { apply(entry.command) } label: {
+        let isSelected = activeFormats.contains(entry.command)
+        return Button { apply(entry.command) } label: {
             Image(systemName: entry.command.symbolName)
                 .font(.body.weight(.medium))
+                .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
                 .frame(maxWidth: .infinity, minHeight: 28)
         }
         .buttonStyle(.glass)
         .accessibilityLabel(entry.label.replacingOccurrences(of: "…", with: ""))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     /// Each text style previews its own size, as in Notes.
@@ -260,7 +297,17 @@ struct FormatPanel: View {
 
 #Preview("Format Panel") {
     FormatPanel(
-        entries: FormatManifestLayout.keyboardBarEntries,
+        entries: FormatManifestLayout.formatPanelEntries,
+        apply: { _ in },
+        close: {}
+    )
+    .frame(height: 220)
+}
+
+#Preview("Format Panel - Active Formats") {
+    FormatPanel(
+        entries: FormatManifestLayout.formatPanelEntries,
+        activeFormats: [.heading(2), .bold, .bulletList],
         apply: { _ in },
         close: {}
     )
