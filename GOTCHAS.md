@@ -423,4 +423,3 @@
 ## 102. Concurrency Deinit Crash in Synchronous Tests on MainActor
 - **Issue**: Targets building with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` treat unannotated classes (such as `MarkdownEditorStyler`) as `@MainActor`-isolated reference types. When an instance is deallocated inside synchronous test runloop pumping (`RunLoop.main.run(until:)`), the compiler-generated isolated deinit invokes `swift_task_deinitOnExecutorImpl`. On Xcode 16/iOS 26 simulator runtimes, `swift::TaskLocal::StopLookupScope::~StopLookupScope()` attempts to free an unallocated pointer (`pointer being freed was not allocated`), crashing the test host with `EXC_CRASH (SIGABRT)`.
 - **Solution**: Add an explicit `nonisolated deinit {}` to the class when none of its stored properties require actor-isolated deinitialization. This prevents Swift from generating an isolated destructor and routing through `swift_task_deinitOnExecutorImpl`.
-
