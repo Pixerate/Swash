@@ -1024,153 +1024,21 @@ class SwashNSTextView: NSTextView {
         pasteboard.clearContents()
         
         let item = NSPasteboardItem()
+        let effectiveRange = expandedRangeForClipboardCopy(in: textStorage, range: range)
+        let rawMarkdown = swashRawMarkdown(from: textStorage.attributedSubstring(from: effectiveRange))
         
-        // 1. Clean Formatted AttributedString (Rich Text) - Set FIRST so rich text types are prioritized
-        let cleanFormattedAttrString = createCleanFormattedAttributedString(from: textStorage, range: range)
-        let fullCleanRange = NSRange(location: 0, length: cleanFormattedAttrString.length)
+        let winURL = self.window?.representedURL ?? (self.window.flatMap { NSDocumentController.shared.document(for: $0)?.fileURL })
+        let html = DocumentExporter.clipboardHTML(for: DocumentExporter.Source(text: rawMarkdown, flavor: flavor, fileURL: winURL, title: ""))
         
-        if fullCleanRange.length > 0 {
-            // RTF
-            if let rtfData = try? cleanFormattedAttrString.data(from: fullCleanRange, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
-                item.setData(rtfData, forType: .rtf)
-            }
-            
-            // RTFD if attachments are present
-            if cleanFormattedAttrString.containsAttachments(in: fullCleanRange) {
-                if let rtfdData = try? cleanFormattedAttrString.data(from: fullCleanRange, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd]) {
-                    item.setData(rtfdData, forType: .rtfd)
-                }
-            }
-            
-            // HTML
-            if let htmlData = try? cleanFormattedAttrString.data(from: fullCleanRange, documentAttributes: [.documentType: NSAttributedString.DocumentType.html]) {
-                item.setData(htmlData, forType: .html)
-            }
+        item.setString(html, forType: .html)
+        if let rtfData = DocumentExporter.rtfData(from: html) {
+            item.setData(rtfData, forType: .rtf)
         }
         
-        // 2. Raw Markdown string (Fallback for plain-text applications) - Set LAST as fallback
-        let rawMarkdown = buildRawMarkdownSubstring(from: textStorage, range: range)
         item.setString(rawMarkdown, forType: .swashMarkdown)
         item.setString(rawMarkdown, forType: .string)
         
         return pasteboard.writeObjects([item])
-    }
-    
-    private func buildRawMarkdownSubstring(from textStorage: NSTextStorage, range: NSRange) -> String {
-        let selectedSubstring = textStorage.attributedSubstring(from: range)
-        let result = NSMutableString(string: selectedSubstring.string)
-        let fullRange = NSRange(location: 0, length: selectedSubstring.length)
-        
-        selectedSubstring.enumerateAttribute(.attachment, in: fullRange, options: .reverse) { value, attRange, _ in
-            if let markdown = swashRawMarkdown(for: value) {
-                result.replaceCharacters(in: attRange, with: markdown)
-            }
-        }
-        return result as String
-    }
-    
-    private func createCleanFormattedAttributedString(from textStorage: NSTextStorage, range: NSRange) -> NSAttributedString {
-        let subAttrString = textStorage.attributedSubstring(from: range)
-        let result = NSMutableAttributedString()
-        let fullRange = NSRange(location: 0, length: subAttrString.length)
-        
-        let allowedKeys: Set<NSAttributedString.Key> = [
-            .font,
-            .foregroundColor,
-            .backgroundColor,
-            .underlineStyle,
-            .underlineColor,
-            .strikethroughStyle,
-            .strikethroughColor,
-            .link,
-            .paragraphStyle,
-            .attachment
-        ]
-        
-        subAttrString.enumerateAttributes(in: fullRange, options: []) { attrs, runRange, _ in
-            var isHiddenTag = false
-            if let font = attrs[.font] as? NSFont, font.pointSize < 1.0 {
-                isHiddenTag = true
-            }
-            if let color = attrs[.foregroundColor] as? NSColor, color == .clear {
-                isHiddenTag = true
-            }
-            
-            if !isHiddenTag {
-                if let attachment = attrs[.attachment] as? TableTextAttachment {
-                    let tableText = convertTableToFormattedText(attachment.tableData)
-                    let tableAttr = NSAttributedString(string: tableText, attributes: [
-                        .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-                    ])
-                    result.append(tableAttr)
-                } else if let attachment = attrs[.attachment] as? ImageTextAttachment {
-                    let imageAttr = NSAttributedString(attachment: attachment)
-                    result.append(imageAttr)
-                } else {
-                    let chunk = subAttrString.attributedSubstring(from: runRange)
-                    let mutableChunk = NSMutableAttributedString(attributedString: chunk)
-                    
-                    let chunkRange = NSRange(location: 0, length: mutableChunk.length)
-                    
-                    // Strip non-standard / custom attributes (e.g. .listMarker) that break RTF serialization
-                    mutableChunk.enumerateAttributes(in: chunkRange, options: []) { chunkAttrs, subRange, _ in
-                        for key in chunkAttrs.keys {
-                            if !allowedKeys.contains(key) {
-                                mutableChunk.removeAttribute(key, range: subRange)
-                            }
-                        }
-                    }
-                    
-                    // Remove default text colors so pasted text adapts cleanly to target apps
-                    mutableChunk.enumerateAttribute(.foregroundColor, in: chunkRange, options: []) { colorValue, attrRange, _ in
-                        if let color = colorValue as? NSColor {
-                            if color == NSColor.textColor || color == NSColor.labelColor || color == NSColor.clear {
-                                mutableChunk.removeAttribute(.foregroundColor, range: attrRange)
-                            }
-                        }
-                    }
-                    
-                    // Strip textBlocks from paragraphStyle so code blocks don't export as RTF table cells in target apps
-                    mutableChunk.enumerateAttribute(.paragraphStyle, in: chunkRange, options: []) { paraValue, subRange, _ in
-                        if let para = paraValue as? NSParagraphStyle, !para.textBlocks.isEmpty {
-                            let mutablePara = para.mutableCopy() as! NSMutableParagraphStyle
-                            mutablePara.textBlocks = []
-                            mutableChunk.addAttribute(.paragraphStyle, value: mutablePara, range: subRange)
-                            
-                            // Apply subtle background color fill for code blocks in rich text exports
-                            if mutableChunk.attribute(.backgroundColor, at: subRange.location, effectiveRange: nil) == nil {
-                                let codeBg = NSColor.textColor.withAlphaComponent(0.04)
-                                mutableChunk.addAttribute(.backgroundColor, value: codeBg, range: subRange)
-                            }
-                        }
-                    }
-                    
-                    result.append(mutableChunk)
-                }
-            } else {
-                if let markerInfo = attrs[.listMarker] as? ListMarkerInfo {
-                    let markerStr = "\(markerInfo.text) "
-                    let font = NSFont.systemFont(ofSize: 14, weight: .bold)
-                    let markerAttr = NSAttributedString(string: markerStr, attributes: [.font: font])
-                    result.append(markerAttr)
-                }
-            }
-        }
-        
-        return result
-    }
-    
-    private func convertTableToFormattedText(_ data: MarkdownTableData) -> String {
-        var lines: [String] = []
-        let cleanHeaders = data.headers.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        if !cleanHeaders.isEmpty {
-            lines.append(cleanHeaders.joined(separator: "\t"))
-        }
-        for row in data.rows {
-            let cleanCells = row.map { $0.trimmingCharacters(in: .whitespaces) }
-            lines.append(cleanCells.joined(separator: "\t"))
-        }
-        return lines.joined(separator: "\n")
     }
 }
 

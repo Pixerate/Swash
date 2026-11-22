@@ -43,55 +43,20 @@ enum EditorClipboard {
     /// Puts the selection on the pasteboard as rich text plus its raw Markdown.
     static func copy(_ range: NSRange, from storage: NSTextStorage, to pasteboard: UIPasteboard = .general) {
         guard range.length > 0, NSMaxRange(range) <= storage.length else { return }
-        let raw = swashRawMarkdown(from: storage.attributedSubstring(from: range))
+        let effectiveRange = expandedRangeForClipboardCopy(in: storage, range: range)
+        let raw = swashRawMarkdown(from: storage.attributedSubstring(from: effectiveRange))
         var item: [String: Any] = [
             swashMarkdownType: Data(raw.utf8),
             UTType.utf8PlainText.identifier: raw,
         ]
-        let formatted = cleanFormattedString(from: storage.attributedSubstring(from: range))
-        let whole = NSRange(location: 0, length: formatted.length)
-        if whole.length > 0 {
-            if let rtf = try? formatted.data(from: whole, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
-                item[UTType.rtf.identifier] = rtf
-            }
-            if let html = try? formatted.data(from: whole, documentAttributes: [.documentType: NSAttributedString.DocumentType.html]) {
-                item[UTType.html.identifier] = html
-            }
+        let html = DocumentExporter.clipboardHTML(for: raw)
+        if let htmlData = html.data(using: .utf8) {
+            item[UTType.html.identifier] = htmlData
+        }
+        if let rtfData = DocumentExporter.rtfData(from: html) {
+            item[UTType.rtf.identifier] = rtfData
         }
         pasteboard.setItems([item])
-    }
-
-    /// The styled text without hidden markers or Swash-only attributes: list markers become text,
-    /// tables become tab-separated text, and boxed blocks get a light background.
-    private static func cleanFormattedString(from styled: NSAttributedString) -> NSAttributedString {
-        let allowed: Set<NSAttributedString.Key> = [.font, .foregroundColor, .backgroundColor, .underlineStyle, .underlineColor,
-                                                     .strikethroughStyle, .strikethroughColor, .link, .paragraphStyle, .attachment]
-        let result = NSMutableAttributedString()
-        styled.enumerateAttributes(in: NSRange(location: 0, length: styled.length), options: []) { attributes, range, _ in
-            let hidden = (attributes[.font] as? UIFont).map { $0.pointSize < 1 } == true || (attributes[.foregroundColor] as? UIColor) == .clear
-            if hidden {
-                if let marker = attributes[.listMarker] as? ListMarkerInfo {
-                    result.append(NSAttributedString(string: marker.text + " ", attributes: [.font: UIFont.systemFont(ofSize: 14, weight: .bold)]))
-                }
-                return
-            }
-            if let table = attributes[.attachment] as? TableTextAttachment {
-                let rows = [table.tableData.headers] + table.tableData.rows
-                let text = rows.map { $0.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: "\t") }.joined(separator: "\n")
-                result.append(NSAttributedString(string: text, attributes: [.font: UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)]))
-                return
-            }
-            let chunk = NSMutableAttributedString(attributedString: styled.attributedSubstring(from: range))
-            let whole = NSRange(location: 0, length: chunk.length)
-            for key in attributes.keys where !allowed.contains(key) { chunk.removeAttribute(key, range: whole) }
-            // Default text colours are dropped so the text adapts to the target app
-            if let color = attributes[.foregroundColor] as? UIColor, color == .label { chunk.removeAttribute(.foregroundColor, range: whole) }
-            if attributes[.blockDecorations] != nil, attributes[.backgroundColor] == nil {
-                chunk.addAttribute(.backgroundColor, value: UIColor.label.withAlphaComponent(0.04), range: whole)
-            }
-            result.append(chunk)
-        }
-        return result
     }
 }
 #endif

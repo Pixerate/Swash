@@ -70,7 +70,34 @@ final class DocumentExporter: NSObject {
     /// HTML for the clipboard: the rendered body with the export styles, without typesetting.
     static func clipboardHTML(for source: Source) -> String {
         let styles = (try? resourceText("swash-export.css")) ?? ""
-        return page(title: source.title, styles: styles, body: bodyHTML(for: source))
+        var body = bodyHTML(for: source)
+        if body.contains("<input type=\"checkbox\"") {
+            body = body.replacingOccurrences(of: "<li><input type=\"checkbox\"", with: "<li class=\"task-list-item\"><input type=\"checkbox\"")
+        }
+        return page(title: source.title, styles: styles, body: body)
+    }
+
+    /// Convenience for clipboard HTML from a raw Markdown string.
+    static func clipboardHTML(for markdown: String, flavor: MarkdownFlavor = .github, fileURL: URL? = nil, title: String = "") -> String {
+        clipboardHTML(for: Source(text: markdown, flavor: flavor, fileURL: fileURL, title: title))
+    }
+
+    /// RTF data generated from `html` via NSAttributedString HTML import.
+    static func rtfData(from html: String) -> Data? {
+        guard let data = html.data(using: .utf8) else { return nil }
+        #if os(macOS)
+        if let attributed = NSAttributedString(html: data, options: [.characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil) {
+            return attributed.rtf(from: NSRange(location: 0, length: attributed.length), documentAttributes: [:])
+        }
+        return nil
+        #else
+        guard let attributed = try? NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue],
+            documentAttributes: nil
+        ) else { return nil }
+        return try? attributed.data(from: NSRange(location: 0, length: attributed.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+        #endif
     }
 
     private static func page(title: String, styles: String, body: String) -> String {
@@ -317,18 +344,20 @@ final class DocumentExporter: NSObject {
         pasteboard.clearContents()
         let item = NSPasteboardItem()
         item.setString(html, forType: .html)
-        if let data = html.data(using: .utf8),
-           let attributed = NSAttributedString(html: data, options: [.characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil),
-           let rtf = attributed.rtf(from: NSRange(location: 0, length: attributed.length), documentAttributes: [:]) {
+        if let rtf = rtfData(from: html) {
             item.setData(rtf, forType: .rtf)
         }
         item.setString(source.text, forType: .string)
         pasteboard.writeObjects([item])
         #else
-        UIPasteboard.general.items = [[
+        var item: [String: Any] = [
             UTType.html.identifier: html,
             UTType.utf8PlainText.identifier: source.text,
-        ]]
+        ]
+        if let rtf = rtfData(from: html) {
+            item[UTType.rtf.identifier] = rtf
+        }
+        UIPasteboard.general.items = [item]
         #endif
     }
 
