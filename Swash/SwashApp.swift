@@ -28,6 +28,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         WritingBandleaderFactory.installPixerateBandleader()
         WritingBandleaderFactory.installOnDeviceBandleader()
+        MarkdownTitleSuggestion.installMacDraftNameHook()
         AgentBridge.shared.startIfEnabled()
         DispatchQueue.main.async {
             DefaultAppManager.shared.checkAndPromptIfNecessary()
@@ -60,10 +61,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if url.host == "new" {
             let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
             let text = components?.queryItems?.first(where: { $0.name == "text" })?.value ?? ""
-            let title = components?.queryItems?.first(where: { $0.name == "title" })?.value ?? "Untitled"
+            let givenTitle = components?.queryItems?.first(where: { $0.name == "title" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title: String
+            if let givenTitle, !givenTitle.isEmpty, givenTitle != "Untitled", givenTitle != "Shared Note" {
+                title = givenTitle
+            } else {
+                title = MarkdownTitleSuggestion.suggest(from: text) ?? "Untitled"
+            }
             
             let tempDir = FileManager.default.temporaryDirectory
-            let fileName = "\(title).md".replacingOccurrences(of: "/", with: "-")
+            let fileName = "\(MarkdownTitleSuggestion.cleanFileName(title)).md"
             let fileURL = tempDir.appendingPathComponent(fileName)
             
             do {

@@ -36,7 +36,15 @@ enum DocumentOpener {
         func value(_ name: String) -> String? { items.first(where: { $0.name == name })?.value }
         switch url.host {
         case "new":
-            guard let file = try? createDocument(title: value("title") ?? "Untitled", text: value("text") ?? "") else { return false }
+            let text = value("text") ?? ""
+            let givenTitle = value("title")?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title: String
+            if let givenTitle, !givenTitle.isEmpty, givenTitle != "Untitled", givenTitle != "Shared Note" {
+                title = givenTitle
+            } else {
+                title = MarkdownTitleSuggestion.suggest(from: text) ?? "Untitled"
+            }
+            guard let file = try? createDocument(title: title, text: text) else { return false }
             open(file)
             return true
         case "open":
@@ -49,10 +57,17 @@ enum DocumentOpener {
     }
 
     /// Writes a new note into Documents under a unique name and returns its URL.
-    static func createDocument(title: String, text: String) throws -> URL {
+    static func createDocument(title: String? = nil, text: String) throws -> URL {
         let folder = try documentsFolder
-        let base = title.replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespacesAndNewlines)
-        let file = uniqueURL(in: folder, base: base.isEmpty ? "Untitled" : base)
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolvedTitle: String
+        if trimmed.isEmpty || trimmed == "Untitled" || trimmed == "Shared Note" {
+            resolvedTitle = MarkdownTitleSuggestion.suggest(from: text) ?? "Untitled"
+        } else {
+            resolvedTitle = trimmed
+        }
+        let base = IOSDocumentFeaturesModel.fileName(resolvedTitle)
+        let file = uniqueURL(in: folder, base: base)
         try text.write(to: file, atomically: true, encoding: .utf8)
         return file
     }
@@ -64,7 +79,15 @@ enum DocumentOpener {
               let files = try? FileManager.default.contentsOfDirectory(at: inbox, includingPropertiesForKeys: [.contentModificationDateKey]) else { return nil }
         var newest: (url: URL, date: Date)?
         for file in files where file.pathExtension.lowercased() == "md" {
-            let destination = uniqueURL(in: folder, base: file.deletingPathExtension().lastPathComponent)
+            let baseName = file.deletingPathExtension().lastPathComponent
+            let destinationBase: String
+            if baseName == "Shared Note" || baseName.hasPrefix("Shared Note ") {
+                let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+                destinationBase = MarkdownTitleSuggestion.suggest(from: text) ?? baseName
+            } else {
+                destinationBase = baseName
+            }
+            let destination = uniqueURL(in: folder, base: destinationBase)
             guard (try? FileManager.default.moveItem(at: file, to: destination)) != nil else { continue }
             let date = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             if newest == nil || date > newest!.date { newest = (destination, date) }
