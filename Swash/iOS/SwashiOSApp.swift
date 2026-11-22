@@ -24,9 +24,16 @@ struct SwashApp: App {
             WritingModeCommands()
         }
         .onChange(of: scenePhase) { _, phase in
-            // Notes saved by the share extension open when Swash comes to the front
-            if phase == .active, let note = DocumentOpener.importInbox() {
-                DocumentOpener.open(note)
+            switch phase {
+            case .active:
+                // Notes saved by the share extension open when Swash comes to the front
+                if let note = DocumentOpener.importInbox() {
+                    DocumentOpener.open(note)
+                }
+            case .inactive, .background:
+                DocumentOpener.saveOpenDocumentsOnBackground()
+            @unknown default:
+                break
             }
         }
     }
