@@ -69,6 +69,9 @@ jobs:
       - name: Slack mrkdwn parsing and formatting tests
         run: scripts/run_slack_tests.sh
 
+      - name: Shortcuts and App Intents engine tests
+        run: scripts/run_shortcuts_tests.sh
+
       - name: Markdown conformance tests (@pixerate/markdown-conformance)
         run: scripts/run_conformance_tests.sh
 

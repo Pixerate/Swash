@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
 <dictionary title="Swash Terminology">
-    <suite name="Swash Suite" code="Swsh" description="Commands for creating and formatting Markdown notes in Swash.">
+    <suite name="Swash Suite" code="Swsh" description="Commands for creating, querying, editing, and converting Markdown notes in Swash.">
         <command name="create note" code="SwshNewN" description="Create and open a new Markdown document in Swash.">
             <cocoa class="SwashCreateNoteCommand"/>
             <parameter name="titled" code="SwshTitl" type="text" optional="yes" description="Title for the new Markdown document (defaults to 'Untitled Note').">
@@ -27,6 +27,54 @@
                 <cocoa key="style"/>
             </parameter>
             <result type="text" description="Formatted Markdown text."/>
+        </command>
+        <command name="append to note" code="SwshApnd" description="Append or insert text into a Markdown note (creating it if needed).">
+            <cocoa class="SwashAppendToNoteCommand"/>
+            <direct-parameter type="text" description="Text to append."/>
+            <parameter name="at path" code="SwshPath" type="text" optional="yes" description="Relative path or title of the note (defaults to 'Inbox.md').">
+                <cocoa key="path"/>
+            </parameter>
+            <parameter name="under heading" code="SwshHead" type="text" optional="yes" description="Heading title to insert under.">
+                <cocoa key="heading"/>
+            </parameter>
+            <parameter name="as style" code="SwshASty" type="text" optional="yes" description="Entry style: 'plain', 'bullet', 'todo', 'timestamped bullet', or 'timestamped todo'.">
+                <cocoa key="style"/>
+            </parameter>
+            <result type="text" description="File path of the updated Markdown document."/>
+        </command>
+        <command name="get note contents" code="SwshGetC" description="Read a Markdown note's contents as Markdown, plain text, or HTML.">
+            <cocoa class="SwashGetNoteContentsCommand"/>
+            <direct-parameter type="text" description="Path or title of the Markdown note."/>
+            <parameter name="as format" code="SwshCFmt" type="text" optional="yes" description="Format: 'markdown' (default), 'plain text', 'html', or 'standalone html'.">
+                <cocoa key="format"/>
+            </parameter>
+            <result type="text" description="Document contents in the requested format."/>
+        </command>
+        <command name="find notes" code="SwshFndN" description="Search Swash Markdown notes by filename and content.">
+            <cocoa class="SwashFindNotesCommand"/>
+            <direct-parameter type="text" description="Search query."/>
+            <parameter name="in folder" code="SwshFldr" type="text" optional="yes" description="Optional folder path to search within.">
+                <cocoa key="folder"/>
+            </parameter>
+            <result type="text" description="Newline-separated file paths of matching notes."/>
+        </command>
+        <command name="get todos" code="SwshTodo" description="Extract Markdown task items (- [ ] / - [x]) from a note or folder.">
+            <cocoa class="SwashGetTodosCommand"/>
+            <parameter name="in path" code="SwshTPth" type="text" optional="yes" description="Optional note or folder path.">
+                <cocoa key="path"/>
+            </parameter>
+            <parameter name="with status" code="SwshTSts" type="text" optional="yes" description="Status filter: 'open' (default), 'completed', or 'all'.">
+                <cocoa key="status"/>
+            </parameter>
+            <result type="text" description="Newline-separated task descriptions."/>
+        </command>
+        <command name="convert html to markdown" code="SwshHtMd" description="Convert HTML markup to Markdown.">
+            <cocoa class="SwashConvertHTMLCommand"/>
+            <direct-parameter type="text" description="HTML source to convert."/>
+            <parameter name="from url" code="SwshSUrl" type="text" optional="yes" description="Optional source URL to resolve links and append a source reference.">
+                <cocoa key="sourceURL"/>
+            </parameter>
+            <result type="text" description="Converted Markdown text."/>
         </command>
     </suite>
 </dictionary>
