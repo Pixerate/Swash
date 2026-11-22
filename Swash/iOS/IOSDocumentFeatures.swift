@@ -449,7 +449,7 @@ struct IOSDocumentToolbar: ToolbarContent {
     @AppStorage(WritingDefaults.typewriterScrolling) private var typewriterScrolling = false
 
     var body: some ToolbarContent {
-        if !regularWidth {
+        if !regularWidth && !focusMode {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     model.showOutlineSheet(text: text, editor: editor)
@@ -459,16 +459,25 @@ struct IOSDocumentToolbar: ToolbarContent {
                 .accessibilityHint("Shows the list of headings")
             }
         }
-        ToolbarItem(placement: .secondaryAction) {
-            Button {
-                model.showInfo(text: text, editor: editor)
-            } label: {
-                Label("Document Info", systemImage: "info.circle")
+        if !focusMode {
+            ToolbarItem(placement: .secondaryAction) {
+                Button {
+                    model.showInfo(text: text, editor: editor)
+                } label: {
+                    Label("Document Info", systemImage: "info.circle")
+                }
             }
         }
         ToolbarItem(placement: .secondaryAction) {
             Menu {
-                Toggle("Focus Mode", systemImage: "viewfinder", isOn: $focusMode)
+                Toggle("Focus Mode", systemImage: "viewfinder", isOn: Binding(
+                    get: { focusMode },
+                    set: { newValue in
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            focusMode = newValue
+                        }
+                    }
+                ))
                 Picker("Focus On", selection: $focusUnit) {
                     ForEach(FocusUnit.allCases) { unit in
                         Text(unit.title).tag(unit)
@@ -492,38 +501,40 @@ struct IOSDocumentToolbar: ToolbarContent {
                 Label("Writing", systemImage: "viewfinder")
             }
         }
-        ToolbarItem(placement: .secondaryAction) {
-            Menu {
-                Button {
-                    model.export(.pdf, source: source())
+        if !focusMode {
+            ToolbarItem(placement: .secondaryAction) {
+                Menu {
+                    Button {
+                        model.export(.pdf, source: source())
+                    } label: {
+                        Label("Export as PDF", systemImage: "doc.richtext")
+                    }
+                    Button {
+                        model.export(.html, source: source())
+                    } label: {
+                        Label("Export as HTML", systemImage: "chevron.left.forwardslash.chevron.right")
+                    }
+                    Button {
+                        model.print(source: source())
+                    } label: {
+                        Label("Print", systemImage: "printer")
+                    }
+                    Divider()
+                    Button {
+                        DocumentExporter.copyRichText(source())
+                    } label: {
+                        Label("Copy as Rich Text", systemImage: "doc.on.clipboard")
+                    }
+                    Button {
+                        DocumentExporter.copyHTML(source())
+                    } label: {
+                        Label("Copy HTML", systemImage: "curlybraces")
+                    }
                 } label: {
-                    Label("Export as PDF", systemImage: "doc.richtext")
+                    Label("Export", systemImage: "square.and.arrow.up.on.square")
                 }
-                Button {
-                    model.export(.html, source: source())
-                } label: {
-                    Label("Export as HTML", systemImage: "chevron.left.forwardslash.chevron.right")
-                }
-                Button {
-                    model.print(source: source())
-                } label: {
-                    Label("Print", systemImage: "printer")
-                }
-                Divider()
-                Button {
-                    DocumentExporter.copyRichText(source())
-                } label: {
-                    Label("Copy as Rich Text", systemImage: "doc.on.clipboard")
-                }
-                Button {
-                    DocumentExporter.copyHTML(source())
-                } label: {
-                    Label("Copy HTML", systemImage: "curlybraces")
-                }
-            } label: {
-                Label("Export", systemImage: "square.and.arrow.up.on.square")
+                .disabled(model.exporting != nil)
             }
-            .disabled(model.exporting != nil)
         }
     }
 }

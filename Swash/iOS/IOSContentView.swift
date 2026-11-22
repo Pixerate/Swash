@@ -25,6 +25,9 @@ struct IOSContentView: View {
     @State private var scrollSync = ScrollSync()
     @State private var showingSettings = false
     @State private var distractionFree = false
+    @AppStorage(WritingDefaults.focusMode) private var focusMode = false
+    @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
+    @AppStorage(WritingDefaults.typewriterScrolling) private var typewriterScrolling = false
     @State private var conflictCount = 0
     @State private var showingConflictSheet = false
     @State private var conflictError: String?
@@ -126,19 +129,21 @@ struct IOSContentView: View {
     private var documentLayout: some View {
         if horizontalSizeClass == .regular {
             NavigationSplitView(columnVisibility: Binding(
-                get: { outlineVisible && !distractionFree ? .all : .detailOnly },
-                set: { if !distractionFree { outlineVisible = $0 != .detailOnly } }
+                get: { outlineVisible && !distractionFree && !focusMode ? .all : .detailOnly },
+                set: { if !distractionFree && !focusMode { outlineVisible = $0 != .detailOnly } }
             )) {
                 IOSOutlineSidebar(model: features, text: document.text, editor: editor,
-                                  isVisible: outlineVisible && !distractionFree, fileURL: fileURL)
+                                  isVisible: outlineVisible && !distractionFree && !focusMode, fileURL: fileURL)
             } detail: {
                 documentScreen
             }
             // DocumentGroup's own bar would sit above the columns' bars; the detail column's
             // bar already carries the document's back button and title menu
             .background(DocumentBarHider())
+            .animation(.easeInOut(duration: 0.2), value: focusMode)
         } else {
             documentScreen
+                .animation(.easeInOut(duration: 0.2), value: focusMode)
         }
     }
 
@@ -170,10 +175,14 @@ struct IOSContentView: View {
                 .accessibilityIdentifier("ExitDistractionFreeButton")
                 .padding(.trailing, 16)
                 .padding(.top, 8)
+            } else if focusMode {
+                focusControl
+                    .padding(.trailing, 16)
+                    .padding(.top, 8)
             }
         }
         .safeAreaBar(edge: .top) {
-            if !distractionFree {
+            if !distractionFree && !focusMode {
                 if conflictCount > 0 {
                     ConflictBanner(count: conflictCount) { showingConflictSheet = true }
                 }
@@ -183,8 +192,42 @@ struct IOSContentView: View {
             }
         }
         .toolbar { toolbar }
-        .toolbar(distractionFree ? .hidden : .visible, for: .navigationBar)
+        .toolbar(distractionFree || focusMode ? .hidden : .visible, for: .navigationBar)
         .toolbarRole(.editor)
+    }
+
+    private var focusControl: some View {
+        Menu {
+            Toggle("Focus Mode", systemImage: "viewfinder", isOn: Binding(
+                get: { focusMode },
+                set: { newValue in
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        focusMode = newValue
+                    }
+                }
+            ))
+            Picker("Focus On", selection: $focusUnit) {
+                ForEach(FocusUnit.allCases) { unit in
+                    Text(unit.title).tag(unit)
+                }
+            }
+            Toggle("Typewriter Scrolling", systemImage: "arrow.up.and.down.text.horizontal", isOn: $typewriterScrolling)
+            Divider()
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    focusMode = false
+                }
+            } label: {
+                Label("Turn Focus Off", systemImage: "viewfinder.slash")
+            }
+        } label: {
+            Image(systemName: "viewfinder")
+                .font(.system(size: 15, weight: .medium))
+                .frame(width: 36, height: 36)
+        }
+        .buttonStyle(.glass)
+        .accessibilityLabel("Focus Options")
+        .accessibilityIdentifier("FocusOptionsButton")
     }
 
     /// The editors ignore the top safe area so text scrolls under the bar; `topInset` is the
@@ -243,47 +286,49 @@ struct IOSContentView: View {
         IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
                            editor: editor, regularWidth: horizontalSizeClass == .regular,
                            distractionFree: $distractionFree)
-        ToolbarItem(placement: .primaryAction) {
-            // A glyph button, not a segmented control: iOS 26 toolbars squeeze segmented
-            // controls into one glass circle. Tap switches Source and Formatted; hold for every mode.
-            Menu {
-                Picker("View Mode", selection: $viewMode) {
-                    ForEach(availableModes) { mode in
-                        Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+        if !focusMode {
+            ToolbarItem(placement: .primaryAction) {
+                // A glyph button, not a segmented control: iOS 26 toolbars squeeze segmented
+                // controls into one glass circle. Tap switches Source and Formatted; hold for every mode.
+                Menu {
+                    Picker("View Mode", selection: $viewMode) {
+                        ForEach(availableModes) { mode in
+                            Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+                        }
                     }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("View Mode: \(effectiveMode.rawValue)", systemImage: effectiveMode.icon)
+                } primaryAction: {
+                    viewMode = effectiveMode == .preview ? .edit : .preview
                 }
-                .pickerStyle(.inline)
-            } label: {
-                Label("View Mode: \(effectiveMode.rawValue)", systemImage: effectiveMode.icon)
-            } primaryAction: {
-                viewMode = effectiveMode == .preview ? .edit : .preview
+                .accessibilityLabel("View Mode")
+                .accessibilityValue(effectiveMode.rawValue)
+                .accessibilityHint("Switches between Source and Formatted. Touch and hold for more modes.")
             }
-            .accessibilityLabel("View Mode")
-            .accessibilityValue(effectiveMode.rawValue)
-            .accessibilityHint("Switches between Source and Formatted. Touch and hold for more modes.")
-        }
-        ToolbarSpacer(.fixed, placement: .primaryAction)
-        ToolbarItem(placement: .primaryAction) {
-            shareLink
-        }
-        ToolbarItem(placement: .secondaryAction) {
-            // A submenu, so the editor toolbar on iPad shows an icon, not the bare flavour name
-            Menu {
-                Picker("Markdown Flavor", selection: flavorBinding) {
-                    ForEach(MarkdownFlavor.allCases) { flavor in
-                        Text(flavor.rawValue).tag(flavor)
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+            ToolbarItem(placement: .primaryAction) {
+                shareLink
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                // A submenu, so the editor toolbar on iPad shows an icon, not the bare flavour name
+                Menu {
+                    Picker("Markdown Flavor", selection: flavorBinding) {
+                        ForEach(MarkdownFlavor.allCases) { flavor in
+                            Text(flavor.rawValue).tag(flavor)
+                        }
                     }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("Markdown Flavor", systemImage: "textformat")
                 }
-                .pickerStyle(.inline)
-            } label: {
-                Label("Markdown Flavor", systemImage: "textformat")
             }
-        }
-        ToolbarItem(placement: .secondaryAction) {
-            Button {
-                showingSettings = true
-            } label: {
-                Label("Settings", systemImage: "gearshape")
+            ToolbarItem(placement: .secondaryAction) {
+                Button {
+                    showingSettings = true
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
             }
         }
     }
@@ -490,6 +535,19 @@ private extension FormatCommand {
     NavigationStack {
         IOSContentView(document: $document, fileURL: nil)
     }
+}
+
+#Preview("iOS Editor - Focus Mode") {
+    @Previewable @State var document = SwashSampleDocument.standard
+    let defaults: UserDefaults = {
+        let suite = UserDefaults(suiteName: "focus-mode-preview")!
+        suite.set(true, forKey: WritingDefaults.focusMode)
+        return suite
+    }()
+    NavigationStack {
+        IOSContentView(document: $document, fileURL: nil)
+    }
+    .defaultAppStorage(defaults)
 }
 
 #Preview("iOS Editor - Dark Mode") {
