@@ -25,6 +25,7 @@ struct IOSContentView: View {
     @State private var scrollSync = ScrollSync()
     @State private var showingSettings = false
     @State private var distractionFree = false
+    @State private var partnerPaused = false
     @State private var conflictCount = 0
     @State private var showingConflictSheet = false
     @State private var conflictError: String?
@@ -104,7 +105,11 @@ struct IOSContentView: View {
                 distractionFree.toggle()
             }
         }))
+        .onChange(of: partnerPaused) { _, paused in
+            editor.setPartnerPaused(paused)
+        }
         .onAppear {
+            editor.onPartnerPauseChange = { partnerPaused = $0 }
             editor.onFormatCommand = { handleFormatCommand($0) }
             editor.flavor = document.flavor
             refreshConflicts()
@@ -242,7 +247,7 @@ struct IOSContentView: View {
     private var toolbar: some ToolbarContent {
         IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
                            editor: editor, regularWidth: horizontalSizeClass == .regular,
-                           distractionFree: $distractionFree)
+                           distractionFree: $distractionFree, partnerPaused: $partnerPaused)
         ToolbarItem(placement: .primaryAction) {
             // A glyph button, not a segmented control: iOS 26 toolbars squeeze segmented
             // controls into one glass circle. Tap switches Source and Formatted; hold for every mode.

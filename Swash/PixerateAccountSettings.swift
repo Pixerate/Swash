@@ -308,22 +308,24 @@ struct PixerateAccountSections: View {
         return nil
     }
 
+    /// A cancelled request (`URLError.cancelled`, a cancelled task) reports just "cancelled". Only
+    /// that is hidden: a real message that mentions a cancelled subscription is still shown.
     static func isCancellationMessage(_ message: String) -> Bool {
-        let lower = message.lowercased()
-        return lower.contains("cancelled") || lower.contains("canceled")
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)).lowercased()
+        return trimmed == "cancelled" || trimmed == "canceled"
     }
 
     private var proFeatures: [String] {
         Self.proFeatures()
     }
 
-    static func proFeatures(forIdiom idiom: String? = nil) -> [String] {
+    /// The writing partner's pause tier runs on iPhone and iPad too (#109); Quick Note is Mac-only.
+    static func proFeatures() -> [String] {
         #if os(iOS)
-        let target = idiom ?? (UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone")
         return [
-            "Paragraph structure and grammar suggestions when you pause (coming to \(target))",
-            "Quick Note tidy-up on pause or save (coming to \(target))",
-            "Personal vocabulary and house style across devices (coming to \(target))"
+            "Paragraph structure and grammar suggestions when you pause",
+            "Personal vocabulary and house style across devices",
+            "Quick Note tidy-up on pause or save, on the Mac"
         ]
         #else
         return [
