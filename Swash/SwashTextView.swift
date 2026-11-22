@@ -1036,17 +1036,25 @@ class SwashNSTextView: NSTextView {
         pasteboard.clearContents()
         
         let item = NSPasteboardItem()
-        let effectiveRange = expandedRangeForClipboardCopy(in: textStorage, range: range)
-        let rawMarkdown = swashRawMarkdown(from: textStorage.attributedSubstring(from: effectiveRange))
-        
+        // Plain text and Markdown are exactly the selection; the rich copy widens to whole list
+        // items and table rows so they paste as real lists and tables.
+        let rawMarkdown = swashRawMarkdown(from: textStorage.attributedSubstring(from: range))
+        let richRange = expandedRangeForClipboardCopy(in: textStorage, range: range)
+        let richMarkdown = richRange == range ? rawMarkdown : swashRawMarkdown(from: textStorage.attributedSubstring(from: richRange))
+
         let winURL = self.window?.representedURL ?? (self.window.flatMap { NSDocumentController.shared.document(for: $0)?.fileURL })
-        let html = DocumentExporter.clipboardHTML(for: DocumentExporter.Source(text: rawMarkdown, flavor: flavor, fileURL: winURL, title: ""))
-        
+        let html = DocumentExporter.clipboardHTML(for: DocumentExporter.Source(text: richMarkdown, flavor: flavor, fileURL: winURL, title: ""))
+
         item.setString(html, forType: .html)
-        if let rtfData = DocumentExporter.rtfData(from: html) {
-            item.setData(rtfData, forType: .rtf)
+        if let attributed = DocumentExporter.attributedString(fromHTML: html) {
+            if let rtfData = DocumentExporter.rtfData(from: attributed) {
+                item.setData(rtfData, forType: .rtf)
+            }
+            if let rtfdData = DocumentExporter.rtfdData(from: attributed) {
+                item.setData(rtfdData, forType: .rtfd)
+            }
         }
-        
+
         item.setString(rawMarkdown, forType: .swashMarkdown)
         item.setString(rawMarkdown, forType: .string)
         

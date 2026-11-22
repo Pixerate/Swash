@@ -77,27 +77,43 @@ final class DocumentExporter: NSObject {
         return page(title: source.title, styles: styles, body: body)
     }
 
-    /// Convenience for clipboard HTML from a raw Markdown string.
-    static func clipboardHTML(for markdown: String, flavor: MarkdownFlavor = .github, fileURL: URL? = nil, title: String = "") -> String {
-        clipboardHTML(for: Source(text: markdown, flavor: flavor, fileURL: fileURL, title: title))
+    /// Clipboard HTML for a raw Markdown selection. `folder` is the document's folder, used to
+    /// embed relative images.
+    static func clipboardHTML(for markdown: String, flavor: MarkdownFlavor = .github, folder: URL? = nil, title: String = "") -> String {
+        // Source wants the document's file URL; only its folder is read (for relative images).
+        let fileURL = folder?.appendingPathComponent("Untitled.md")
+        return clipboardHTML(for: Source(text: markdown, flavor: flavor, fileURL: fileURL, title: title))
+    }
+
+    /// `html` imported as an attributed string (images arrive as attachments from data URLs).
+    static func attributedString(fromHTML html: String) -> NSAttributedString? {
+        guard let data = html.data(using: .utf8) else { return nil }
+        #if os(macOS)
+        return NSAttributedString(html: data, options: [.characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil)
+        #else
+        return try? NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue],
+            documentAttributes: nil
+        )
+        #endif
     }
 
     /// RTF data generated from `html` via NSAttributedString HTML import.
     static func rtfData(from html: String) -> Data? {
-        guard let data = html.data(using: .utf8) else { return nil }
-        #if os(macOS)
-        if let attributed = NSAttributedString(html: data, options: [.characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil) {
-            return attributed.rtf(from: NSRange(location: 0, length: attributed.length), documentAttributes: [:])
-        }
-        return nil
-        #else
-        guard let attributed = try? NSAttributedString(
-            data: data,
-            options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue],
-            documentAttributes: nil
-        ) else { return nil }
-        return try? attributed.data(from: NSRange(location: 0, length: attributed.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
-        #endif
+        guard let attributed = attributedString(fromHTML: html) else { return nil }
+        return rtfData(from: attributed)
+    }
+
+    static func rtfData(from attributed: NSAttributedString) -> Data? {
+        try? attributed.data(from: NSRange(location: 0, length: attributed.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+    }
+
+    /// RTFD (RTF with its images) when `attributed` holds attachments, else nil.
+    static func rtfdData(from attributed: NSAttributedString) -> Data? {
+        let whole = NSRange(location: 0, length: attributed.length)
+        guard attributed.containsAttachments(in: whole) else { return nil }
+        return try? attributed.data(from: whole, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd])
     }
 
     private static func page(title: String, styles: String, body: String) -> String {

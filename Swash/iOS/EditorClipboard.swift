@@ -41,15 +41,20 @@ enum EditorClipboard {
     }
 
     /// Puts the selection on the pasteboard as rich text plus its raw Markdown.
-    static func copy(_ range: NSRange, from storage: NSTextStorage, to pasteboard: UIPasteboard = .general) {
+    /// `flavor` and `folder` (the document's folder, for relative images) shape the HTML and RTF.
+    static func copy(_ range: NSRange, from storage: NSTextStorage, to pasteboard: UIPasteboard = .general,
+                     flavor: MarkdownFlavor = .github, folder: URL? = nil) {
         guard range.length > 0, NSMaxRange(range) <= storage.length else { return }
-        let effectiveRange = expandedRangeForClipboardCopy(in: storage, range: range)
-        let raw = swashRawMarkdown(from: storage.attributedSubstring(from: effectiveRange))
+        // Plain text and Markdown are exactly the selection; the rich copy widens to whole list
+        // items and table rows so they paste as real lists and tables.
+        let raw = swashRawMarkdown(from: storage.attributedSubstring(from: range))
+        let richRange = expandedRangeForClipboardCopy(in: storage, range: range)
+        let richRaw = richRange == range ? raw : swashRawMarkdown(from: storage.attributedSubstring(from: richRange))
         var item: [String: Any] = [
             swashMarkdownType: Data(raw.utf8),
             UTType.utf8PlainText.identifier: raw,
         ]
-        let html = DocumentExporter.clipboardHTML(for: raw)
+        let html = DocumentExporter.clipboardHTML(for: richRaw, flavor: flavor, folder: folder)
         if let htmlData = html.data(using: .utf8) {
             item[UTType.html.identifier] = htmlData
         }
