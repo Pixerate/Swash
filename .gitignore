@@ -14,3 +14,6 @@ site/dist/
 site/.astro/
 .apphosting/
 .firebase/
+
+# Local Claude Code agent worktrees
+.claude/worktrees/
