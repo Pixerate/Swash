@@ -437,13 +437,39 @@ class MarkdownEditingTextView: UITextView {
         recentButtonsByCommand[command]
     }
 
+    /// The last parse behind `activeFormats`: the bar refreshes on every edit and selection
+    /// change, and re-parsing the whole document each time lags on long documents.
+    private var cachedFormatting: (text: String, flavor: MarkdownFlavor, formatting: MarkdownFormatting)?
+
     /// Formats currently active at `markdownSelection`.
     var activeFormats: Set<FormatCommand> {
-        FormatManifestLayout.activeFormats(
-            text: markdownText,
-            selection: markdownSelection,
-            flavor: controller?.flavor ?? flavor
-        )
+        let text = markdownText
+        let flavor = controller?.flavor ?? flavor
+        let formatting: MarkdownFormatting
+        if let cached = cachedFormatting, cached.flavor == flavor, cached.text == text {
+            formatting = cached.formatting
+        } else {
+            formatting = MarkdownFormatting(text: text, flavor: flavor)
+            cachedFormatting = (text, flavor, formatting)
+        }
+        return FormatManifestLayout.activeFormats(formatting: formatting, text: text, selection: markdownSelection)
+    }
+
+    /// Whether the editor is in Markdown source mode. In Source mode, character buttons appear
+    /// first on the keyboard bar (#191).
+    open var isSourceMode: Bool {
+        get {
+            if let custom = objc_getAssociatedObject(self, &isSourceModeKey) as? Bool {
+                return custom
+            }
+            return !(self is StyledUITextView)
+        }
+        set {
+            objc_setAssociatedObject(self, &isSourceModeKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            if formattingBarEnabled == true {
+                restoreFormattingBar()
+            }
+        }
     }
 
     /// Puts the formatting bar back after another accessory (the "/" block menu) replaced it.
@@ -511,20 +537,38 @@ class MarkdownEditingTextView: UITextView {
         recentFormatButtons.removeAll()
         recentButtonsByCommand.removeAll()
         let active = activeFormats
+        var formatButtons: [UIView] = []
         for entry in FormatManifestLayout.keyboardBarEntries(from: recentFormats) {
             let label = entry.label.replacingOccurrences(of: "…", with: "")
             let button = GlassAccessoryBar.iconButton(symbol: entry.command.symbolName, label: label, action: action(entry))
             button.isSelected = active.contains(entry.command)
             recentFormatButtons.append(button)
             recentButtonsByCommand[entry.command] = button
-            items.append(button)
+            formatButtons.append(button)
+        }
+
+        // In Source mode, character buttons come first; in Formatted mode, format commands (#191)
+        let characterButtons = makeCharacterButtons()
+        if isSourceMode {
+            items.append(contentsOf: characterButtons)
+            if !formatButtons.isEmpty {
+                items.append(GlassAccessoryBar.separatorView())
+                items.append(contentsOf: formatButtons)
+            }
+        } else {
+            items.append(contentsOf: formatButtons)
+            if !characterButtons.isEmpty {
+                items.append(GlassAccessoryBar.separatorView())
+                items.append(contentsOf: characterButtons)
+            }
         }
         return items
     }
 
     /// Aa opens the format panel; next to it sit the most recently used format commands as icon
-    /// buttons (a command with variants shows the variant used, such as "Heading 2"), followed by
-    /// Hide Keyboard at the trailing edge. The items scroll in a glass capsule (`GlassAccessoryBar`).
+    /// buttons (a command with variants shows the variant used, such as "Heading 2") and the
+    /// Markdown character buttons (#191), followed by Hide Keyboard at the trailing edge. The
+    /// items scroll in a glass capsule (`GlassAccessoryBar`).
     private func makeFormattingBar() -> UIView {
         let items = makeFormattingBarItems()
         let dismiss = GlassAccessoryBar.trailingButton(symbol: "keyboard.chevron.compact.down", label: "Hide Keyboard",
@@ -534,6 +578,42 @@ class MarkdownEditingTextView: UITextView {
         let bar = GlassAccessoryBar(items: items, trailing: dismiss, groupedInCapsule: true)
         formattingBar = bar
         return bar
+    }
+
+    /// Types `string` from the keyboard bar as a keystroke would: the delegate is asked first, so
+    /// structural editing, the "/" menu and the writing partner see it, and the change is an undo
+    /// step. A plain `insertText` from code does neither, and wipes the undo history (GOTCHAS #68).
+    func typeFromBar(_ string: String) {
+        let range = selectedRange
+        guard delegate?.textView?(self, shouldChangeTextIn: range, replacementText: string) ?? true,
+              let textRange = selectedTextRange else { return }
+        // Edit Text restyles on the next turn of the run loop, which clears an undo step made
+        // outside its own edits: go through the coordinator, which restyles in the same step
+        if let styled = self as? StyledUITextView, let coordinator = styled.coordinator {
+            coordinator.replaceSelection(with: string, in: styled, actionName: "Typing")
+            return
+        }
+        undoManager?.beginUndoGrouping()
+        replace(textRange, withText: string)
+        undoManager?.setActionName("Typing")
+        undoManager?.endUndoGrouping()
+    }
+
+    /// Generates character buttons for the accessory bar (#191).
+    func makeCharacterButtons() -> [UIButton] {
+        MarkdownCharacterBar.entries.map { entry in
+            GlassAccessoryBar.characterButton(
+                character: entry.character,
+                label: entry.accessibilityLabel,
+                action: UIAction(title: entry.character) { [weak self] _ in
+                    self?.typeFromBar(entry.character)
+                },
+                variants: entry.variants,
+                onVariant: { [weak self] variant in
+                    self?.typeFromBar(variant)
+                }
+            )
+        }
     }
 }
 
@@ -653,11 +733,15 @@ enum FormatManifestLayout {
 
     /// Formats active at `selection` (raw-Markdown UTF-16 offsets) in `text`.
     static func activeFormats(text: String, selection: NSRange, flavor: MarkdownFlavor = .github) -> Set<FormatCommand> {
+        activeFormats(formatting: MarkdownFormatting(text: text, flavor: flavor), text: text, selection: selection)
+    }
+
+    /// `activeFormats` with an existing parse of `text`.
+    static func activeFormats(formatting: MarkdownFormatting, text: String, selection: NSRange) -> Set<FormatCommand> {
         let ns = text as NSString
         let clampedLocation = min(max(0, selection.location), ns.length)
         let clampedLength = min(max(0, selection.length), ns.length - clampedLocation)
         let clamped = NSRange(location: clampedLocation, length: clampedLength)
-        let formatting = MarkdownFormatting(text: text, flavor: flavor)
         var active: Set<FormatCommand> = []
         if formatting.isActive(.strong, selection: clamped) { active.insert(.bold) }
         if formatting.isActive(.emphasis, selection: clamped) { active.insert(.italic) }
@@ -823,5 +907,41 @@ extension FormatCommand {
         if case .heading = self { return "textformat.size" }
         return symbolName
     }
+}
+
+private var isSourceModeKey: UInt8 = 0
+
+// MARK: - Markdown character bar
+
+/// An entry in the Markdown character strip on the keyboard bar (#191).
+struct MarkdownCharacterEntry: Equatable {
+    let character: String
+    let accessibilityLabel: String
+    let variants: [String]
+
+    init(_ character: String, label: String, variants: [String] = []) {
+        self.character = character
+        self.accessibilityLabel = label
+        self.variants = variants
+    }
+}
+
+/// The Markdown characters that are awkward to reach on the iOS keyboard (#191).
+enum MarkdownCharacterBar {
+    static let entries: [MarkdownCharacterEntry] = [
+        MarkdownCharacterEntry("#", label: "Number sign", variants: ["##", "###"]),
+        MarkdownCharacterEntry("*", label: "Asterisk", variants: ["**"]),
+        MarkdownCharacterEntry("_", label: "Underscore", variants: ["__"]),
+        MarkdownCharacterEntry("`", label: "Backtick", variants: ["```"]),
+        MarkdownCharacterEntry(">", label: "Greater than"),
+        MarkdownCharacterEntry("-", label: "Hyphen", variants: ["---"]),
+        MarkdownCharacterEntry("[", label: "Left bracket", variants: ["[ ]"]),
+        MarkdownCharacterEntry("]", label: "Right bracket"),
+        MarkdownCharacterEntry("(", label: "Left parenthesis"),
+        MarkdownCharacterEntry(")", label: "Right parenthesis"),
+        MarkdownCharacterEntry("|", label: "Vertical bar"),
+        MarkdownCharacterEntry("!", label: "Exclamation mark"),
+        MarkdownCharacterEntry("~", label: "Tilde", variants: ["~~"]),
+    ]
 }
 #endif

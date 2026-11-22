@@ -644,6 +644,13 @@ private struct AccountSettingsView: View {
         .formStyle(.grouped)
         .scrollDisabled(true)
         .fixedSize(horizontal: false, vertical: true)
+        .task {
+            guard !access.isPreview else { return }
+            await access.start()
+        }
+        .onAppear {
+            access.clearLastError()
+        }
     }
 }
 

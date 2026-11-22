@@ -1933,10 +1933,13 @@ nonisolated enum QuickNoteSaveAction: Equatable, Sendable {
 @MainActor
 @Observable
 final class QuickNoteTidySession {
+    nonisolated static let draftDefaultsKey = "quickNoteDraft"
+
     private(set) var text: String = ""
     private(set) var proposal: QuickNoteTidyProposal?
     private(set) var isChecking: Bool = false
 
+    @ObservationIgnored let draftKey: String?
     @ObservationIgnored let undoManager: UndoManager
     @ObservationIgnored var bandleader: any WritingBandleader
     @ObservationIgnored let defaults: UserDefaults
@@ -1961,8 +1964,10 @@ final class QuickNoteTidySession {
         flavor: MarkdownFlavor = .github,
         pauseDelay: TimeInterval = 1.2,
         clock: @escaping QuickNotePauseDetector.Clock = { Date() },
-        undoManager: UndoManager? = nil
+        undoManager: UndoManager? = nil,
+        draftKey: String? = QuickNoteTidySession.draftDefaultsKey
     ) {
+        self.draftKey = draftKey
         self.bandleader = bandleader ?? WritingBandleaderFactory.currentBandleader()
         self.defaults = defaults
         self.flavor = flavor
@@ -1970,6 +1975,9 @@ final class QuickNoteTidySession {
         let manager = undoManager ?? UndoManager()
         manager.groupsByEvent = false
         self.undoManager = manager
+        if let draftKey, let saved = defaults.string(forKey: draftKey), !saved.isEmpty {
+            self.text = saved
+        }
     }
 
     var isEmpty: Bool {
@@ -1992,6 +2000,7 @@ final class QuickNoteTidySession {
         guard newText != text else { return }
         let oldText = text
         text = newText
+        persistDraft()
 
         if !isApplyingProgrammaticChange {
             registerTextUndo(from: oldText, to: newText, actionName: "Typing")
@@ -2175,8 +2184,31 @@ final class QuickNoteTidySession {
         defer { isApplyingProgrammaticChange = false }
 
         text = newText
+        persistDraft()
         syncTextViewIfNeeded()
         registerTextUndo(from: oldText, to: newText, actionName: actionName)
+    }
+
+    /// Clears the active draft, undo actions, tidy proposal, and removes the persisted draft from UserDefaults.
+    func clear() {
+        pauseTask?.cancel()
+        pauseDetector.cancel()
+        proposal = nil
+        dismissedRevisions.removeAll()
+        acceptedRevisions.removeAll()
+        undoManager.removeAllActions()
+        text = ""
+        persistDraft()
+        syncTextViewIfNeeded()
+    }
+
+    private func persistDraft() {
+        guard let draftKey else { return }
+        if text.isEmpty {
+            defaults.removeObject(forKey: draftKey)
+        } else {
+            defaults.set(text, forKey: draftKey)
+        }
     }
 
     private func registerTextUndo(from oldText: String, to newText: String, actionName: String) {
