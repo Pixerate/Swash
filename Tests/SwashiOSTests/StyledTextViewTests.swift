@@ -200,6 +200,19 @@ final class StyledTextViewTests: XCTestCase {
 
     // MARK: - Structural editing through the text view
 
+    func testKeyboardBarCharacterIsAnUndoableKeystroke() throws {
+        let e = try editor("Title")
+        e.caret(before: "Title")
+        e.textView.typeFromBar("#")
+        e.pump()
+        XCTAssertEqual(e.text, "#Title")
+        let undoManager = try XCTUnwrap(e.textView.undoManager)
+        XCTAssertTrue(undoManager.canUndo, "a character from the keyboard bar is undoable")
+        undoManager.undo()
+        e.pump()
+        XCTAssertEqual(e.text, "Title")
+    }
+
     func testReturnContinuesAList() throws {
         let e = try editor("- one")
         e.caret(after: "one")
