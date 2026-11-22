@@ -10,7 +10,7 @@
 		0460136230045F6A00853817 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = 0460136130045F6A00853817 /* Sparkle */; };
 		046013C230045F6A00853817 /* PixerateMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C130045F6A00853817 /* PixerateMarkdown */; };
 		046013C430045F6A00853817 /* PixerateMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C330045F6A00853817 /* PixerateMarkdown */; };
-		046013C630045F6A00853817 /* PixerateCore in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = 046013C530045F6A00853817 /* PixerateCore */; };
+		046013C630045F6A00853817 /* PixerateCore in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C530045F6A00853817 /* PixerateCore */; };
 		046013C830045F6A00853817 /* PixerateCore in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C730045F6A00853817 /* PixerateCore */; };
 		0460F1A630045F6A00853817 /* FlairEffects in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = 0460F1A530045F6A00853817 /* FlairEffects */; };
 		0460F1A830045F6A00853817 /* FlairEffects in Frameworks */ = {isa = PBXBuildFile; productRef = 0460F1A730045F6A00853817 /* FlairEffects */; };
@@ -807,7 +807,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -857,7 +857,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1010,7 +1010,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.QuickLookExtension;
 				PRODUCT_MODULE_NAME = SwashQuickLookExtension;
@@ -1041,7 +1041,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.QuickLookExtension;
 				PRODUCT_MODULE_NAME = SwashQuickLookExtension;
@@ -1084,7 +1084,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ShareExtension;
 				PRODUCT_MODULE_NAME = SwashShareExtension;
@@ -1127,7 +1127,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ShareExtension;
 				PRODUCT_MODULE_NAME = SwashShareExtension;
@@ -1157,7 +1157,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ThumbnailExtension;
 				PRODUCT_MODULE_NAME = SwashThumbnailExtension;
@@ -1187,7 +1187,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ThumbnailExtension;
 				PRODUCT_MODULE_NAME = SwashThumbnailExtension;
@@ -1229,7 +1229,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.WidgetExtension;
 				PRODUCT_MODULE_NAME = SwashWidgetExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1270,7 +1270,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.WidgetExtension;
 				PRODUCT_MODULE_NAME = SwashWidgetExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1292,7 +1292,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.SwashiOSTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -1317,7 +1317,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.SwashiOSTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -1350,7 +1350,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LM_SKIP_METADATA_EXTRACTION = YES;
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.Stickers;
 				PRODUCT_MODULE_NAME = SwashStickers;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1386,7 +1386,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LM_SKIP_METADATA_EXTRACTION = YES;
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.Stickers;
 				PRODUCT_MODULE_NAME = SwashStickers;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1442,7 +1442,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				OTHER_LDFLAGS = "$(inherited) -Wl,-dead_strip_dylibs";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1534,7 +1534,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.QuickLookExtension;
 				PRODUCT_MODULE_NAME = SwashQuickLookExtension;
@@ -1577,7 +1577,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ShareExtension;
 				PRODUCT_MODULE_NAME = SwashShareExtension;
@@ -1607,7 +1607,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ThumbnailExtension;
 				PRODUCT_MODULE_NAME = SwashThumbnailExtension;
@@ -1649,7 +1649,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.WidgetExtension;
 				PRODUCT_MODULE_NAME = SwashWidgetExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1671,7 +1671,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.SwashiOSTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -1704,7 +1704,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LM_SKIP_METADATA_EXTRACTION = YES;
-				MARKETING_VERSION = 1.41.0;
+				MARKETING_VERSION = 1.42.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.Stickers;
 				PRODUCT_MODULE_NAME = SwashStickers;
 				PRODUCT_NAME = "$(TARGET_NAME)";

@@ -31,6 +31,14 @@ struct IOSSettingsView: View {
                         }
                     }
                 }
+                Section {
+                    NavigationLink {
+                        IOSWritingPartnerSettings()
+                    } label: {
+                        LabeledContent("Writing Partner",
+                                       value: (WritingPartnerMode(rawValue: UserDefaults.standard.string(forKey: WritingPartnerDefaults.mode) ?? "") ?? .automatic).title)
+                    }
+                }
                 IOSTypographySettingsSections()
                 PixerateAccountSections()
                 if StickerCatalog.isAvailable {
