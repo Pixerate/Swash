@@ -135,7 +135,10 @@ struct IOSContentView: View {
                 set: { if !distractionFree { outlineVisible = $0 != .detailOnly } }
             )) {
                 IOSOutlineSidebar(model: features, text: document.text, editor: editor,
-                                  isVisible: outlineVisible && !distractionFree, fileURL: fileURL)
+                                  isVisible: outlineVisible && !distractionFree, fileURL: fileURL,
+                                  flavor: flavorBinding,
+                                  showInfo: { features.showInfo(text: document.text, editor: editor) },
+                                  showSettings: { showingSettings = true })
             } detail: {
                 documentScreen
             }
@@ -245,10 +248,8 @@ struct IOSContentView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
-                           editor: editor, regularWidth: horizontalSizeClass == .regular,
-                           distractionFree: $distractionFree, partnerPaused: $partnerPaused)
-        ToolbarItem(placement: .primaryAction) {
+        // In the centre group on iPad; on iPhone the overflow would hide its one-tap switch
+        ToolbarItem(placement: horizontalSizeClass == .regular ? .secondaryAction : .primaryAction) {
             // A glyph button, not a segmented control: iOS 26 toolbars squeeze segmented
             // controls into one glass circle. Tap switches Source and Formatted; hold for every mode.
             Menu {
@@ -267,28 +268,34 @@ struct IOSContentView: View {
             .accessibilityValue(effectiveMode.rawValue)
             .accessibilityHint("Switches between Source and Formatted. Touch and hold for more modes.")
         }
-        ToolbarSpacer(.fixed, placement: .primaryAction)
-        ToolbarItem(placement: .primaryAction) {
-            shareLink
-        }
-        ToolbarItem(placement: .secondaryAction) {
-            // A submenu, so the editor toolbar on iPad shows an icon, not the bare flavour name
-            Menu {
-                Picker("Markdown Flavor", selection: flavorBinding) {
-                    ForEach(MarkdownFlavor.allCases) { flavor in
-                        Text(flavor.rawValue).tag(flavor)
-                    }
-                }
-                .pickerStyle(.inline)
-            } label: {
-                Label("Markdown Flavor", systemImage: "textformat")
+        IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
+                           editor: editor, regularWidth: horizontalSizeClass == .regular,
+                           distractionFree: $distractionFree, partnerPaused: $partnerPaused)
+        if horizontalSizeClass != .regular {
+            // iPad shares from the title menu; on iPhone that menu is a tap further away
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+            ToolbarItem(placement: .primaryAction) {
+                shareLink
             }
-        }
-        ToolbarItem(placement: .secondaryAction) {
-            Button {
-                showingSettings = true
-            } label: {
-                Label("Settings", systemImage: "gearshape")
+            ToolbarItem(placement: .secondaryAction) {
+                // A submenu, so the editor toolbar on iPad shows an icon, not the bare flavour name
+                Menu {
+                    Picker("Markdown Flavor", selection: flavorBinding) {
+                        ForEach(MarkdownFlavor.allCases) { flavor in
+                            Text(flavor.rawValue).tag(flavor)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("Markdown Flavor", systemImage: "textformat")
+                }
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                Button {
+                    showingSettings = true
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
             }
         }
     }
@@ -503,5 +510,12 @@ private extension FormatCommand {
         IOSContentView(document: $document, fileURL: nil)
     }
     .preferredColorScheme(.dark)
+}
+
+#Preview("iOS Editor - iPad", traits: .landscapeLeft) {
+    @Previewable @State var document = SwashSampleDocument.standard
+    NavigationStack {
+        IOSContentView(document: $document, fileURL: nil)
+    }
 }
 #endif
