@@ -132,6 +132,7 @@ struct StyledTextView: UIViewRepresentable {
             super.init()
         }
 
+        /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
         nonisolated deinit {
             NotificationCenter.default.removeObserver(self)
         }

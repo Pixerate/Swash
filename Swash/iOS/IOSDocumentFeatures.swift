@@ -338,6 +338,9 @@ final class IOSDocumentFeaturesModel {
     var exporting: String?
     var exportError: String?
 
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+    nonisolated deinit {}
+
     struct InfoSnapshot: Identifiable {
         let id = UUID()
         let document: MarkdownStatistics

@@ -63,6 +63,7 @@ final class IOSEditorController {
         textView?.becomeFirstResponder()
     }
 
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
     nonisolated deinit {}
 }
 

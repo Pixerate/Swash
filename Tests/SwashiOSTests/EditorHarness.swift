@@ -20,6 +20,7 @@ final class EditorHarness {
     final class TextBox {
         var text: String
         init(_ text: String) { self.text = text }
+        /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
         nonisolated deinit {}
     }
 
@@ -72,6 +73,7 @@ final class EditorHarness {
         window.rootViewController = nil
     }
 
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
     nonisolated deinit {}
 
     static func find<T: UIView>(_ type: T.Type, in view: UIView) -> T? {
