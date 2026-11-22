@@ -13,11 +13,11 @@ CORE="$PIXERATE_MARKDOWN $PIXERATE_CORE Swash/SlackMarkdown.swift Swash/Platform
 what="${1:-all}"
 
 if [[ $what == render || $what == all ]]; then
-  swiftc $EXTRAS -O -target arm64-apple-macos14.0 -sdk "$SDK" $CORE Swash/BubbleMenuView.swift Tests/EditorAudit/AuditRunner.swift -o "$OUT/render"
+  swiftc $EXTRAS -O -target arm64-apple-macos14.0 -sdk "$SDK" $CORE Swash/BubbleMenuView.swift Swash/DocumentExporter.swift Tests/EditorAudit/AuditRunner.swift -o "$OUT/render"
   "$OUT/render" "$OUT/render-out" | sed -n "/^RENDER/,\$p"; echo "Rendering report: $OUT/render-out/report.md (side-by-side PNGs in shots/)"
 fi
 if [[ $what == interact || $what == all ]]; then
-  swiftc $EXTRAS -O -target arm64-apple-macos14.0 -sdk "$SDK" $CORE Swash/BubbleMenuView.swift Tests/EditorAudit/InteractionRunner.swift -o "$OUT/interact"
+  swiftc $EXTRAS -O -target arm64-apple-macos14.0 -sdk "$SDK" $CORE Swash/BubbleMenuView.swift Swash/DocumentExporter.swift Tests/EditorAudit/InteractionRunner.swift -o "$OUT/interact"
   "$OUT/interact" "$OUT/interaction.md" | sed -n "/^INTERACTION/,\$p"; echo "Interaction report: $OUT/interaction.md"
 fi
 if [[ $what == bubble || $what == all ]]; then
@@ -51,6 +51,6 @@ if [[ $what == folder || $what == all ]]; then
   "$OUT/folder" "$OUT/folder-out" | grep -E "^(PASS|FAIL|FOLDER|Folder)"
 fi
 if [[ $what == perf || $what == all ]]; then
-  swiftc $EXTRAS -O -target arm64-apple-macos14.0 -sdk "$SDK" $CORE Swash/BubbleMenuView.swift Tests/EditorAudit/PerfRunner.swift -o "$OUT/perf"
+  swiftc $EXTRAS -O -target arm64-apple-macos14.0 -sdk "$SDK" $CORE Swash/BubbleMenuView.swift Swash/DocumentExporter.swift Tests/EditorAudit/PerfRunner.swift -o "$OUT/perf"
   "$OUT/perf" 2>/dev/null | grep "lines\|PERF"
 fi

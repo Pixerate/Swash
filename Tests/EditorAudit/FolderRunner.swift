@@ -140,6 +140,40 @@ enum FolderRunner {
         write("Added.md", "# Added elsewhere\n")
         wait(4) { workspace.files.contains { $0.lastPathComponent == "Added.md" } }
         check("files added by other apps appear", workspace.files.contains { $0.lastPathComponent == "Added.md" })
+
+        // External rename follows the open file
+        let addedURL = root.appendingPathComponent("Added.md")
+        workspace.select(addedURL)
+        wait { workspace.selectedFile == addedURL }
+        let externallyRenamedURL = root.appendingPathComponent("ExternalRename.md")
+        try! fm.moveItem(at: addedURL, to: externallyRenamedURL)
+        wait(4) { workspace.selectedFile == externallyRenamedURL }
+        check("external rename follows the open file", workspace.selectedFile == externallyRenamedURL)
+        check("external rename updates file list", workspace.files.contains(externallyRenamedURL) && !workspace.files.contains(addedURL))
+
+        // External removal with unsaved edits preserves edits and recreates file
+        workspace.document.text = "# Preserved Edits\nThis text was saved back.\n"
+        check("has unsaved changes before removal", workspace.hasUnsavedChanges)
+        try! fm.removeItem(at: externallyRenamedURL)
+        wait(4) { fm.fileExists(atPath: externallyRenamedURL.path) }
+        check("external removal with unsaved edits recreates file on disk", fm.fileExists(atPath: externallyRenamedURL.path))
+        check("recreated file has the unsaved edits", (try? String(contentsOf: externallyRenamedURL, encoding: .utf8)) == "# Preserved Edits\nThis text was saved back.\n")
+        check("selection is kept when recreating file", workspace.selectedFile == externallyRenamedURL)
+        check("document text in memory is preserved", workspace.document.text == "# Preserved Edits\nThis text was saved back.\n")
+
+        // Wait for the recreated file to be rescanned into workspace.files
+        wait(4) { workspace.files.contains(externallyRenamedURL) }
+        check("recreated file appears in file list", workspace.files.contains(externallyRenamedURL))
+
+        // External removal without unsaved edits cleanly clears selection and transitions to another file
+        try! fm.removeItem(at: externallyRenamedURL)
+        wait(4) { workspace.selectedFile != externallyRenamedURL }
+        check("external removal without unsaved edits transitions selection", workspace.selectedFile != nil && workspace.selectedFile != externallyRenamedURL)
+
+        // Restore Added.md so subsequent sidebar test finds 3 top-level notes + Projects folder
+        write("Added.md", "# Added elsewhere\n")
+        wait(4) { workspace.files.contains { $0.lastPathComponent == "Added.md" } }
+
         workspace.close()
 
         // MARK: Editor hooks
