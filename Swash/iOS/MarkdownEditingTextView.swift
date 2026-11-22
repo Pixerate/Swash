@@ -62,6 +62,9 @@ final class IOSEditorController {
     func focus() {
         textView?.becomeFirstResponder()
     }
+
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+    nonisolated deinit {}
 }
 
 /// A TextKit 1 UITextView (the same text system as the macOS editor) with Markdown editing aids.

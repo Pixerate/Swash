@@ -98,6 +98,9 @@ struct SourceTextView: UIViewRepresentable {
             self.parent = parent
         }
 
+        /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+        nonisolated deinit {}
+
         func installWritingPartner(in textView: MarkdownEditingTextView) {
             let host = IOSWritingPartnerHost(textView: textView, isStyled: false)
             host.rawText = { [weak textView] in textView?.text ?? "" }
