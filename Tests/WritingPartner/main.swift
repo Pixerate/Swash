@@ -972,6 +972,68 @@ do {
     check(await offSession.checkPause() == nil, "No tidy-up on pause when it's off")
     check(await offSession.save(.createDocument) && createdOff == ["todo: buy milk"], "Save goes straight through when it's off")
     check(offStub.requests.isEmpty, "Pixerate is never asked when it's off")
+
+    // 8. Draft persistence across session re-creation and clear (SWA-51)
+    let persistenceSuite = "swash-quick-note-draft-tests"
+    let draftDefaults = UserDefaults(suiteName: persistenceSuite)!
+    draftDefaults.removePersistentDomain(forName: persistenceSuite)
+
+    let draftKey = QuickNoteTidySession.draftDefaultsKey
+    check(draftDefaults.string(forKey: draftKey) == nil, "Draft defaults start empty")
+
+    // Typing persists to UserDefaults
+    let note1 = QuickNoteTidySession(bandleader: offStub, defaults: draftDefaults)
+    check(note1.text.isEmpty, "New session with empty defaults has empty text")
+    note1.type("First line of draft\nSecond line")
+    check(note1.text == "First line of draft\nSecond line", "Session text updated")
+    check(draftDefaults.string(forKey: draftKey) == "First line of draft\nSecond line", "Draft text persisted to UserDefaults")
+
+    // Recreating session restores draft
+    let note2 = QuickNoteTidySession(bandleader: offStub, defaults: draftDefaults)
+    check(note2.text == "First line of draft\nSecond line", "Recreated session restores draft from UserDefaults")
+
+    // Accepting tidy-up proposal updates persisted draft
+    let tidyProposalText = "# First line of draft\n- Second line"
+    let tidyStub = server(["First line of draft\nSecond line": tidyProposalText])
+    let tidySession = QuickNoteTidySession(bandleader: tidyStub, defaults: draftDefaults, pauseDelay: 1.2, clock: { clock.now })
+    check(tidySession.text == "First line of draft\nSecond line", "Session restored existing draft")
+    _ = await tidySession.triggerPause()
+    check(tidySession.proposal != nil, "Proposal generated for draft")
+    tidySession.acceptProposal()
+    check(tidySession.text == tidyProposalText, "Draft text updated after accept")
+    check(draftDefaults.string(forKey: draftKey) == tidyProposalText, "Persisted draft updated after accepting proposal")
+
+    // Undo restores previous text and updates persisted draft
+    tidySession.undo()
+    check(tidySession.text == "First line of draft\nSecond line", "Undo reverts text")
+    check(draftDefaults.string(forKey: draftKey) == "First line of draft\nSecond line", "Undo updates persisted draft in UserDefaults")
+
+    // Redo reapplies tidy and updates persisted draft
+    tidySession.redo()
+    check(tidySession.text == tidyProposalText, "Redo reapplies tidied text")
+    check(draftDefaults.string(forKey: draftKey) == tidyProposalText, "Redo updates persisted draft in UserDefaults")
+
+    // clear() empties text and removes draft from UserDefaults
+    tidySession.clear()
+    check(tidySession.text.isEmpty, "clear() empties session text")
+    check(draftDefaults.string(forKey: draftKey) == nil, "clear() removes draft from UserDefaults")
+
+    // Recreating session after clear starts empty
+    let note3 = QuickNoteTidySession(bandleader: offStub, defaults: draftDefaults)
+    check(note3.text.isEmpty, "Session after clear starts empty")
+
+    // Emptying draft by typing empty string removes draft key
+    note3.type("Temporary thought")
+    check(draftDefaults.string(forKey: draftKey) == "Temporary thought", "Temporary thought persisted")
+    note3.type("")
+    check(draftDefaults.string(forKey: draftKey) == nil, "Emptying text removes key from UserDefaults")
+
+    // draftKey: nil disables persistence
+    let noPersistSession = QuickNoteTidySession(bandleader: offStub, defaults: draftDefaults, draftKey: nil)
+    noPersistSession.type("Should not persist")
+    check(draftDefaults.string(forKey: draftKey) == nil, "draftKey: nil does not write to defaults")
+
+    draftDefaults.removePersistentDomain(forName: persistenceSuite)
     defaults.removePersistentDomain(forName: "swash-quick-note-tidy-tests")
 }
 

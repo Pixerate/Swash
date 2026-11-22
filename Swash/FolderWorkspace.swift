@@ -98,13 +98,15 @@ final class FolderWorkspace: ObservableObject {
     }
 
     /// Opens `url` in the editor, optionally selecting `range` (raw-Markdown offsets) once it is shown.
-    func select(_ url: URL, revealing range: NSRange? = nil) {
+    /// Returns true if the file was selected, or false if saving the current file or reading the new file failed.
+    @discardableResult
+    func select(_ url: URL, revealing range: NSRange? = nil) -> Bool {
         let url = url.standardizedFileURL
         if url == selectedFile {
             if let range { revealRequest = TextRevealRequest(fileURL: url, range: range) }
-            return
+            return true
         }
-        save()
+        guard save() else { return false }
         do {
             let text = try Self.read(url)
             savedText = text
@@ -112,8 +114,10 @@ final class FolderWorkspace: ObservableObject {
             selectedFile = url
             selectedResourceIdentifier = Self.resourceIdentifier(for: url)
             document = SwashDocument(text: text)
+            return true
         } catch {
             errorMessage = "“\(url.lastPathComponent)” couldn’t be opened. \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -160,7 +164,7 @@ final class FolderWorkspace: ObservableObject {
             errorMessage = "“\(newName)” already exists."
             return nil
         }
-        save()
+        guard save() else { return nil }
         do {
             try FileManager.default.moveItem(at: url, to: destination)
         } catch {
@@ -197,18 +201,21 @@ final class FolderWorkspace: ObservableObject {
 
     // MARK: Saving
 
-    /// Writes the selected file if its text has changed.
-    func save() {
+    /// Writes the selected file if its text has changed. Returns true if saving succeeded or wasn't needed.
+    @discardableResult
+    func save() -> Bool {
         pendingSave?.cancel()
         pendingSave = nil
-        guard let url = selectedFile, document.text != savedText else { return }
+        guard let url = selectedFile, document.text != savedText else { return true }
         let text = document.text
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             savedText = text
             selectedResourceIdentifier = Self.resourceIdentifier(for: url)
+            return true
         } catch {
             errorMessage = "“\(url.lastPathComponent)” couldn’t be saved. \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -253,14 +260,22 @@ final class FolderWorkspace: ObservableObject {
 
         guard let selected = selectedFile else { return }
 
-        // Check if the file was renamed or moved within the folder
-        let matchedRename: URL? = {
-            guard let currentID = selectedResourceIdentifier else { return nil }
-            return scan.files.first { Self.resourceIdentifier(for: $0) == currentID }
-        }()
+        if FileManager.default.fileExists(atPath: selected.path) {
+            selectedResourceIdentifier = Self.resourceIdentifier(for: selected)
+            if !hasUnsavedChanges, let text = try? Self.read(selected), text != savedText {
+                // Changed by another app, with no edits here to lose
+                savedText = text
+                document = SwashDocument(text: text)
+            }
+            return
+        }
 
-        if let renamed = matchedRename, renamed != selected {
-            // The open file was renamed or moved within the folder
+        // Gone from its path: find it by its file identifier in case it was renamed or moved
+        // within the folder (only looked up now, as it reads every file's resource values)
+        let renamed: URL? = selectedResourceIdentifier.flatMap { currentID in
+            scan.files.first { Self.resourceIdentifier(for: $0) == currentID }
+        }
+        if let renamed {
             selectedFile = renamed
             selectedResourceIdentifier = Self.resourceIdentifier(for: renamed)
             if !hasUnsavedChanges {
@@ -271,24 +286,14 @@ final class FolderWorkspace: ObservableObject {
             } else {
                 scheduleSave()
             }
-        } else if !FileManager.default.fileExists(atPath: selected.path) {
-            // The open file no longer exists at its previous path and was not found elsewhere in the folder
-            if hasUnsavedChanges {
-                // Keep unsaved changes and recreate the file at its original path
-                save()
-                scheduleReload()
-            } else {
-                clearSelection()
-                if let first = files.first { select(first) }
-            }
+        } else if hasUnsavedChanges {
+            // Deleted elsewhere with edits here: write them back to its path rather than lose them.
+            // A failed save (its folder is gone too) keeps the edits and shows the error once;
+            // the next folder event doesn't loop on it, and FSEvents reports a successful write.
+            save()
         } else {
-            // The file exists at its path
-            selectedResourceIdentifier = Self.resourceIdentifier(for: selected)
-            if !hasUnsavedChanges, let text = try? Self.read(selected), text != savedText {
-                // Changed by another app, with no edits here to lose
-                savedText = text
-                document = SwashDocument(text: text)
-            }
+            clearSelection()
+            if let first = files.first { select(first) }
         }
     }
 

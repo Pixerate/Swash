@@ -33,7 +33,7 @@ final class PreviewSnapshotTests: XCTestCase {
             try FileManager.default.createDirectory(at: exportDir, withIntermediateDirectories: true)
         }
 
-        let formatEntries = FormatManifest.entries(for: .menu).filter(\.command.isAvailableOnIOS)
+        let formatEntries = FormatManifestLayout.formatPanelEntries
         let sampleMarkdown = "# Swash\n\nA fast Markdown editor for Mac, iPad, and iPhone.\n\n## Getting Started\n\n### Formatting\n\n## Export"
         let sampleOutline = MarkdownOutline(text: sampleMarkdown)
         let emptyOutline = MarkdownOutline(text: "")
