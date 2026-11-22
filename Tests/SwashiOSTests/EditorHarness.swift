@@ -60,6 +60,13 @@ final class EditorHarness {
             throw XCTSkip("editor not hosted")
         }
         textView = found
+        controller.flavor = flavor
+        controller.onFormatCommand = { [weak self] command in
+            guard let self else { return }
+            guard let edit = FormatCommandEdits.edit(for: command, text: self.box.text, selection: self.controller.selection, flavor: self.flavor) else { return }
+            self.controller.apply(edit, actionName: command.label ?? "Format")
+            self.box.text = edit.text
+        }
         // The first styling pass is scheduled for the next run-loop turn, and the first editor in a
         // process can take a while to get there
         let deadline = Date().addingTimeInterval(10)

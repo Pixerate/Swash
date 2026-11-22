@@ -117,9 +117,143 @@ enum FolderRunner {
         _ = workspace.rename(root.appendingPathComponent("Work"), to: "Projects")
         _ = workspace.rename(root.appendingPathComponent("Projects/Roadmap.md"), to: "Plan")
 
+        // Switching files or renaming aborts and keeps the current file open when saving fails
+        let editedText = "# Important Ideas\nUnsaved content that should not be dropped.\n"
+        let ideas = root.appendingPathComponent("Ideas.md")
+        workspace.select(ideas)
+        workspace.document.text = editedText
+        try! fm.setAttributes([.immutable: true], ofItemAtPath: ideas.path)
+        let selectFailed = !workspace.select(welcome)
+        check("switching files aborts when save fails", selectFailed && workspace.selectedFile == ideas && workspace.document.text == editedText,
+              "selected: \(workspace.selectedFile?.lastPathComponent ?? "nil"), text: \(workspace.document.text)")
+        check("save failure reports an error message", workspace.errorMessage != nil && workspace.errorMessage!.contains("Ideas.md"),
+              workspace.errorMessage ?? "nil")
+        let linkHandled = workspace.openLink(URL(string: "Projects/Plan.md")!)
+        check("openLink handles link but aborts switch on save failure", linkHandled && workspace.selectedFile == ideas && workspace.document.text == editedText)
+        let renameFailed = workspace.rename(ideas, to: "Thoughts") == nil
+        check("rename aborts when save fails", renameFailed && workspace.selectedFile == ideas && workspace.document.text == editedText)
+        try! fm.setAttributes([.immutable: false], ofItemAtPath: ideas.path)
+        workspace.errorMessage = nil
+        check("save succeeds once permissions are restored", workspace.save() && !workspace.hasUnsavedChanges)
+        check("selecting next file succeeds after successful save", workspace.select(welcome) && workspace.selectedFile == welcome)
+
         write("Added.md", "# Added elsewhere\n")
         wait(4) { workspace.files.contains { $0.lastPathComponent == "Added.md" } }
         check("files added by other apps appear", workspace.files.contains { $0.lastPathComponent == "Added.md" })
+
+        // Conflict detection and resolution
+        workspace.select(welcome)
+        let initialWelcomeText = workspace.document.text
+        workspace.document.text = "# Welcome\n\nLocal unsaved edit.\n"
+        let externalText1 = "# Welcome\n\nExternal app edit.\n"
+        try! externalText1.write(to: welcome, atomically: true, encoding: .utf8)
+        workspace.save()
+        check("conflict detected when disk changed while unsaved edits existed", workspace.activeConflict != nil)
+        check("conflict preserves external text on disk", (try? String(contentsOf: welcome, encoding: .utf8)) == externalText1)
+        check("conflict holds correct file URL", workspace.activeConflict?.file == welcome)
+        check("conflict holds external disk text", workspace.activeConflict?.diskText == externalText1)
+        check("conflict holds local unsaved text", workspace.activeConflict?.localText == "# Welcome\n\nLocal unsaved edit.\n")
+
+        // Test navigation safety: navigating away with active conflict must abort
+        workspace.select(plan)
+        check("navigating away with a conflict aborts selection change", workspace.selectedFile == welcome && workspace.activeConflict != nil)
+
+        // Resolve keeping theirs
+        workspace.resolveConflict(keeping: .theirs)
+        check("resolve with .theirs updates document text to external version", workspace.document.text == externalText1)
+        check("resolve with .theirs clears active conflict", workspace.activeConflict == nil)
+        check("resolve with .theirs clears unsaved changes", !workspace.hasUnsavedChanges)
+
+        // Resolve keeping mine
+        workspace.document.text = "# Welcome\n\nMine wins.\n"
+        let externalText2 = "# Welcome\n\nAnother external write.\n"
+        try! externalText2.write(to: welcome, atomically: true, encoding: .utf8)
+        workspace.save()
+        check("conflict detected on second external change", workspace.activeConflict != nil)
+        workspace.resolveConflict(keeping: .mine)
+        check("resolve with .mine clears active conflict", workspace.activeConflict == nil)
+        check("resolve with .mine overwrites disk with local text", (try? String(contentsOf: welcome, encoding: .utf8)) == "# Welcome\n\nMine wins.\n")
+        check("resolve with .mine clears unsaved changes", !workspace.hasUnsavedChanges)
+
+        // Resolve keeping copy
+        workspace.document.text = "# Welcome\n\nCopy this.\n"
+        let externalText3 = "# Welcome\n\nThird external write.\n"
+        try! externalText3.write(to: welcome, atomically: true, encoding: .utf8)
+        workspace.save()
+        check("conflict detected on third external change", workspace.activeConflict != nil)
+        let copyURL = workspace.conflictCopyURL(for: welcome)
+        check("conflictCopyURL computes non-colliding name", copyURL.lastPathComponent == "Welcome (Conflict).md")
+        workspace.resolveConflict(keeping: .copy)
+        check("resolve with .copy clears active conflict", workspace.activeConflict == nil)
+        check("resolve with .copy leaves original file with external edits", (try? String(contentsOf: welcome, encoding: .utf8)) == externalText3)
+        check("resolve with .copy writes copy file with local edits", (try? String(contentsOf: copyURL, encoding: .utf8)) == "# Welcome\n\nCopy this.\n")
+        check("resolve with .copy switches selection to the new copy file", workspace.selectedFile == copyURL)
+        check("selected copy file has local edits as document text", workspace.document.text == "# Welcome\n\nCopy this.\n")
+
+        // Dismissing conflict
+        workspace.document.text = "# Welcome (Conflict)\n\nUnsaved in copy.\n"
+        let externalText4 = "# Welcome (Conflict)\n\nExternal in copy.\n"
+        try! externalText4.write(to: copyURL, atomically: true, encoding: .utf8)
+        workspace.save()
+        check("conflict detected in copy file", workspace.activeConflict != nil)
+        workspace.dismissConflict()
+        check("dismissConflict clears activeConflict", workspace.activeConflict == nil)
+        check("dismissConflict leaves local edits dirty in memory", workspace.hasUnsavedChanges)
+        check("dismissConflict preserves disk content", (try? String(contentsOf: copyURL, encoding: .utf8)) == externalText4)
+        check("autosave doesn't ask again after Cancel", !workspace.save(prompting: false) && workspace.activeConflict == nil)
+        check("an explicit save asks again after Cancel", !workspace.save() && workspace.activeConflict != nil)
+        workspace.resolveConflict(keeping: .theirs)
+
+        // Closing with an unresolved conflict keeps the edits in a conflict copy
+        workspace.document.text = "# Welcome (Conflict)\n\nEdits at close.\n"
+        let externalText5 = "# Welcome (Conflict)\n\nExternal at close.\n"
+        try! externalText5.write(to: copyURL, atomically: true, encoding: .utf8)
+        let closeCopyURL = workspace.conflictCopyURL(for: copyURL)
+        workspace.saveBeforeClosing()
+        check("closing with a conflict keeps the other app's change", (try? String(contentsOf: copyURL, encoding: .utf8)) == externalText5)
+        check("closing with a conflict writes the edits to a copy", (try? String(contentsOf: closeCopyURL, encoding: .utf8)) == "# Welcome (Conflict)\n\nEdits at close.\n")
+        check("closing with a conflict leaves nothing unsaved", !workspace.hasUnsavedChanges && workspace.activeConflict == nil)
+
+        // Restore welcome for subsequent tests
+        try! initialWelcomeText.write(to: welcome, atomically: true, encoding: .utf8)
+        workspace.select(welcome)
+        try? fm.removeItem(at: closeCopyURL)
+        try? fm.removeItem(at: copyURL)
+        wait(4) { !workspace.files.contains(copyURL) }
+
+        // External rename follows the open file
+        let addedURL = root.appendingPathComponent("Added.md")
+        workspace.select(addedURL)
+        wait { workspace.selectedFile == addedURL }
+        let externallyRenamedURL = root.appendingPathComponent("ExternalRename.md")
+        try! fm.moveItem(at: addedURL, to: externallyRenamedURL)
+        wait(4) { workspace.selectedFile == externallyRenamedURL }
+        check("external rename follows the open file", workspace.selectedFile == externallyRenamedURL)
+        check("external rename updates file list", workspace.files.contains(externallyRenamedURL) && !workspace.files.contains(addedURL))
+
+        // External removal with unsaved edits preserves edits and recreates file
+        workspace.document.text = "# Preserved Edits\nThis text was saved back.\n"
+        check("has unsaved changes before removal", workspace.hasUnsavedChanges)
+        try! fm.removeItem(at: externallyRenamedURL)
+        wait(4) { fm.fileExists(atPath: externallyRenamedURL.path) }
+        check("external removal with unsaved edits recreates file on disk", fm.fileExists(atPath: externallyRenamedURL.path))
+        check("recreated file has the unsaved edits", (try? String(contentsOf: externallyRenamedURL, encoding: .utf8)) == "# Preserved Edits\nThis text was saved back.\n")
+        check("selection is kept when recreating file", workspace.selectedFile == externallyRenamedURL)
+        check("document text in memory is preserved", workspace.document.text == "# Preserved Edits\nThis text was saved back.\n")
+
+        // Wait for the recreated file to be rescanned into workspace.files
+        wait(4) { workspace.files.contains(externallyRenamedURL) }
+        check("recreated file appears in file list", workspace.files.contains(externallyRenamedURL))
+
+        // External removal without unsaved edits cleanly clears selection and transitions to another file
+        try! fm.removeItem(at: externallyRenamedURL)
+        wait(4) { workspace.selectedFile != externallyRenamedURL }
+        check("external removal without unsaved edits transitions selection", workspace.selectedFile != nil && workspace.selectedFile != externallyRenamedURL)
+
+        // Restore Added.md so subsequent sidebar test finds 3 top-level notes + Projects folder
+        write("Added.md", "# Added elsewhere\n")
+        wait(4) { workspace.files.contains { $0.lastPathComponent == "Added.md" } }
+
         workspace.close()
 
         // MARK: Editor hooks

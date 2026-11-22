@@ -7,6 +7,9 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import OSLog
+
+private let documentLogger = Logger(subsystem: "com.pixerate.Swash", category: "Document")
 
 extension UTType {
     static let markdown = UTType("net.daringfireball.markdown") ?? UTType(importedAs: "net.daringfireball.markdown")
@@ -63,6 +66,7 @@ struct SwashDocument: FileDocument {
     }
     
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        documentLogger.debug("fileWrapper saving document with \(self.text.count) characters")
         let data = text.data(using: .utf8)!
         return .init(regularFileWithContents: data)
     }

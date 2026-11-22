@@ -25,10 +25,16 @@ struct IOSContentView: View {
     @State private var scrollSync = ScrollSync()
     @State private var showingSettings = false
     @State private var distractionFree = false
+    @AppStorage(WritingDefaults.focusMode) private var focusMode = false
+    @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
+    @AppStorage(WritingDefaults.typewriterScrolling) private var typewriterScrolling = false
     @State private var partnerPaused = false
     @State private var conflictCount = 0
     @State private var showingConflictSheet = false
     @State private var conflictError: String?
+    /// Where "Rename to …" moved the file, until DocumentGroup reports the new `fileURL` itself.
+    @State private var renamedFileURL: URL?
+    @State private var renameError: String?
     @State private var linkPrompt: LinkPrompt?
     @State private var dismissedFolderBanner: URL?
     /// Global y of the top safe-area edge and of the editor, which extends under the bar.
@@ -83,6 +89,15 @@ struct IOSContentView: View {
                 }, onCancel: { showingConflictSheet = false })
             }
         }
+        .alert("Couldn’t Rename", isPresented: Binding(
+            get: { renameError != nil },
+            set: { if !$0 { renameError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(renameError ?? "")
+        }
+        .onChange(of: fileURL) { _, _ in renamedFileURL = nil }
         .alert("Couldn’t Resolve Conflict", isPresented: Binding(
             get: { conflictError != nil },
             set: { if !$0 { conflictError = nil } }
@@ -140,19 +155,24 @@ struct IOSContentView: View {
     private var documentLayout: some View {
         if horizontalSizeClass == .regular {
             NavigationSplitView(columnVisibility: Binding(
-                get: { outlineVisible && !distractionFree ? .all : .detailOnly },
-                set: { if !distractionFree { outlineVisible = $0 != .detailOnly } }
+                get: { outlineVisible && !distractionFree && !focusMode ? .all : .detailOnly },
+                set: { if !distractionFree && !focusMode { outlineVisible = $0 != .detailOnly } }
             )) {
                 IOSOutlineSidebar(model: features, text: document.text, editor: editor,
-                                  isVisible: outlineVisible && !distractionFree, fileURL: fileURL)
+                                  isVisible: outlineVisible && !distractionFree && !focusMode, fileURL: fileURL,
+                                  flavor: flavorBinding,
+                                  showInfo: { features.showInfo(text: document.text, editor: editor) },
+                                  showSettings: { showingSettings = true })
             } detail: {
                 documentScreen
             }
             // DocumentGroup's own bar would sit above the columns' bars; the detail column's
             // bar already carries the document's back button and title menu
             .background(DocumentBarHider())
+            .animation(.easeInOut(duration: 0.2), value: focusMode)
         } else {
             documentScreen
+                .animation(.easeInOut(duration: 0.2), value: focusMode)
         }
     }
 
@@ -184,9 +204,14 @@ struct IOSContentView: View {
                 .accessibilityIdentifier("ExitDistractionFreeButton")
                 .padding(.trailing, 16)
                 .padding(.top, 8)
+            } else if focusMode {
+                focusControl
+                    .padding(.trailing, 16)
+                    .padding(.top, 8)
             }
         }
         .safeAreaBar(edge: .top) {
+            // Conflict and folder-access banners stay visible in Focus Mode: they guard the file
             if !distractionFree {
                 if conflictCount > 0 {
                     ConflictBanner(count: conflictCount) { showingConflictSheet = true }
@@ -197,8 +222,43 @@ struct IOSContentView: View {
             }
         }
         .toolbar { toolbar }
-        .toolbar(distractionFree ? .hidden : .visible, for: .navigationBar)
+        .toolbar(distractionFree || focusMode ? .hidden : .visible, for: .navigationBar)
         .toolbarRole(.editor)
+        .background(DocumentShareBridge(source: exportSource, model: features))
+    }
+
+    private var focusControl: some View {
+        Menu {
+            Toggle("Focus Mode", systemImage: "viewfinder", isOn: Binding(
+                get: { focusMode },
+                set: { newValue in
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        focusMode = newValue
+                    }
+                }
+            ))
+            Picker("Focus On", selection: $focusUnit) {
+                ForEach(FocusUnit.allCases) { unit in
+                    Text(unit.title).tag(unit)
+                }
+            }
+            Toggle("Typewriter Scrolling", systemImage: "arrow.up.and.down.text.horizontal", isOn: $typewriterScrolling)
+            Divider()
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    focusMode = false
+                }
+            } label: {
+                Label("Turn Focus Off", systemImage: "viewfinder.slash")
+            }
+        } label: {
+            Image(systemName: "viewfinder")
+                .font(.system(size: 15, weight: .medium))
+                .frame(width: 36, height: 36)
+        }
+        .buttonStyle(.glass)
+        .accessibilityLabel("Focus Options")
+        .accessibilityIdentifier("FocusOptionsButton")
     }
 
     /// The editors ignore the top safe area so text scrolls under the bar; `topInset` is the
@@ -254,69 +314,78 @@ struct IOSContentView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        // Focus Mode keeps only the Writing menu (its focus options) in the toolbar
+        if !focusMode {
+            // In the centre group on iPad; on iPhone the overflow would hide its one-tap switch
+            ToolbarItem(placement: horizontalSizeClass == .regular ? .secondaryAction : .primaryAction) {
+                // A glyph button, not a segmented control: iOS 26 toolbars squeeze segmented
+                // controls into one glass circle. Tap switches Source and Formatted; hold for every mode.
+                Menu {
+                    Picker("View Mode", selection: $viewMode) {
+                        ForEach(availableModes) { mode in
+                            Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("View Mode: \(effectiveMode.rawValue)", systemImage: effectiveMode.icon)
+                } primaryAction: {
+                    viewMode = effectiveMode == .preview ? .edit : .preview
+                }
+                .accessibilityLabel("View Mode")
+                .accessibilityValue(effectiveMode.rawValue)
+                .accessibilityHint("Switches between Source and Formatted. Touch and hold for more modes.")
+            }
+        }
         IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
                            editor: editor, regularWidth: horizontalSizeClass == .regular,
                            distractionFree: $distractionFree, partnerPaused: $partnerPaused)
-        ToolbarItem(placement: .primaryAction) {
-            // A glyph button, not a segmented control: iOS 26 toolbars squeeze segmented
-            // controls into one glass circle. Tap switches Source and Formatted; hold for every mode.
-            Menu {
-                Picker("View Mode", selection: $viewMode) {
-                    ForEach(availableModes) { mode in
-                        Label(mode.rawValue, systemImage: mode.icon).tag(mode)
-                    }
-                }
-                .pickerStyle(.inline)
-            } label: {
-                Label("View Mode: \(effectiveMode.rawValue)", systemImage: effectiveMode.icon)
-            } primaryAction: {
-                viewMode = effectiveMode == .preview ? .edit : .preview
+        if horizontalSizeClass != .regular && !focusMode {
+            // iPad shares from the title menu; on iPhone that menu is a tap further away
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+            ToolbarItem(placement: .primaryAction) {
+                shareLink
             }
-            .accessibilityLabel("View Mode")
-            .accessibilityValue(effectiveMode.rawValue)
-            .accessibilityHint("Switches between Source and Formatted. Touch and hold for more modes.")
-        }
-        ToolbarSpacer(.fixed, placement: .primaryAction)
-        ToolbarItem(placement: .primaryAction) {
-            shareLink
-        }
-        ToolbarItem(placement: .secondaryAction) {
-            // A submenu, so the editor toolbar on iPad shows an icon, not the bare flavour name
-            Menu {
-                Picker("Markdown Flavor", selection: flavorBinding) {
-                    ForEach(MarkdownFlavor.allCases) { flavor in
-                        Text(flavor.rawValue).tag(flavor)
+            ToolbarItem(placement: .secondaryAction) {
+                // A submenu, so the editor toolbar on iPad shows an icon, not the bare flavour name
+                Menu {
+                    Picker("Markdown Flavor", selection: flavorBinding) {
+                        ForEach(MarkdownFlavor.allCases) { flavor in
+                            Text(flavor.rawValue).tag(flavor)
+                        }
                     }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("Markdown Flavor", systemImage: "textformat")
                 }
-                .pickerStyle(.inline)
-            } label: {
-                Label("Markdown Flavor", systemImage: "textformat")
             }
-        }
-        ToolbarItem(placement: .secondaryAction) {
-            Button {
-                showingSettings = true
-            } label: {
-                Label("Settings", systemImage: "gearshape")
+            ToolbarItem(placement: .secondaryAction) {
+                Button {
+                    showingSettings = true
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
             }
         }
     }
 
-    /// Shares the document file, so the share sheet shows its thumbnail and name; an unsaved
-    /// document shares its Markdown. Its own toolbar item, never in the overflow menu, where a
-    /// share sheet has no source view to anchor to.
+    /// Shares the document through the system share sheet (`IOSPresenter.shareDocument`),
+    /// providing multiple representations (formatted text for Notes, plain text for Messages,
+    /// Mail and Notion, the `.md` file for AirDrop and Save to Files, and a print formatter for
+    /// Print) along with custom actions for Export as PDF, Export as HTML, Copy as Rich Text,
+    /// and Copy HTML (GOTCHAS #55, #183).
     @ViewBuilder
     private var shareLink: some View {
-        if let fileURL {
-            ShareLink(item: fileURL, subject: Text(documentTitle)) {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-        } else {
-            ShareLink(item: document.text, subject: Text(documentTitle),
-                      preview: SharePreview(documentTitle)) {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
+        Button {
+            presentShareSheet()
+        } label: {
+            Label("Share", systemImage: "square.and.arrow.up")
         }
+        .disabled(features.exporting != nil)
+    }
+
+    private func presentShareSheet() {
+        IOSPresenter.shareDocument(source: exportSource, model: features)
     }
 
     /// Changing flavour converts the text in place, as on the Mac.
@@ -337,8 +406,11 @@ struct IOSContentView: View {
         DocumentExporter.Source(text: document.text, flavor: document.flavor, fileURL: fileURL, title: documentTitle)
     }
 
+    /// The document's current location, including a rename made from the title menu.
+    private var currentFileURL: URL? { renamedFileURL ?? fileURL }
+
     private var documentTitle: String {
-        if let name = fileURL?.deletingPathExtension().lastPathComponent, !name.isEmpty {
+        if let name = currentFileURL?.deletingPathExtension().lastPathComponent, !name.isEmpty {
             return name
         }
         return "Untitled"
@@ -354,7 +426,7 @@ struct IOSContentView: View {
     }
 
     private func renameDocument(to newTitle: String) {
-        guard let sourceURL = fileURL else { return }
+        guard let sourceURL = currentFileURL else { return }
         let ext = sourceURL.pathExtension.isEmpty ? "md" : sourceURL.pathExtension
         let sanitized = IOSDocumentFeaturesModel.fileName(newTitle)
         let parentFolder = sourceURL.deletingLastPathComponent()
@@ -372,14 +444,26 @@ struct IOSContentView: View {
 
         let coordinator = NSFileCoordinator(filePresenter: nil)
         var coordinatorError: NSError?
+        var moveError: Error?
+        var movedTo: URL?
         coordinator.coordinate(writingItemAt: sourceURL, options: .forMoving,
                                writingItemAt: destinationURL, options: .forReplacing,
                                error: &coordinatorError) { newSourceURL, newDestinationURL in
             do {
+                coordinator.item(at: newSourceURL, willMoveTo: newDestinationURL)
                 try FileManager.default.moveItem(at: newSourceURL, to: newDestinationURL)
+                // Tells the open UIDocument (a file presenter) where its file went, so autosave
+                // writes there instead of recreating or failing on the old path
+                coordinator.item(at: newSourceURL, didMoveTo: newDestinationURL)
+                movedTo = newDestinationURL
             } catch {
-                print("Failed to rename document from \(newSourceURL) to \(newDestinationURL): \(error)")
+                moveError = error
             }
+        }
+        if let movedTo {
+            renamedFileURL = movedTo
+        } else if let error = moveError ?? coordinatorError {
+            renameError = "“\(sourceURL.lastPathComponent)” couldn’t be renamed. \(error.localizedDescription)"
         }
     }
 
@@ -452,6 +536,7 @@ struct IOSContentView: View {
     /// Formatting writes the document's flavour: Slack mrkdwn gets `*bold*`, `_italic_`, `~strike~`
     /// and `<url|text>` links (SlackMarkdown.swift).
     private func handleFormatCommand(_ command: FormatCommand) {
+        RecentFormatCommands.shared.record(command)
         let selection = editor.isAttached ? editor.selection : NSRange(location: (document.text as NSString).length, length: 0)
         if command == .link {
             let current = FormatCommandEdits.activeLink(text: document.text, selection: selection, flavor: document.flavor)
@@ -545,11 +630,31 @@ private extension FormatCommand {
     }
 }
 
+#Preview("iOS Editor - Focus Mode") {
+    @Previewable @State var document = SwashSampleDocument.standard
+    let defaults: UserDefaults = {
+        let suite = UserDefaults(suiteName: "focus-mode-preview")!
+        suite.set(true, forKey: WritingDefaults.focusMode)
+        return suite
+    }()
+    NavigationStack {
+        IOSContentView(document: $document, fileURL: nil)
+    }
+    .defaultAppStorage(defaults)
+}
+
 #Preview("iOS Editor - Dark Mode") {
     @Previewable @State var document = SwashSampleDocument.tablesAndMath
     NavigationStack {
         IOSContentView(document: $document, fileURL: nil)
     }
     .preferredColorScheme(.dark)
+}
+
+#Preview("iOS Editor - iPad", traits: .landscapeLeft) {
+    @Previewable @State var document = SwashSampleDocument.standard
+    NavigationStack {
+        IOSContentView(document: $document, fileURL: nil)
+    }
 }
 #endif

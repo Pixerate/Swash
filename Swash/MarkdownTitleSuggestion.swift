@@ -30,7 +30,8 @@ public enum MarkdownTitleSuggestion {
     public static func suggest(from text: String) -> String? {
         // Only the start matters (front matter, then the first ~20 lines), and this runs as the
         // person types: split just the first few thousand characters, not the whole document
-        let head = text.count > maxScannedCharacters ? String(text.prefix(maxScannedCharacters)) : text
+        // (`prefix` stops after that many characters; `count` would walk the whole document)
+        let head = String(text.prefix(maxScannedCharacters))
         let rawLines = head.components(separatedBy: .newlines)
 
         // 1. Check YAML front matter at the start of the document
@@ -234,8 +235,18 @@ public enum MarkdownTitleSuggestion {
         return cleaned.isEmpty ? "Untitled" : cleaned
     }
 
+    /// Compiled once: suggestions are recomputed as the person types.
+    private static let regexCache = NSCache<NSString, NSRegularExpression>()
+
     private static func replacingRegex(_ text: String, pattern: String, template: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        let regex: NSRegularExpression
+        if let cached = regexCache.object(forKey: pattern as NSString) {
+            regex = cached
+        } else {
+            guard let compiled = try? NSRegularExpression(pattern: pattern) else { return text }
+            regexCache.setObject(compiled, forKey: pattern as NSString)
+            regex = compiled
+        }
         let range = NSRange(location: 0, length: (text as NSString).length)
         return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: template)
     }

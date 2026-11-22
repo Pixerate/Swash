@@ -200,6 +200,19 @@ final class StyledTextViewTests: XCTestCase {
 
     // MARK: - Structural editing through the text view
 
+    func testKeyboardBarCharacterIsAnUndoableKeystroke() throws {
+        let e = try editor("Title")
+        e.caret(before: "Title")
+        e.textView.typeFromBar("#")
+        e.pump()
+        XCTAssertEqual(e.text, "#Title")
+        let undoManager = try XCTUnwrap(e.textView.undoManager)
+        XCTAssertTrue(undoManager.canUndo, "a character from the keyboard bar is undoable")
+        undoManager.undo()
+        e.pump()
+        XCTAssertEqual(e.text, "Title")
+    }
+
     func testReturnContinuesAList() throws {
         let e = try editor("- one")
         e.caret(after: "one")
@@ -299,6 +312,117 @@ final class StyledTextViewTests: XCTestCase {
         e.textView.toggleFormatPanel()
         _ = e.textView.resignFirstResponder()
         XCTAssertFalse(e.textView.isShowingFormatPanel, "the keyboard comes back the next time editing starts")
+    }
+
+    func testRecentFormatCommandsStoreOrderingCapAndPersistence() throws {
+        let suiteName = "SwashRecentFormatTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = RecentFormatCommands(defaults: defaults)
+        XCTAssertEqual(
+            store.commands,
+            [.bold, .italic, .link, .bulletList, .heading(1)],
+            "seeds with sensible defaults when UserDefaults is empty"
+        )
+
+        // Using an existing command moves it to the front without duplicating
+        store.record(.link)
+        XCTAssertEqual(store.commands, [.link, .bold, .italic, .bulletList, .heading(1)])
+
+        // Using a new variant adds it at the front, reaching the cap of 6
+        store.record(.heading(2))
+        XCTAssertEqual(store.commands, [.heading(2), .link, .bold, .italic, .bulletList, .heading(1)])
+        XCTAssertEqual(store.commands.count, RecentFormatCommands.maxCount)
+
+        // Recording beyond the cap drops the oldest command
+        store.record(.quote)
+        XCTAssertEqual(store.commands, [.quote, .heading(2), .link, .bold, .italic, .bulletList])
+        XCTAssertEqual(store.commands.count, RecentFormatCommands.maxCount)
+
+        store.record(.taskList)
+        XCTAssertEqual(store.commands, [.taskList, .quote, .heading(2), .link, .bold, .italic])
+
+        // Unavailable commands on iOS are ignored
+        store.record(.table)
+        store.record(.footnote)
+        XCTAssertEqual(store.commands, [.taskList, .quote, .heading(2), .link, .bold, .italic])
+
+        // Persists across store instances (simulating app relaunch)
+        let relaunched = RecentFormatCommands(defaults: defaults)
+        XCTAssertEqual(relaunched.commands, [.taskList, .quote, .heading(2), .link, .bold, .italic])
+
+        // Reset restores the default seed
+        relaunched.reset()
+        XCTAssertEqual(relaunched.commands, RecentFormatCommands.defaultCommands)
+    }
+
+    func testKeyboardBarShowsRecentFormatsAndSelectedState() throws {
+        let suiteName = "SwashKeyboardBarTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let e = try editor("Plain\n\n**bold** and [site](https://example.com)\n\n## Subheading\n\n1. first")
+        e.textView.recentFormats = RecentFormatCommands(defaults: defaults)
+
+        XCTAssertEqual(
+            e.textView.recentFormatButtons.map { $0.accessibilityLabel },
+            ["Bold", "Italic", "Link", "Bullet List", "Heading 1"],
+            "initial bar shows the seeded recent commands"
+        )
+
+        // Using Heading 2 puts that variant at the front of the bar and applies it to "Plain"
+        e.caret(after: "Plain")
+        e.textView.invokeFormatCommand(.heading(2))
+        e.pump()
+        XCTAssertEqual(
+            e.textView.recentFormatButtons.map { $0.accessibilityLabel },
+            ["Heading 2", "Bold", "Italic", "Link", "Bullet List", "Heading 1"]
+        )
+        XCTAssertEqual(e.textView.recentButton(for: .heading(2))?.isSelected, true, "Heading 2 button shows selected on the heading line")
+
+        // Exceeding 6 recents caps the bar at 6 recent buttons
+        e.textView.invokeFormatCommand(.numberedList)
+        e.pump()
+        XCTAssertEqual(e.textView.recentFormatButtons.count, RecentFormatCommands.maxCount)
+        XCTAssertEqual(e.textView.recentFormatButtons.first?.accessibilityLabel, "Numbered List")
+        XCTAssertNil(e.textView.recentButton(for: .heading(1)), "oldest recent dropped past cap")
+        XCTAssertEqual(e.textView.recentButton(for: .numberedList)?.isSelected, true)
+
+        // Caret inside **bold** selects the Bold button and clears Numbered List
+        e.caret(after: "**bo")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertEqual(e.textView.recentButton(for: .bold)?.isSelected, true)
+        XCTAssertEqual(e.textView.recentButton(for: .numberedList)?.isSelected, false)
+        XCTAssertEqual(e.textView.recentButton(for: .heading(2))?.isSelected, false)
+
+        // Caret inside link selects the Link button
+        e.caret(after: "[si")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertEqual(e.textView.recentButton(for: .link)?.isSelected, true)
+        XCTAssertEqual(e.textView.recentButton(for: .bold)?.isSelected, false)
+    }
+
+    func testFormatPanelOffersEveryAvailableIOSFormatGroupedByManifestGroup() throws {
+        let panelEntries = FormatManifestLayout.formatPanelEntries
+        let expectedMenuEntries = FormatManifest.entries(for: .menu).filter(\.command.isAvailableOnIOS)
+        XCTAssertEqual(panelEntries.map(\.command), expectedMenuEntries.map(\.command))
+        XCTAssertTrue(panelEntries.allSatisfy(\.command.isAvailableOnIOS))
+
+        let allAvailableCommands: [FormatCommand] = [
+            .bold, .italic, .strikethrough, .code, .link,
+            .heading(1), .heading(2), .heading(3), .paragraph,
+            .bulletList, .numberedList, .taskList, .quote, .codeBlock,
+        ]
+        for command in allAvailableCommands {
+            XCTAssertTrue(panelEntries.contains { $0.command == command }, "panel includes \(command)")
+        }
+
+        let panel = FormatPanel(entries: panelEntries, activeFormats: [.bold, .heading(2)], apply: { _ in }, close: {})
+        XCTAssertEqual(panel.textStyles.map(\.command), [.heading(1), .heading(2), .heading(3), .paragraph])
+        XCTAssertEqual(panel.groups.count, 2)
+        XCTAssertEqual(panel.groups.first?.map(\.command), [.bold, .italic, .strikethrough, .code, .link])
+        XCTAssertEqual(panel.groups.last?.map(\.command), [.bulletList, .numberedList, .taskList, .quote, .codeBlock])
     }
 
     // MARK: "/" block menu
@@ -728,4 +852,71 @@ final class StyledTextViewTests: XCTestCase {
         XCTAssertEqual(choices.first?.title, "This Version")
         XCTAssertNil(try DocumentConflicts.resolve(at: fileURL, keeping: choices.first?.version))
     }
+
+    // MARK: - Caret size (SWA-64 / #186)
+
+    func testCaretRectHeightMatchesVisibleTextAndNeverCollapsesToDot() throws {
+        let markdown = "# Heading\n\nIntro with **bold** and *italic* text.\n\n- List item\n\n"
+        let e = try editor(markdown)
+
+        func caretRectAt(raw: NSRange) throws -> CGRect {
+            e.select(raw: raw)
+            let pos = try XCTUnwrap(e.textView.selectedTextRange?.start)
+            return e.textView.caretRect(for: pos)
+        }
+
+        let baseHeight = e.coordinator.baseFont.lineHeight
+
+        // 1. Heading: at start of heading, caret height matches heading font line height (~28+ pt)
+        // and is never a dot (< 5 pt) or stretched by paragraphSpacingBefore
+        let headingRange = (markdown as NSString).range(of: "Heading")
+        let headingCaret = try caretRectAt(raw: NSRange(location: headingRange.location, length: 0))
+        let headingFont = try XCTUnwrap(e.storage.attribute(.font, at: e.coordinator.storageRange(forRaw: headingRange, in: e.textView).location, effectiveRange: nil) as? UIFont)
+        XCTAssertEqual(headingCaret.height, headingFont.lineHeight, accuracy: 0.5, "caret at heading matches heading line height")
+        XCTAssertGreaterThan(headingCaret.height, baseHeight, "heading caret is larger than body text")
+
+        // 2. Empty line between heading and body: matches baseFont line height, never heading height or dot
+        let emptyLine1Location = (markdown as NSString).range(of: "\n\nIntro").location + 1
+        let emptyLineCaret = try caretRectAt(raw: NSRange(location: emptyLine1Location, length: 0))
+        XCTAssertEqual(emptyLineCaret.height, baseHeight, accuracy: 0.5, "caret on empty line matches body font line height")
+
+        // 3. Normal body text: matches baseFont line height
+        let bodyRange = (markdown as NSString).range(of: "Intro with")
+        let bodyCaret = try caretRectAt(raw: NSRange(location: bodyRange.location, length: 0))
+        XCTAssertEqual(bodyCaret.height, baseHeight, accuracy: 0.5, "caret in body text matches body font line height")
+
+        // 4. Next to bold markers: **bold**
+        let boldRange = (markdown as NSString).range(of: "bold")
+        // Just before "bold" (at or next to the leading ** marker)
+        let boldStartCaret = try caretRectAt(raw: NSRange(location: boldRange.location, length: 0))
+        XCTAssertEqual(boldStartCaret.height, baseHeight, accuracy: 0.5, "caret next to bold marker matches body text")
+        XCTAssertGreaterThan(boldStartCaret.height, 10, "caret is never a collapsed dot")
+        // Just after "bold" (next to trailing ** marker)
+        let boldEndCaret = try caretRectAt(raw: NSRange(location: NSMaxRange(boldRange), length: 0))
+        XCTAssertEqual(boldEndCaret.height, baseHeight, accuracy: 0.5, "caret after bold matches body text")
+
+        // 5. Next to italic markers: *italic*
+        let italicRange = (markdown as NSString).range(of: "italic")
+        let italicStartCaret = try caretRectAt(raw: NSRange(location: italicRange.location, length: 0))
+        XCTAssertEqual(italicStartCaret.height, baseHeight, accuracy: 0.5, "caret next to italic marker matches body text")
+        let italicEndCaret = try caretRectAt(raw: NSRange(location: NSMaxRange(italicRange), length: 0))
+        XCTAssertEqual(italicEndCaret.height, baseHeight, accuracy: 0.5, "caret after italic matches body text")
+
+        // 6. List item: next to hidden prefix marker "- "
+        let listRange = (markdown as NSString).range(of: "List item")
+        let listCaret = try caretRectAt(raw: NSRange(location: listRange.location, length: 0))
+        XCTAssertEqual(listCaret.height, baseHeight, accuracy: 0.5, "caret at list item matches body text")
+        XCTAssertGreaterThan(listCaret.height, 10, "caret at list item is never a dot")
+
+        // 7. Trailing empty line at end of document
+        let trailingCaret = try caretRectAt(raw: NSRange(location: (markdown as NSString).length, length: 0))
+        XCTAssertEqual(trailingCaret.height, baseHeight, accuracy: 0.5, "caret at trailing empty line matches body text")
+
+        // 8. Empty document
+        let emptyDoc = try editor("")
+        let emptyPos = try XCTUnwrap(emptyDoc.textView.position(from: emptyDoc.textView.beginningOfDocument, offset: 0))
+        let emptyDocCaret = emptyDoc.textView.caretRect(for: emptyPos)
+        XCTAssertEqual(emptyDocCaret.height, emptyDoc.coordinator.baseFont.lineHeight, accuracy: 0.5, "caret in empty document matches body font line height")
+    }
 }
+
