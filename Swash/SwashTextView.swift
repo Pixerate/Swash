@@ -892,7 +892,8 @@ class SwashNSTextView: NSTextView {
 
     override func keyDown(with event: NSEvent) {
         if let coordinator = delegate as? SwashTextView.Coordinator, coordinator.isWritingToolsActive {
-            coordinator.flushWritingToolsChanges(in: self)
+            // Only clears hung state AppKit already reports as over; a key press alone never ends a session.
+            coordinator.verifyWritingToolsState(in: self)
         }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags == .option, (event.keyCode == 36 || event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\n"),
