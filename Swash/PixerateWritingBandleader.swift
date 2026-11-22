@@ -29,6 +29,11 @@ nonisolated final class PixerateWritingBandleader: WritingBandleader, @unchecked
         self.teamIdProvider = teamIdProvider
     }
 
+    /// How long a pause waits for Pixerate before the on-device partner takes the pause instead
+    /// (`WritingBandleaderFactory.leadWithFallback`): long enough for a slow network, short enough
+    /// that a dropped connection doesn't leave the person waiting (#109).
+    static let leadTimeout: TimeInterval = 6
+
     func lead(request: JazzTextLeadRequest) async throws -> JazzTextLeadResponse? {
         var req = request
         if req.teamId == nil {
@@ -52,7 +57,8 @@ nonisolated final class PixerateWritingBandleader: WritingBandleader, @unchecked
             if let postHandler {
                 responseData = try await postHandler("/api/agent/text-lead", body)
             } else {
-                responseData = try await PixerateAccess.shared.post(path: "/api/agent/text-lead", body: body)
+                responseData = try await PixerateAccess.shared.post(path: "/api/agent/text-lead", body: body,
+                                                                    timeout: Self.leadTimeout)
             }
         } catch PixerateRefusal.subscriptionRequired {
             // Needs Pixerate Pro: handled quietly, falling back to None

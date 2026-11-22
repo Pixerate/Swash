@@ -80,9 +80,16 @@ final class DocumentOpenerTests: XCTestCase {
         DocumentOpener.findOpenDocuments(in: docVC, into: &found)
         XCTAssertEqual(found.count, 1)
 
-        let saveSuccess = await doc.save(to: doc.fileURL, for: .forOverwriting)
+        let callsBefore = doc.saveCallCount
+        let saveSuccess = await DocumentOpener.save(found)
         XCTAssertTrue(saveSuccess)
         XCTAssertFalse(doc.hasUnsavedChanges)
+        XCTAssertEqual(doc.saveCallCount, callsBefore + 1)
+
+        // A document with nothing unsaved isn't written again
+        let unchanged = await DocumentOpener.save(found)
+        XCTAssertTrue(unchanged)
+        XCTAssertEqual(doc.saveCallCount, callsBefore + 1)
 
         let readOnDisk = try String(contentsOf: fileURL, encoding: .utf8)
         XCTAssertEqual(readOnDisk, "Recent unsaved edits made during the session")

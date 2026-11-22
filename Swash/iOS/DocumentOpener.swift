@@ -123,10 +123,16 @@ enum DocumentOpener {
     /// Saves all open documents across all connected window scenes.
     @discardableResult
     static func saveOpenDocuments() async -> Bool {
-        let docs = openDocuments().filter { !$0.documentState.contains(.closed) }
-        guard !docs.isEmpty else { return true }
+        await save(openDocuments())
+    }
+
+    /// Saves those of `documents` that are open and have unsaved changes. Unchanged ones are left
+    /// alone: this runs every time the app goes inactive (Control Centre, the app switcher), and
+    /// rewriting unchanged files would touch them and sync them for nothing.
+    @discardableResult
+    static func save(_ documents: [UIDocument]) async -> Bool {
         var allSucceeded = true
-        for document in docs {
+        for document in documents where !document.documentState.contains(.closed) && document.hasUnsavedChanges {
             let success = await document.save(to: document.fileURL, for: .forOverwriting)
             if !success { allSucceeded = false }
         }
