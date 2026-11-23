@@ -448,3 +448,7 @@
 ## 107. Local Builds Rewrite `CFBundleVersion` in `Swash/Info.plist`
 - **Issue**: A build phase on the Swash target sets `CFBundleVersion` in the tracked `Swash/Info.plist` to `git rev-list --count HEAD` on every local (non-CI) macOS build. `git add -A` or `git commit -a` after a build commits that number, and it changed with every merge while several PRs were landed in a row (530 became 712, #221).
 - **Solution**: After building, restore it with `git checkout -- Swash/Info.plist` (alongside `project.pbxproj`, GOTCHAS #15), and stage files by name rather than with `git add -A`.
+
+## 108. Flavour Detection on Open Picked Slack for GitHub Markdown
+- **Issue**: `MarkdownParser.detectFlavor` scored only Slack signals and GitHub extensions (tables, task lists, `~~`), so a GitHub file without those, like a GOTCHAS file full of `**bold**`, headings and fences, opened as Slack because a single `*other*` emphasis scored 2 against 0. `*text*`, `<https://…>` and `:emoji:` are ordinary Markdown too.
+- **Solution**: Detection lives in `MarkdownFlavor.detect(in:)` (Swash/MarkdownFlavor.swift, compiled by every runner). Slack wins only when its score beats Markdown-only syntax (`**`, `__`, `[text](url)`, ATX headings, fences naming a language) plus GitHub extensions, and code spans and fenced blocks are removed before scoring. Add a case to the "Flavour detection" section of `Tests/Slack/main.swift` (`scripts/run_slack_tests.sh`) when changing a weight.

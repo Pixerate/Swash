@@ -468,68 +468,9 @@ struct MarkdownParser {
         return lines.joined(separator: "\n")
     }
 
-    /// Automatically detects the Markdown flavor based on syntax signatures.
-    private static func flavorRegex(_ pattern: String, _ options: NSRegularExpression.Options = []) -> NSRegularExpression {
-        try! NSRegularExpression(pattern: pattern, options: options)
-    }
-    private static let slackPipeLinkRegex = flavorRegex("<https?://[^>|\\n]+\\|[^>|\\n]+>")
-    private static let slackAngleLinkRegex = flavorRegex("<https?://[^>|\\n]+>")
-    private static let slackStrikeRegex = flavorRegex("(?<!~)~([^~\\n]+?)~(?!~)")
-    private static let slackBoldRegex = flavorRegex("(?<!\\*)\\*([^*\\n]+?)\\*(?!\\*)")
-    private static let gfmStrikeRegex = flavorRegex("~~([^~\\n]+?)~~")
-    private static let taskListRegex = flavorRegex("^\\s*[-*]\\s+\\[[ xX]\\]\\s+", [.anchorsMatchLines])
-    private static let tableRowRegex = flavorRegex("^\\|.*\\|\\s*$", [.anchorsMatchLines])
-    private static let markdownLinkRegex = flavorRegex("\\[[^\\]\\n]+\\]\\([^\\)\\n]+\\)")
-    private static let fourSpaceIndentRegex = flavorRegex("^ {4}\\S", [.anchorsMatchLines])
-    
-    /// Automatically detects the Markdown flavor based on syntax signatures. Only the start of a
-    /// long document is examined: the signatures show up early and opening a file stays fast.
+    /// Guesses a document's flavour from its syntax (see `MarkdownFlavor.detect(in:)`).
     static func detectFlavor(_ fullText: String) -> MarkdownFlavor {
-        let fullNS = fullText as NSString
-        if fullNS.length == 0 { return .github }
-        let sampleLength = 32 * 1024
-        let text = fullNS.length > sampleLength
-            ? fullNS.substring(with: fullNS.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: sampleLength)))
-            : fullText
-        let nsText = text as NSString
-        let all = NSRange(location: 0, length: nsText.length)
-        
-        var slackScore = 0
-        var gfmScore = 0
-        var originalScore = 0
-        
-        // Slack heuristics: <url|text>, ~strikethrough~, *bold*
-        slackScore += slackPipeLinkRegex.numberOfMatches(in: text, options: [], range: all) * 4
-        slackScore += slackAngleLinkRegex.numberOfMatches(in: text, options: [], range: all) * 2
-        slackScore += slackStrikeRegex.numberOfMatches(in: text, options: [], range: all) * 3
-        slackScore += slackBoldRegex.numberOfMatches(in: text, options: [], range: all) * 2
-        
-        // GFM heuristics: ~~strikethrough~~, task lists, tables
-        gfmScore += gfmStrikeRegex.numberOfMatches(in: text, options: [], range: all) * 4
-        gfmScore += taskListRegex.numberOfMatches(in: text, options: [], range: all) * 4
-        gfmScore += tableRowRegex.numberOfMatches(in: text, options: [], range: all) * 2
-        
-        // Standard Markdown links [text](url)
-        let mdLinkCount = markdownLinkRegex.numberOfMatches(in: text, options: [], range: all)
-        
-        // Original Markdown heuristic: 4-space indented code block without fenced ``` code block
-        let hasFencedCode = text.contains("```")
-        let hasFourSpaceIndent = fourSpaceIndentRegex.firstMatch(in: text, options: [], range: all) != nil
-        if hasFourSpaceIndent && !hasFencedCode {
-            originalScore += 4
-        }
-        
-        if slackScore > gfmScore && slackScore > originalScore {
-            return .slack
-        } else if originalScore > gfmScore && originalScore > slackScore {
-            return .original
-        } else if gfmScore > 0 {
-            return .github
-        } else if mdLinkCount > 0 || hasFencedCode {
-            return .commonMark
-        }
-        
-        return .github
+        MarkdownFlavor.detect(in: fullText)
     }
     
     /// Converts text in-place from source flavor to target flavor.
