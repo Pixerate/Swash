@@ -956,7 +956,12 @@ final class StyledUITextView: MarkdownEditingTextView {
 
             let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
             let glyphY = layoutManager.location(forGlyphAt: glyph).y
-            if glyphY > 0 {
+            // A hidden prefix at the start of a line (such as `- ` on an empty list item) has a
+            // 0.01 pt font, so its glyph's baseline offset is near 0 instead of the visible text's
+            // ascender; fall back to `font.ascender` unless the glyph itself uses a visible font.
+            let glyphChar = layoutManager.characterIndexForGlyph(at: glyph)
+            let glyphFont = glyphChar < storage.length ? storage.attribute(.font, at: glyphChar, effectiveRange: nil) as? UIFont : nil
+            if glyphY > 0, let glyphFont, glyphFont.pointSize >= 1 {
                 baselineY = lineRect.minY + textContainerInset.top + glyphY
             } else {
                 baselineY = lineRect.minY + textContainerInset.top + font.ascender

@@ -1,5 +1,11 @@
 # swash
 
+## 1.43.2
+
+### Patch Changes
+
+- 0a0c557: Shortcuts and AppleScript no longer default to an "Inbox" note: the Inbox template and the "Add to Swash inbox" phrase are gone, and appending needs a document, path or name.
+
 ## 1.43.1
 
 ### Patch Changes
