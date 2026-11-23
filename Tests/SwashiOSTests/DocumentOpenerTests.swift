@@ -98,7 +98,8 @@ final class DocumentOpenerTests: XCTestCase {
     func testCreateDocumentWritesNoteToDocumentsFolder() throws {
         let note = try DocumentOpener.createDocument(title: "Shared Note", text: "Note content from share extension")
         XCTAssertTrue(FileManager.default.fileExists(atPath: note.path))
-        XCTAssertTrue(note.lastPathComponent.hasPrefix("Shared Note"))
+        // "Shared Note" is a placeholder: the note is named after its own first line (#209)
+        XCTAssertTrue(note.lastPathComponent.hasPrefix("Note content from share extension"), note.lastPathComponent)
         XCTAssertEqual(note.pathExtension, "md")
 
         let content = try String(contentsOf: note, encoding: .utf8)

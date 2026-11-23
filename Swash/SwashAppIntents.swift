@@ -72,7 +72,6 @@ nonisolated enum SwashTodoStatusFilter: String, CaseIterable, Sendable {
 nonisolated enum SwashDocumentTemplate: String, CaseIterable, Sendable {
     case dailyJournal = "Daily Journal"
     case meetingNotes = "Meeting Notes"
-    case inboxCapture = "Inbox"
     case projectPlan = "Project Plan"
     case custom = "Custom"
 }
@@ -153,6 +152,7 @@ nonisolated enum SwashShortcutsError: LocalizedError {
     case documentNotFound(String)
     case invalidPath(String)
     case unreadableDocument(String)
+    case noDocumentGiven
 
     var errorDescription: String? {
         switch self {
@@ -162,6 +162,8 @@ nonisolated enum SwashShortcutsError: LocalizedError {
             return "“\(path)” is not a valid Markdown document name or path."
         case .unreadableDocument(let name):
             return "Could not read “\(name)”."
+        case .noDocumentGiven:
+            return "Choose a document, or enter its path or name."
         }
     }
 }
@@ -385,7 +387,7 @@ nonisolated enum SwashShortcutsEngine {
     }
 
     /// Resolves an existing document from an absolute path, relative path (`Journal/2026-11-21.md`)
-    /// or note title (`Inbox`).
+    /// or note title (`Ideas`).
     static func resolveExistingDocument(pathOrTitle: String, in roots: [URL]? = nil, extraFiles: [URL] = []) -> URL? {
         let trimmed = pathOrTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -774,7 +776,6 @@ nonisolated enum SwashShortcutsEngine {
         switch template {
         case .dailyJournal: return "Journal/{{date}}"
         case .meetingNotes: return "Meetings/{{date}} - {{title}}"
-        case .inboxCapture: return "Inbox"
         case .projectPlan: return "{{title}}"
         case .custom: return "{{title}}"
         }
@@ -806,12 +807,6 @@ nonisolated enum SwashShortcutsEngine {
 
             ## Action Items
             - [ ] 
-            """
-        case .inboxCapture:
-            return """
-            # Inbox
-
-            - [ ] {{clipboard}}
             """
         case .projectPlan:
             return """
@@ -1203,7 +1198,6 @@ nonisolated extension SwashDocumentTemplate: AppEnum {
     static var caseDisplayRepresentations: [SwashDocumentTemplate: DisplayRepresentation] = [
         .dailyJournal: "Daily Journal",
         .meetingNotes: "Meeting Notes",
-        .inboxCapture: "Inbox",
         .projectPlan: "Project Plan",
         .custom: "Custom Template",
     ]
@@ -1451,10 +1445,10 @@ struct OpenDocumentIntent: AppIntent {
 
 struct FindOrCreateDocumentIntent: AppIntent {
     static var title: LocalizedStringResource = "Find or Create Markdown Document"
-    static var description = IntentDescription("Finds a Markdown document by relative path or title (such as 'Journal/2026-11-21.md' or 'Inbox.md'), creating it if it doesn't exist yet.")
+    static var description = IntentDescription("Finds a Markdown document by relative path or title (such as 'Journal/2026-11-21.md' or 'Ideas.md'), creating it if it doesn't exist yet.")
     static var openAppWhenRun: Bool = false
 
-    @Parameter(title: "Path or Title", default: "Inbox.md")
+    @Parameter(title: "Path or Title")
     var pathOrTitle: String
 
     @Parameter(title: "Initial Content", default: "")
@@ -1560,7 +1554,7 @@ struct AppendToDocumentIntent: AppIntent {
     @Parameter(title: "Document")
     var document: SwashDocumentEntity?
 
-    @Parameter(title: "Path or Name (if no Document)", default: "Inbox.md")
+    @Parameter(title: "Path or Name (if no Document)", default: "")
     var pathOrName: String
 
     @Parameter(title: "Position", default: .end)
@@ -1579,6 +1573,8 @@ struct AppendToDocumentIntent: AppIntent {
         let targetURL: URL
         if let document {
             targetURL = document.fileURL
+        } else if pathOrName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw SwashShortcutsError.noDocumentGiven
         } else if let existing = SwashShortcutsEngine.resolveExistingDocument(pathOrTitle: pathOrName) {
             targetURL = existing
         } else if createIfMissing {
@@ -1975,7 +1971,6 @@ struct SwashShortcuts: AppShortcutsProvider {
             intent: AppendToDocumentIntent(),
             phrases: [
                 "Append to a note in \(.applicationName)",
-                "Add to \(.applicationName) inbox",
             ],
             shortTitle: "Append to Note",
             systemImageName: "text.append"

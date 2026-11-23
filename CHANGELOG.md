@@ -1,5 +1,11 @@
 # swash
 
+## 1.43.1
+
+### Patch Changes
+
+- 01255c3: Restore the committed build number in Info.plist, which local builds had rewritten during PR merges.
+
 ## 1.43.0
 
 ### Minor Changes

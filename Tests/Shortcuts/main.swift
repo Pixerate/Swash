@@ -200,22 +200,22 @@ check(
     (try! SwashShortcutsEngine.readText(at: journalURL)).contains("- **09:45** Reviewed iPad Shortcuts gap analysis")
 )
 
-// Use case 2: Capture to Inbox
-let (inboxURL, inboxCreated) = try! SwashShortcutsEngine.findOrCreateDocument(
-    pathOrTitle: "Inbox.md",
-    initialContent: "# Inbox\n",
+// Use case 2: Capture to a note
+let (ideasURL, ideasCreated) = try! SwashShortcutsEngine.findOrCreateDocument(
+    pathOrTitle: "Ideas.md",
+    initialContent: "# Ideas\n",
     in: root
 )
-let inboxAfterCapture = SwashShortcutsEngine.insert(
+let ideasAfterCapture = SwashShortcutsEngine.insert(
     "Follow up with team on App Intents",
-    into: try! SwashShortcutsEngine.readText(at: inboxURL),
+    into: try! SwashShortcutsEngine.readText(at: ideasURL),
     position: .end,
     style: .todo
 )
-try! SwashShortcutsEngine.writeText(inboxAfterCapture, to: inboxURL)
+try! SwashShortcutsEngine.writeText(ideasAfterCapture, to: ideasURL)
 check(
-    "inbox capture appends a task item to Inbox.md",
-    inboxCreated && (try! SwashShortcutsEngine.readText(at: inboxURL)) == "# Inbox\n\n- [ ] Follow up with team on App Intents\n"
+    "capture appends a task item to Ideas.md",
+    ideasCreated && (try! SwashShortcutsEngine.readText(at: ideasURL)) == "# Ideas\n\n- [ ] Follow up with team on App Intents\n"
 )
 
 // MARK: - 3. Search & Find Documents (Use Case 7)
