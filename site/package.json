@@ -13,13 +13,13 @@
   },
   "dependencies": {
     "@apphosting/astro-adapter": "^0.0.2",
-    "@astrojs/node": "^11.1.9",
+    "@astrojs/node": "^11.1.14",
     "@astrojs/svelte": "^9.1.2",
-    "@pixerate/flair": "^0.135.2",
+    "@pixerate/flair": "^0.139.0",
     "@slopmachine/svelte": "^0.9.0",
     "@tailwindcss/vite": "^4.3.5",
-    "astro": "^7.4.4",
-    "svelte": "^5.57.2",
+    "astro": "^7.4.13",
+    "svelte": "^5.58.0",
     "tailwindcss": "^4.3.5"
   },
   "devDependencies": {
