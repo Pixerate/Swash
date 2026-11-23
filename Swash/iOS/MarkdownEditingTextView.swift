@@ -23,7 +23,11 @@ final class IOSEditorController {
     var onFormatCommand: ((FormatCommand) -> Void)?
     /// The document's flavour, so the edit menu checks commands against the right parse (Slack
     /// mrkdwn has its own inline syntax, SlackMarkdown.swift); set by the hosting view.
-    var flavor: MarkdownFlavor = .github
+    var flavor: MarkdownFlavor = .github {
+        didSet {
+            WritingPartnerActiveVoice.shared.documentFlavor = flavor
+        }
+    }
 
     var isAttached: Bool { textView != nil }
 

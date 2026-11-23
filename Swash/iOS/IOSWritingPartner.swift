@@ -229,6 +229,13 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
     private var undoReminder: UIView?
     private var suggestionPrompt: UIView?
 
+    var hasSuggestionUnderlines: Bool { suggestionLayer.path.map { !$0.isEmpty } ?? false }
+    var hasMarkUnderlines: Bool { markLayer.path.map { !$0.isEmpty } ?? false }
+    var isShowingCaret: Bool { !caretLayer.isHidden }
+    var isShowingGhost: Bool { !ghostLabel.isHidden }
+    var ghostText: String? { ghostLabel.isHidden ? nil : ghostLabel.attributedText?.string }
+    var activeNoteView: UIView? { suggestionPrompt ?? undoReminder ?? introduction }
+
     init(host: IOSWritingPartnerHost) {
         self.host = host
         super.init(frame: .zero)
@@ -352,7 +359,11 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
         if let subscription { self.carets?.unsubscribe(subscription) }
         self.carets = carets
         self.target = target
-        subscription = carets.subscribe { [weak self] _ in self?.renderPartner() }
+        subscription = carets.subscribe { [weak self] _ in
+            self?.renderPartner()
+            // What a fix changed is measured again once the editor has restyled it
+            DispatchQueue.main.async { [weak self] in self?.renderPartner() }
+        }
     }
 
     func renderPartner() {
@@ -478,8 +489,13 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
         let size = hosting.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
         let x = max(margin, min(rect.minX, bounds.width - size.width - margin))
         var y = rect.maxY + 8
-        if let textView = superview as? UITextView, y + size.height > textView.contentOffset.y + textView.bounds.height - margin {
-            y = max(margin, rect.minY - size.height - 8)
+        if let textView = superview as? UITextView {
+            let insets = textView.adjustedContentInset
+            let visibleBottom = textView.contentOffset.y + textView.bounds.height - insets.bottom - margin
+            let visibleTop = max(margin, textView.contentOffset.y + insets.top + margin)
+            if y + size.height > visibleBottom {
+                y = max(visibleTop, rect.minY - size.height - 8)
+            }
         }
         hosting.view.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
         addSubview(hosting.view)

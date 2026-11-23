@@ -61,6 +61,9 @@
       "paths": [
         "Swash/WritingPartner.swift",
         "Swash/FormattingVoice.swift",
+        "Swash/PartnerMarks.swift",
+        "Swash/WritingPartnerHost.swift",
+        "Swash/WritingPartnerMacHost.swift",
         "Swash/WritingPartnerOverlay.swift",
         "Swash/WritingPartnerSession.swift",
         "Swash/WritingPartnerStyleSettings.swift",
@@ -69,7 +72,9 @@
         "Swash/PixerateWritingBandleader.swift",
         "Swash/PixerateAccess.swift",
         "Swash/PixerateAccountSettings.swift",
-        "Swash/Swash.storekit"
+        "Swash/Swash.storekit",
+        "Swash/iOS/IOSWritingPartner.swift",
+        "Swash/iOS/IOSWritingPartnerSettings.swift"
       ],
       "docs": [
         "docs/writing-partner-privacy.md"

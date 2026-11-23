@@ -11,6 +11,7 @@ import NaturalLanguage
 import SwiftUI
 import UIKit
 import XCTest
+import PixerateCore
 import PixerateMarkdown
 @testable import Swash
 
@@ -112,6 +113,76 @@ final class WritingPartnerTests: XCTestCase {
                        (harness.text as NSString).length)
         let stats = WritingPartnerStats.load(voice: .punctuate)
         XCTAssertFalse(stats.rules.isEmpty, "undoing a fix should be recorded against its rule")
+    }
+
+    // MARK: Suggest Mode & Overlay
+
+    func testSuggestModeDrawsUnderlineAndAcceptsWithTab() throws {
+        UserDefaults.standard.set(WritingPartnerMode.suggest.rawValue, forKey: WritingPartnerDefaults.mode)
+        let harness = try editor()
+        harness.textView.becomeFirstResponder()
+        type("dont ", in: harness)
+        waitForPartner(harness)
+        // Text remains untouched until accepted; overlay shows suggestion underline
+        XCTAssertEqual(harness.text, "dont ")
+        XCTAssertFalse(harness.coordinator.writingPartner.suggestions.isEmpty)
+        let overlay = try XCTUnwrap(harness.coordinator.partnerHost?.existingOverlay)
+        XCTAssertTrue(overlay.hasSuggestionUnderlines)
+        XCTAssertEqual(overlay.accessibilityValue, "Suggestions")
+
+        // Pressing Tab accepts the suggestion at the caret
+        harness.keyCommand("\t")
+        waitForPartner(harness)
+        XCTAssertEqual(harness.text, "Don't ")
+        XCTAssertTrue(harness.coordinator.writingPartner.suggestions.isEmpty)
+        XCTAssertFalse(overlay.hasSuggestionUnderlines)
+    }
+
+    func testOverlayDrawsGhostAndCaretDuringPreview() throws {
+        let harness = try editor("dont know")
+        let host = try XCTUnwrap(harness.coordinator.partnerHost)
+        let overlay = try XCTUnwrap(host.partnerCanvas as? IOSWritingPartnerOverlay)
+        let target = WritingPartnerTarget(host: host)
+        let store = AgentCaretStore()
+        overlay.attach(carets: store, target: target)
+        target.onGhostChange = { [weak overlay] in overlay?.renderPartner() }
+
+        target.previewAgentTyping(in: NSRange(location: 0, length: 4), with: "don't")
+        store.set(WritingPartnerSession.agent, anchor: 5, head: 5)
+        overlay.renderPartner()
+
+        XCTAssertTrue(overlay.isShowingGhost)
+        XCTAssertEqual(overlay.ghostText, "don't")
+        XCTAssertTrue(overlay.isShowingCaret)
+
+        target.clearGhost()
+        store.clear(WritingPartnerSession.agent.id)
+        overlay.renderPartner()
+        XCTAssertFalse(overlay.isShowingGhost)
+        XCTAssertFalse(overlay.isShowingCaret)
+    }
+
+    func testNoteFlipsAboveCaretWhenKeyboardCoversBottom() throws {
+        let harness = try editor("First line\nSecond line")
+        let host = try XCTUnwrap(harness.coordinator.partnerHost)
+        let overlay = try XCTUnwrap(host.partnerCanvas as? IOSWritingPartnerOverlay)
+
+        // Simulate a software keyboard occupying the bottom 360 pt of the 800 pt editor
+        harness.textView.contentInset.bottom = 360
+        let caretNearKeyboard = CGRect(x: 20, y: 400, width: 2, height: 20)
+        overlay.showUndoReminder(at: caretNearKeyboard, text: host.partnerUndoReminderText, onPause: {}, onDismiss: {})
+        let note = try XCTUnwrap(overlay.activeNoteView)
+        XCTAssertLessThan(note.frame.maxY, caretNearKeyboard.minY, "note should flip above the caret when the keyboard covers the space below")
+        overlay.hideUndoReminder()
+        XCTAssertNil(overlay.activeNoteView)
+    }
+
+    func testControllerUpdatesActiveVoiceFlavor() {
+        let controller = IOSEditorController()
+        controller.flavor = .slack
+        XCTAssertEqual(WritingPartnerActiveVoice.shared.documentFlavor, .slack)
+        controller.flavor = .github
+        XCTAssertEqual(WritingPartnerActiveVoice.shared.documentFlavor, .github)
     }
 
     // MARK: Pause
