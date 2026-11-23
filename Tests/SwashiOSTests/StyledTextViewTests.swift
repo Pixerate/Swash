@@ -918,5 +918,117 @@ final class StyledTextViewTests: XCTestCase {
         let emptyDocCaret = emptyDoc.textView.caretRect(for: emptyPos)
         XCTAssertEqual(emptyDocCaret.height, emptyDoc.coordinator.baseFont.lineHeight, accuracy: 0.5, "caret in empty document matches body font line height")
     }
+
+    // MARK: - List formatting commands (SWA-68 / #190)
+
+    private func listMarkers(in e: EditorHarness) -> [(range: NSRange, info: ListMarkerInfo)] {
+        var result: [(NSRange, ListMarkerInfo)] = []
+        e.storage.enumerateAttribute(.listMarker, in: NSRange(location: 0, length: e.storage.length), options: []) { value, range, _ in
+            if let info = value as? ListMarkerInfo { result.append((range, info)) }
+        }
+        return result
+    }
+
+    func testChoosingEachListTypeOnAnEmptyLineAppliesImmediatelyAndTogglesOff() throws {
+        let cases: [(command: FormatCommand, marker: String, glyph: String)] = [
+            (.bulletList, "- ", "•"),
+            (.numberedList, "1. ", "1."),
+            (.taskList, "- [ ] ", "☐"),
+        ]
+
+        for item in cases {
+            // 1. Empty document / single empty line
+            let empty = try editor("")
+            empty.textView.invokeFormatCommand(item.command)
+            XCTAssertEqual(empty.text, item.marker, "\(item.command) on empty line inserts \(item.marker.debugDescription) immediately")
+            XCTAssertEqual(empty.rawSelection, NSRange(location: (item.marker as NSString).length, length: 0), "caret sits after the marker")
+            XCTAssertEqual(empty.textView.selectedRange, NSRange(location: (item.marker as NSString).length, length: 0))
+            XCTAssertEqual(listMarkers(in: empty).map(\.info.text), [item.glyph], "marker is styled synchronously without waiting for the next keystroke")
+            XCTAssertTrue(empty.textView.activeFormats.contains(item.command), "format button shows active on the empty list item")
+
+            // Caret rect on the empty list item has body line height and sits at the line's baseline
+            let caretPos = try XCTUnwrap(empty.textView.selectedTextRange?.end)
+            let caretRect = empty.textView.caretRect(for: caretPos)
+            XCTAssertEqual(caretRect.height, empty.coordinator.baseFont.lineHeight, accuracy: 0.5)
+            XCTAssertGreaterThanOrEqual(caretRect.minY, empty.textView.textContainerInset.top - 1)
+
+            // Picking the same list type again on the empty item removes the list (toggle)
+            empty.textView.invokeFormatCommand(item.command)
+            XCTAssertEqual(empty.text, "", "picking \(item.command) again removes the marker")
+            XCTAssertEqual(empty.rawSelection, NSRange(location: 0, length: 0))
+            XCTAssertTrue(listMarkers(in: empty).isEmpty, "list marker attribute is removed immediately")
+            XCTAssertFalse(empty.textView.activeFormats.contains(item.command))
+
+            // 2. Empty line between paragraphs, followed by typing into the new item
+            let between = try editor("First\n\nLast")
+            between.select(raw: NSRange(location: 6, length: 0))
+            between.textView.invokeFormatCommand(item.command)
+            let expectedEmptyMid = "First\n\(item.marker)\nLast"
+            XCTAssertEqual(between.text, expectedEmptyMid, "\(item.command) on blank middle line")
+            XCTAssertEqual(between.rawSelection, NSRange(location: 6 + (item.marker as NSString).length, length: 0))
+            XCTAssertEqual(listMarkers(in: between).map(\.info.text), [item.glyph], "marker is styled immediately on middle line")
+            XCTAssertTrue(between.textView.activeFormats.contains(item.command))
+
+            between.type("Item text")
+            XCTAssertEqual(between.text, "First\n\(item.marker)Item text\nLast", "next typed text lands inside the list item")
+            XCTAssertEqual(listMarkers(in: between).map(\.info.text), [item.glyph])
+        }
+    }
+
+    func testChoosingEachListTypeOnALineWithTextAppliesImmediatelyAndTogglesOff() throws {
+        let cases: [(command: FormatCommand, marker: String, glyph: String)] = [
+            (.bulletList, "- ", "•"),
+            (.numberedList, "1. ", "1."),
+            (.taskList, "- [ ] ", "☐"),
+        ]
+
+        for item in cases {
+            let e = try editor("Buy groceries")
+            e.caret(after: "Buy")
+            let initialCaret = e.rawSelection.location
+
+            e.textView.invokeFormatCommand(item.command)
+            let markerLen = (item.marker as NSString).length
+            XCTAssertEqual(e.text, "\(item.marker)Buy groceries", "\(item.command) on line with text")
+            XCTAssertEqual(e.rawSelection, NSRange(location: initialCaret + markerLen, length: 0), "caret stays at the same place in the text")
+            XCTAssertEqual(listMarkers(in: e).map(\.info.text), [item.glyph], "marker is styled synchronously")
+            XCTAssertTrue(e.textView.activeFormats.contains(item.command), "format button shows active")
+
+            // Picking the same list type again removes the list (toggle)
+            e.textView.invokeFormatCommand(item.command)
+            XCTAssertEqual(e.text, "Buy groceries", "picking \(item.command) again toggles the list off")
+            XCTAssertEqual(e.rawSelection, NSRange(location: initialCaret, length: 0))
+            XCTAssertTrue(listMarkers(in: e).isEmpty)
+            XCTAssertFalse(e.textView.activeFormats.contains(item.command))
+        }
+    }
+
+    func testSwitchingBetweenListTypesOnEmptyAndNonEmptyLines() throws {
+        let e = try editor("")
+        e.textView.invokeFormatCommand(.bulletList)
+        XCTAssertEqual(e.text, "- ")
+        XCTAssertEqual(listMarkers(in: e).map(\.info.text), ["•"])
+
+        // Switch empty bullet item directly to numbered, then to task list
+        e.textView.invokeFormatCommand(.numberedList)
+        XCTAssertEqual(e.text, "1. ")
+        XCTAssertEqual(e.rawSelection, NSRange(location: 3, length: 0))
+        XCTAssertEqual(listMarkers(in: e).map(\.info.text), ["1."])
+        XCTAssertTrue(e.textView.activeFormats.contains(.numberedList))
+        XCTAssertFalse(e.textView.activeFormats.contains(.bulletList))
+
+        e.textView.invokeFormatCommand(.taskList)
+        XCTAssertEqual(e.text, "- [ ] ")
+        XCTAssertEqual(e.rawSelection, NSRange(location: 6, length: 0))
+        XCTAssertEqual(listMarkers(in: e).map(\.info.text), ["☐"])
+        XCTAssertTrue(e.textView.activeFormats.contains(.taskList))
+
+        // Type text and switch back to bullet list
+        e.type("milk")
+        XCTAssertEqual(e.text, "- [ ] milk")
+        e.textView.invokeFormatCommand(.bulletList)
+        XCTAssertEqual(e.text, "- milk")
+        XCTAssertEqual(listMarkers(in: e).map(\.info.text), ["•"])
+    }
 }
 

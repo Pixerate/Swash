@@ -752,7 +752,7 @@ enum FormatManifestLayout {
         if formatting.link(at: clamped) != nil { active.insert(.link) }
         if formatting.codeBlock(containing: clamped) != nil { active.insert(.codeBlock) }
         if formatting.isQuoted(selection: clamped) { active.insert(.quote) }
-        switch formatting.activeBlockFormat(selection: clamped) {
+        switch formatting.activeBlockFormatIncludingEmptyLine(selection: clamped) {
         case .heading(let level)?: active.insert(.heading(level))
         case .paragraph?: active.insert(.paragraph)
         case .bulletList?: active.insert(.bulletList)
