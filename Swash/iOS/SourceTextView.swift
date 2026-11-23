@@ -48,6 +48,7 @@ struct SourceTextView: UIViewRepresentable {
         textView.installFormattingBar(enabled: formattingEnabled)
         scrollSync?.register(textView)
         textView.setTopBarInset(topInset)
+        context.coordinator.lastBaseURL = baseURL
         context.coordinator.installWritingPartner(in: textView)
         return textView
     }
@@ -55,6 +56,10 @@ struct SourceTextView: UIViewRepresentable {
     func updateUIView(_ textView: MarkdownEditingTextView, context: Context) {
         context.coordinator.parent = self
         controller.attach(textView)
+        if context.coordinator.lastBaseURL != nil, context.coordinator.lastBaseURL != baseURL {
+            context.coordinator.writingPartner.resetBandleaderSession()
+        }
+        context.coordinator.lastBaseURL = baseURL
         if textView.text != text {
             // External change (revert, another window)
             let selection = textView.selectedRange
@@ -69,6 +74,7 @@ struct SourceTextView: UIViewRepresentable {
         if context.coordinator.lastTextSize != textSize {
             context.coordinator.lastTextSize = textSize
             textView.font = Self.font(textSize: textSize)
+            context.coordinator.refreshPartnerDrawing()
         }
     }
 
@@ -90,6 +96,7 @@ struct SourceTextView: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: SourceTextView
         var lastTextSize: CGFloat = EditorTypography.defaultTextSize
+        var lastBaseURL: URL?
         /// The writing partner (#109). In Source the text view's text is the raw Markdown.
         let writingPartner = WritingPartnerSession()
         private(set) var partnerHost: IOSWritingPartnerHost?
@@ -100,6 +107,13 @@ struct SourceTextView: UIViewRepresentable {
 
         /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
         nonisolated deinit {}
+
+        func refreshPartnerDrawing() {
+            guard let host = partnerHost, let overlay = host.existingOverlay else { return }
+            if !writingPartner.suggestions.isEmpty { writingPartner.refreshSuggestions(in: host) }
+            if !writingPartner.marks.isEmpty { writingPartner.refreshMarks(in: host) }
+            overlay.renderPartner()
+        }
 
         func installWritingPartner(in textView: MarkdownEditingTextView) {
             let host = IOSWritingPartnerHost(textView: textView, isStyled: false)

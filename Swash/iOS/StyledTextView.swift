@@ -72,6 +72,9 @@ struct StyledTextView: UIViewRepresentable {
         coordinator.isUpdatingFromSwiftUI = true
         defer { coordinator.isUpdatingFromSwiftUI = false }
 
+        if coordinator.lastBaseURL != nil, coordinator.lastBaseURL != baseURL {
+            coordinator.writingPartner.resetBandleaderSession()
+        }
         let current = swashRawMarkdown(from: textView.textStorage)
         if coordinator.lastStyledText != text, current != text {
             // External change (revert, another window, flavour conversion)
@@ -190,11 +193,12 @@ struct StyledTextView: UIViewRepresentable {
             writingPartner.didChange(in: host)
         }
 
-        /// Restyling moves the text: the partner's underlines and marks follow it.
-        private func refreshPartnerDrawing() {
-            guard let host = partnerHost, host.existingOverlay != nil else { return }
+        /// Restyling moves the text: the partner's underlines, marks and cursor follow it.
+        func refreshPartnerDrawing() {
+            guard let host = partnerHost, let overlay = host.existingOverlay else { return }
             if !writingPartner.suggestions.isEmpty { writingPartner.refreshSuggestions(in: host) }
             if !writingPartner.marks.isEmpty { writingPartner.refreshMarks(in: host) }
+            overlay.renderPartner()
         }
 
         // MARK: Edits
@@ -891,6 +895,7 @@ final class StyledUITextView: MarkdownEditingTextView {
             needsOverlayLayout = false
             layoutTableViews()
             layoutCodeBadgeButtons()
+            coordinator?.refreshPartnerDrawing()
         }
     }
 

@@ -145,7 +145,10 @@ struct IOSContentView: View {
             refreshConflicts()
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { refreshConflicts() }
+            if phase == .active {
+                WritingPartnerActiveVoice.shared.documentFlavor = document.flavor
+                refreshConflicts()
+            }
         }
     }
 
