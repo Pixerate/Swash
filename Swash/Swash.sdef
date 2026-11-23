@@ -31,7 +31,7 @@
         <command name="append to note" code="SwshApnd" description="Append or insert text into a Markdown note (creating it if needed).">
             <cocoa class="SwashAppendToNoteCommand"/>
             <direct-parameter type="text" description="Text to append."/>
-            <parameter name="at path" code="SwshPath" type="text" optional="yes" description="Relative path or title of the note (defaults to 'Inbox.md').">
+            <parameter name="at path" code="SwshPath" type="text" description="Path or title of the note.">
                 <cocoa key="path"/>
             </parameter>
             <parameter name="under heading" code="SwshHead" type="text" optional="yes" description="Heading title to insert under.">
