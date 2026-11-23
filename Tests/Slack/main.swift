@@ -136,5 +136,32 @@ check("active link at the label", FormatCommandEdits.activeLink(text: "a <https:
 let gfm = FormatCommandEdits.edit(for: .bold, text: "x", selection: NSRange(location: 0, length: 1), flavor: .github)
 check("GitHub bold is unchanged", gfm?.text, "**x**")
 
+// MARK: Flavour detection
+
+func detected(_ text: String) -> String { MarkdownFlavor.detect(in: text).rawValue }
+
+// A GitHub-style GOTCHAS file with one *single-asterisk* emphasis scored as Slack.
+let gotchas = (try? String(contentsOfFile: "Tests/Slack/Fixtures/gfm-gotchas.md", encoding: .utf8)) ?? ""
+check("fixture loads", gotchas.isEmpty ? "missing" : "ok", "ok")
+check("GOTCHAS-style GitHub file", detected(gotchas), "GitHub")
+check("double asterisks outweigh a single-asterisk span", detected("**Note**: see the *other* one\n\n**Fix**: do it"), "GitHub")
+check("double underscores", detected("__Important__ and *this*"), "GitHub")
+check("headings", detected("# Title\n\nA *word* here.\n\n## Next\n\nMore *words*."), "GitHub")
+check("inline links", detected("Read [the docs](https://x.com) and *then* [the FAQ](https://y.com)."), "GitHub")
+check("tables", detected("| a | b |\n|---|---|\n| *x* | y |"), "GitHub")
+check("fenced code with a language", detected("```swift\nlet x = 1\n```\nThen *run* it."), "GitHub")
+check("asterisks inside code don't count", detected("Use `*glob*` and `*.md` or `a*b*c`:\n\n```\n*x* *y* *z*\n```"), "GitHub")
+check("a bullet marker isn't a Slack bold opener", detected("* item with *x* and\n* **y**"), "GitHub")
+check("GitHub strikethrough", detected("~~old~~ new"), "GitHub")
+check("empty", detected(""), "GitHub")
+check("Original: indented code without fences", detected("Some text\n\n    code block\n"), "Original")
+
+check("Slack message", detected("*Release notes* for today :tada:\n• Fixed ~old~ bug, see <https://x.com/1|the ticket>"), "Slack")
+check("Slack mentions", detected("<@U024BE7LH> can you look at <#C1234|general>? <!here>"), "Slack")
+check("Slack bold and strike", detected("*Deploy* is ~blocked~ *again*"), "Slack")
+check("Slack with a code block", detected("*Heads up*: run this\n```npm ci```\nthanks <@U1>"), "Slack")
+check("Slack link outweighs one Markdown heading-like line", detected("*Standup*\n<https://a.com|Board> · <https://b.com|Notes> · <https://c.com|Doc>\n# not a heading in Slack"), "Slack")
+check("HTML comment isn't a Slack mention", detected("<!--comment-->\n*a*\n\n**c**"), "GitHub")
+
 print(failures == 0 ? "SLACK: all checks passed" : "SLACK: \(failures) failed")
 exit(failures == 0 ? 0 : 1)
