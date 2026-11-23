@@ -28,7 +28,7 @@ Represents a Markdown file in Swash's `Documents` folder, iCloud Drive container
 | `CreateDocumentIntent` | **Create Markdown Document** | `true` | `title: String`, `content: String` | `SwashDocumentEntity` (and opens it) |
 | `OpenDocumentIntent` | **Open Markdown Document** | `true` | `document: SwashDocumentEntity`, `focusMode: Bool?`, `typewriterScrolling: Bool?` | Opens document in Swash |
 | `FindOrCreateDocumentIntent` | **Find or Create Markdown Document** | `false` | `pathOrTitle: String`, `initialContent: String`, `folder: IntentFile?` | `SwashDocumentEntity` |
-| `CreateDocumentFromTemplateIntent` | **Create Document from Template** | `false` | `template: SwashDocumentTemplate` (`.dailyJournal`, `.meetingNotes`, `.inboxCapture`, `.projectPlan`, `.custom`), `title: String`, `customTemplate: String`, `variables: String`, `folder: IntentFile?` | `SwashDocumentEntity` |
+| `CreateDocumentFromTemplateIntent` | **Create Document from Template** | `false` | `template: SwashDocumentTemplate` (`.dailyJournal`, `.meetingNotes`, `.projectPlan`, `.custom`), `title: String`, `customTemplate: String`, `variables: String`, `folder: IntentFile?` | `SwashDocumentEntity` |
 | `GetDocumentContentsIntent` | **Get Document Contents** | `false` | `document: SwashDocumentEntity`, `format: SwashContentFormat` (`.markdown`, `.plainText`, `.html`, `.standaloneHTML`) | `String` |
 | `AppendToDocumentIntent` | **Append or Prepend to Document** | `false` | `text: String`, `document: SwashDocumentEntity?`, `pathOrName: String`, `position: SwashInsertPosition` (`.end`, `.beginning`, `.underHeading`), `heading: String`, `style: SwashAppendStyle` (`.plain`, `.bullet`, `.todo`, `.timestampedBullet`, `.timestampedTodo`), `createIfMissing: Bool` | `SwashDocumentEntity` |
 | `FindDocumentsIntent` | **Find Markdown Documents** | `false` | `query: String`, `scope: SwashSearchScope` (`.nameAndContent`, `.nameOnly`, `.contentOnly`), `folder: IntentFile?`, `limit: Int` | `[SwashDocumentEntity]` |
@@ -65,12 +65,12 @@ Finds or creates `Journal/YYYY-MM-DD.md` from the Daily Journal template, append
 4. **Swash: Open Markdown Document**
    - Document: `Journal Document`
 
-### 2. Capture to Inbox (Share Sheet or Action Button)
-Captures selected text, a shared URL, or dictated text into `Inbox.md` as an open `- [ ]` task without opening the app:
+### 2. Capture to a Note (Share Sheet or Action Button)
+Captures selected text, a shared URL, or dictated text into a note you choose (here `Ideas.md`) as an open `- [ ]` task without opening the app:
 1. **Receive** `Text`, `URLs`, or `Rich Text` from **Share Sheet** (or **Dictate Text** for the Action button) → `Shortcut Input`
 2. **Swash: Append or Prepend to Document**
    - Text: `Shortcut Input`
-   - Path or Name: `Inbox.md`
+   - Path or Name: `Ideas.md` (or pick a Document)
    - Position: `End of Document`
    - Style: `To-Do (- [ ] item)`
    - Create if Missing: `true`
@@ -131,7 +131,7 @@ Searches note titles and full-text contents, lets you pick from matching notes, 
 | :--- | :--- | :--- | :--- |
 | `create note` | `titled` (`text`, optional), `with content` (`text`, optional) | `text` (file path) | Creates and opens a new Markdown document in Swash. |
 | `open quick note` | — | — | Opens Swash's Quick Note capture panel. |
-| `append to note` | direct parameter (`text`), `at path` (`text`, optional), `under heading` (`text`, optional), `as style` (`"plain"` \| `"bullet"` \| `"todo"` \| `"timestamped bullet"` \| `"timestamped todo"`, optional) | `text` (file path) | Appends or inserts text into a Markdown note (creating it if needed). |
+| `append to note` | direct parameter (`text`), `at path` (`text`, required), `under heading` (`text`, optional), `as style` (`"plain"` \| `"bullet"` \| `"todo"` \| `"timestamped bullet"` \| `"timestamped todo"`, optional) | `text` (file path) | Appends or inserts text into a Markdown note (creating it if needed). |
 | `get note contents` | direct parameter (`text`, path or title), `as format` (`"markdown"` \| `"plain text"` \| `"html"` \| `"standalone html"`, optional) | `text` | Reads a note's contents in the requested format. |
 | `find notes` | direct parameter (`text`, query), `in folder` (`text`, optional) | `text` (newline-separated paths) | Searches Markdown notes by filename and content. |
 | `get todos` | `in path` (`text`, optional), `with status` (`"open"` \| `"completed"` \| `"all"`, optional) | `text` (newline-separated tasks) | Extracts `- [ ]` / `- [x]` tasks from a note or folder. |
@@ -142,9 +142,9 @@ Searches note titles and full-text contents, lets you pick from matching notes, 
 ```applescript
 tell application "Swash"
     create note titled "Meeting Notes" with content "# Agenda"
-    append to note "Follow up on release checklist" at path "Inbox.md" as style "todo"
-    set inboxHTML to get note contents "Inbox.md" as format "html"
-    set openTasks to get todos in path "Inbox.md" with status "open"
+    append to note "Follow up on release checklist" at path "Ideas.md" as style "todo"
+    set ideasHTML to get note contents "Ideas.md" as format "html"
+    set openTasks to get todos in path "Ideas.md" with status "open"
     set matchingPaths to find notes "Agenda"
     set stats to count words "Hello Swash world"
     set md to convert html to markdown "<p>Hello <strong>Swash</strong></p>" from url "https://swash.pixerate.com"

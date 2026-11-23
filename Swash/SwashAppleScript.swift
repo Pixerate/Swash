@@ -68,7 +68,12 @@ final class SwashFormatMarkdownCommand: NSScriptCommand {
 final class SwashAppendToNoteCommand: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         let entry = (directParameter as? String) ?? ""
-        let pathOrTitle = (evaluatedArguments?["path"] as? String) ?? "Inbox.md"
+        guard let pathOrTitle = (evaluatedArguments?["path"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !pathOrTitle.isEmpty else {
+            scriptErrorNumber = NSRequiredArgumentsMissingScriptError
+            scriptErrorString = SwashShortcutsError.noDocumentGiven.localizedDescription
+            return nil
+        }
         let heading = (evaluatedArguments?["heading"] as? String) ?? ""
         let rawStyle = ((evaluatedArguments?["style"] as? String) ?? "plain").lowercased()
 
