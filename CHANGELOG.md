@@ -1,5 +1,16 @@
 # swash
 
+## 1.44.0
+
+### Minor Changes
+
+- 7029114: Ensure the iOS writing partner overlay positions inline notes above the software keyboard inset, refreshes partner cursor and underlines across layout and font-size changes, resets the on-device bandleader session when switching documents, and syncs the active document's Markdown flavor with Writing Partner settings.
+
+### Patch Changes
+
+- 322f33f: Stop opening ordinary GitHub Markdown files as Slack mrkdwn. Flavour detection now counts syntax Slack never uses (`**bold**`, `__bold__`, `[text](url)` links, `#` headings, tables, fenced code with a language) against Slack's signals, ignores anything inside code, and gives the signals Markdown shares with Slack (`*text*`, `<https://…>`, `:emoji:`) less weight. Slack messages with `<url|text>` links, `<@user>` mentions or single-asterisk bold are still detected as Slack.
+- 16e630f: Fix iOS keyboard formatting bar and format panel so choosing a list type (bulleted, numbered, or to-do) or heading on an empty line immediately applies and styles the marker with the caret placed after it, and picking the same type again toggles it off (#190).
+
 ## 1.43.2
 
 ### Patch Changes
