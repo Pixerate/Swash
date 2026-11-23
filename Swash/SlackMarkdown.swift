@@ -359,6 +359,83 @@ extension MarkdownFormatting {
         self.init(text: text, document: flavor == .slack ? SlackMarkdown.parse(text) : nil)
     }
 
+    /// Block format at `selection`, falling back to the single line at a caret when that line is
+    /// blank or has only a block marker (such as an empty `- ` list item), which `activeBlockFormat`
+    /// skips when filtering out whitespace-only lines.
+    func activeBlockFormatIncludingEmptyLine(selection: NSRange) -> MarkdownBlockFormat? {
+        if let active = activeBlockFormat(selection: selection) { return active }
+        let ns = text as NSString
+        guard selection.location != NSNotFound, NSMaxRange(selection) <= ns.length else { return nil }
+        let whole = ns.lineRange(for: selection)
+        var start = whole.location
+        var lines: [NSRange] = []
+        while start < NSMaxRange(whole) {
+            var end = 0, contentsEnd = 0
+            ns.getLineStart(nil, end: &end, contentsEnd: &contentsEnd, for: NSRange(location: start, length: 0))
+            lines.append(NSRange(location: start, length: contentsEnd - start))
+            if end <= start { break }
+            start = end
+        }
+        if lines.isEmpty { lines.append(NSRange(location: whole.location, length: 0)) }
+        guard lines.count == 1, let line = lines.first, codeBlock(containing: line) == nil else { return nil }
+        return Self.structure(of: ns.substring(with: line)).format
+    }
+
+    /// Toggles `format` on the selected lines, including a single empty line at the caret (which
+    /// `toggleBlock` skips because it filters out whitespace-only lines).
+    func toggleBlockIncludingEmptyLine(_ format: MarkdownBlockFormat, selection: NSRange) -> MarkdownEdit? {
+        if let edit = toggleBlock(format, selection: selection) { return edit }
+        let ns = text as NSString
+        guard selection.location != NSNotFound, selection.location >= 0, NSMaxRange(selection) <= ns.length else { return nil }
+        let whole = ns.lineRange(for: selection)
+        var start = whole.location
+        var lines: [NSRange] = []
+        while start < NSMaxRange(whole) {
+            var end = 0, contentsEnd = 0
+            ns.getLineStart(nil, end: &end, contentsEnd: &contentsEnd, for: NSRange(location: start, length: 0))
+            lines.append(NSRange(location: start, length: contentsEnd - start))
+            if end <= start { break }
+            start = end
+        }
+        if lines.isEmpty { lines.append(NSRange(location: whole.location, length: 0)) }
+        guard lines.count == 1, let line = lines.first, codeBlock(containing: line) == nil else { return nil }
+        let lineText = ns.substring(with: line)
+        guard lineText.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        let s = Self.structure(of: lineText)
+        let active = activeBlockFormatIncludingEmptyLine(selection: selection)
+        let turningOff = active == format
+        let newMarker: String
+        if turningOff {
+            newMarker = ""
+        } else {
+            switch format {
+            case .paragraph: newMarker = ""
+            case .heading(let level): newMarker = String(repeating: "#", count: level) + " "
+            case .bulletList: newMarker = "- "
+            case .numberedList: newMarker = "1. "
+            case .taskList: newMarker = "- [ ] "
+            case .quote: return nil
+            }
+        }
+        let markerStart = line.location + ((s.quotePrefix + s.indent) as NSString).length
+        let markerLength = (s.marker as NSString).length
+        guard markerLength > 0 || !newMarker.isEmpty else { return nil }
+        let target = NSRange(location: markerStart, length: markerLength)
+        let updated = ns.replacingCharacters(in: target, with: newMarker)
+        let newMarkerLength = (newMarker as NSString).length
+        func map(_ position: Int, isEnd: Bool) -> Int {
+            if NSMaxRange(target) <= position {
+                return position + newMarkerLength - target.length
+            } else if target.location < position && position < NSMaxRange(target) {
+                return position + (isEnd ? newMarkerLength : 0) - (position - target.location)
+            }
+            return position
+        }
+        let newStart = map(selection.location, isEnd: false)
+        let newEnd = map(NSMaxRange(selection), isEnd: true)
+        return MarkdownEdit(text: updated, selection: NSRange(location: newStart, length: max(0, newEnd - newStart)))
+    }
+
     /// Toggles an inline format, writing Slack's delimiters (`*bold*`, `_italic_`, `~strike~`)
     /// when it adds one. Removing works from the parsed markers, as for any flavour.
     func toggleSlack(_ format: MarkdownInlineFormat, selection: NSRange) -> MarkdownEdit? {
@@ -471,15 +548,30 @@ extension MarkdownFormatting {
 extension FormatCommandEdits {
     /// The edit for `command` in `flavor`. Slack mrkdwn adds its own inline delimiters and links,
     /// and has no callouts, footnotes or tables of contents; everything else is the engine's.
+    /// On an empty line, block commands (`bulletList`, `numberedList`, `taskList`, `heading`) still
+    /// insert their marker so choosing a format from the keyboard bar or menu turns the line into
+    /// that block straight away (#190).
     static func edit(for command: FormatCommand, formatting: MarkdownFormatting, selection: NSRange, flavor: MarkdownFlavor) -> MarkdownEdit? {
-        guard flavor == .slack else { return edit(for: command, formatting: formatting, selection: selection) }
         guard formatting.isEnabled(command, selection: selection) else { return nil }
+        if flavor == .slack {
+            switch command {
+            case .bold: return formatting.toggleSlack(.strong, selection: selection)
+            case .italic: return formatting.toggleSlack(.emphasis, selection: selection)
+            case .strikethrough: return formatting.toggleSlack(.strikethrough, selection: selection)
+            case .callout, .footnote, .tableOfContents: return nil
+            default: break
+            }
+        }
+        if let edit = edit(for: command, formatting: formatting, selection: selection) {
+            return edit
+        }
         switch command {
-        case .bold: return formatting.toggleSlack(.strong, selection: selection)
-        case .italic: return formatting.toggleSlack(.emphasis, selection: selection)
-        case .strikethrough: return formatting.toggleSlack(.strikethrough, selection: selection)
-        case .callout, .footnote, .tableOfContents: return nil
-        default: return edit(for: command, formatting: formatting, selection: selection)
+        case .heading(let level): return formatting.toggleBlockIncludingEmptyLine(.heading(level), selection: selection)
+        case .paragraph: return formatting.toggleBlockIncludingEmptyLine(.paragraph, selection: selection)
+        case .bulletList: return formatting.toggleBlockIncludingEmptyLine(.bulletList, selection: selection)
+        case .numberedList: return formatting.toggleBlockIncludingEmptyLine(.numberedList, selection: selection)
+        case .taskList: return formatting.toggleBlockIncludingEmptyLine(.taskList, selection: selection)
+        default: return nil
         }
     }
 

@@ -100,7 +100,10 @@ final class StyledLayoutManager: NSLayoutManager {
             let contentGlyph = min(NSMaxRange(markerGlyphs), max(0, numberOfGlyphs - 1))
             let contentX = lineRect.origin.x + location(forGlyphAt: contentGlyph).x
             let x = origin.x + (contentX > 0 ? contentX : marker.indent) - size.width - 10
-            let y = origin.y + used.midY - size.height / 2
+            // An empty item has only the hidden 0.01 pt marker on its line, so `used.height` is ~0
+            // and `used.midY` sits at the top of the line instead of its vertical centre.
+            let verticalMidY = used.height >= size.height * 0.5 ? used.midY : lineRect.midY
+            let y = origin.y + verticalMidY - size.height / 2
             (marker.text as NSString).draw(in: CGRect(x: x, y: y, width: size.width + 4, height: size.height), withAttributes: attributes)
         }
     }

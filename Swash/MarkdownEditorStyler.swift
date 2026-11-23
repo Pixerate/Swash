@@ -279,12 +279,81 @@ final class MarkdownEditorStyler {
         for block in blocks {
             styleBlock(block, context)
         }
+        styleEmptyListItemLines(styledBlocks: blocks)
         for range in hidden {
             hide(range)
         }
         #if os(iOS)
         padBoxes()
         #endif
+    }
+
+    /// Styles lines that hold only a list marker (such as `- ` immediately after a paragraph, or
+    /// `- [ ] ` before any text is typed), which CommonMark's block parser cannot start as a list
+    /// item interrupting a paragraph until the item has content (#190).
+    private func styleEmptyListItemLines(styledBlocks: [MarkdownNode]) {
+        guard text.length > 0 else { return }
+        let codeExclusions = MarkdownEditorStyler.spellcheckExclusions(in: document)
+        let regionStart = styledBlocks.first.map { lineStart(of: $0.range.location) } ?? 0
+        let regionEnd = styledBlocks.last.map { NSMaxRange(text.lineRange(for: NSRange(location: max(0, NSMaxRange($0.range) - 1), length: 0))) } ?? text.length
+        var lineLoc = regionStart
+        while lineLoc < min(regionEnd, text.length) {
+            var end = 0, contentsEnd = 0
+            text.getLineStart(nil, end: &end, contentsEnd: &contentsEnd, for: NSRange(location: lineLoc, length: 0))
+            let lineRange = NSRange(location: lineLoc, length: contentsEnd - lineLoc)
+            defer { lineLoc = max(end, lineLoc + 1) }
+            guard lineRange.length > 0,
+                  !codeExclusions.contains(where: { NSIntersectionRange($0, lineRange).length > 0 }) else { continue }
+            let lineText = text.substring(with: lineRange)
+            let s = MarkdownFormatting.structure(of: lineText)
+            guard s.content.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+            let glyph: String
+            var color: PlatformColor? = nil
+            switch s.format {
+            case .bulletList:
+                glyph = "•"
+            case .numberedList:
+                glyph = s.marker.trimmingCharacters(in: .whitespaces)
+            case .taskList:
+                let checked = s.marker.contains("[x]") || s.marker.contains("[X]")
+                glyph = checked ? "☑" : "☐"
+                color = checked ? typography.accentColor : .secondaryTextColor
+            default:
+                continue
+            }
+            let prefixLen = (s.quotePrefix + s.indent).utf16.count
+            let markerRange = NSRange(location: lineRange.location + prefixLen, length: (s.marker as NSString).length)
+            let storageMarker = valid(markerRange)
+            guard storageMarker.length > 0,
+                  storage.attribute(.listMarker, at: storageMarker.location, effectiveRange: nil) == nil else { continue }
+            var inner = BlockContext()
+            inner.inline.size = typography.textSize
+            inner.listDepth = 1
+            inner.isTightList = true
+            inner.indent = 24
+            #if os(iOS)
+            if let existing = storage.attribute(.blockDecorations, at: storageMarker.location, effectiveRange: nil) as? [BlockDecoration],
+               let box = existing.last {
+                inner.decorations = existing
+                inner.boxLeft = box.left + box.leftBorderWidth + box.padding
+                inner.boxRight = box.right + box.borderWidth + box.padding
+            }
+            #else
+            if let existing = storage.attribute(.paragraphStyle, at: storageMarker.location, effectiveRange: nil) as? NSParagraphStyle,
+               !existing.textBlocks.isEmpty {
+                inner.textBlocks = existing.textBlocks
+            }
+            #endif
+            if !s.quotePrefix.isEmpty {
+                hideMarker(NSRange(location: lineRange.location, length: (s.quotePrefix as NSString).length))
+            }
+            if !s.indent.isEmpty {
+                hideMarker(NSRange(location: lineRange.location + (s.quotePrefix as NSString).length, length: (s.indent as NSString).length))
+            }
+            hideMarker(markerRange)
+            storage.addAttribute(.listMarker, value: ListMarkerInfo(text: glyph, indent: inner.indent, color: color), range: storageMarker)
+            setParagraphStyle(inner, lineSpacing: 5, paragraphSpacing: 6, over: lineRange)
+        }
     }
     
     /// Code-like ranges of the whole document (raw offsets), sorted: code, HTML, math and front matter
