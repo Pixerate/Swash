@@ -1,0 +1,32 @@
+only_rules:
+  - custom_rules
+
+custom_rules:
+  no_preview_provider:
+    name: "No PreviewProvider"
+    included:
+      - "Swash/"
+      - "SwashQuickLookExtension/"
+      - "SwashShareExtension/"
+      - "SwashStickers/"
+      - "SwashThumbnailExtension/"
+      - "SwashWidgetExtension/"
+    excluded:
+      - "Tests/"
+    regex: ':\s*PreviewProvider\b'
+    message: "Use the #Preview macro instead of legacy PreviewProvider."
+    severity: error
+  no_binding_constant:
+    name: "No Binding.constant"
+    included:
+      - "Swash/"
+      - "SwashQuickLookExtension/"
+      - "SwashShareExtension/"
+      - "SwashStickers/"
+      - "SwashThumbnailExtension/"
+      - "SwashWidgetExtension/"
+    excluded:
+      - "Tests/"
+    regex: '(\bBinding)?\.constant\s*\('
+    message: "Use @Previewable with @State / @Bindable instead of .constant(...)."
+    severity: error

@@ -27,11 +27,8 @@ On completion of any work, agents must execute the following workflow:
 - **Fix Errors & Warnings**: If the CI process fails or reports any errors or warnings, inspect the logs immediately, resolve the issues, re-validate locally, and push the fix. Repeat until CI builds cleanly without errors or warnings.
 
 ## SwiftUI Dynamic Previews
-When adding or modifying SwiftUI `View`s, include Xcode dynamic previews per [Previews in Xcode](https://developer.apple.com/documentation/swiftui/previews-in-xcode):
-- Use the `#Preview` macro (not legacy `PreviewProvider`).
-- Use `@Previewable` with `@State` / `@Bindable` for interactive bindings instead of `.constant(...)` or custom wrapper structs.
-- Use `PreviewModifier` for shared preview environments/dependencies, and `#Preview(traits:)` or `#Preview(arguments:)` to cover key states and layout variants.
-- `#Preview(arguments:)` needs macOS 27 / iOS 26, above the macOS app's 15.7 deployment target: mark such previews in macOS-built code `@available(macOS 27, iOS 26, *)`.
+When adding or modifying SwiftUI `View`s, include `#Preview` dynamic previews per [Previews in Xcode](https://developer.apple.com/documentation/swiftui/previews-in-xcode):
+- Use `@Previewable` (`@State` / `@Bindable`), `PreviewModifier`, and `#Preview(traits:)` / `#Preview(arguments:)` for state and layout variants (`PreviewProvider`, `.constant(...)`, and macOS `#Preview(arguments:)` without `@available(macOS 27, iOS 26, *)` are caught by `npm run lint` / `.swiftlint.yml`).
 
 ## Product Proposal Domains
-`.jazz/domains.json` lists Swash's product areas for the weekly automated product proposals, which read it from the default branch. Each domain has a unique kebab-case `id`, a `name`, the repo `paths` that make it up, and optional `docs` and `labels`. The `name` goes into a public web-research brief, so it must describe a generic product category: never the app's name, codenames or anything confidential. When you add, move or rename the files behind a product area, update its `paths` so every entry still exists.
+`.jazz/domains.json` lists Swash's product areas for weekly automated product proposals (read from the default branch). Keep `name` generic and non-confidential (no app names or codenames), and update `paths` whenever files behind a product area move or rename; structural checks (`id`, `name`, existing `paths`/`docs`) run in `npm run lint`.
