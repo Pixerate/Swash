@@ -8,9 +8,9 @@ on:
 
 jobs:
   check-changeset:
-    name: Validate Changeset
+    name: Validate Changeset & Lint
     runs-on: macos-latest
-    if: "!contains(github.event.pull_request.labels.*.name, 'skip-changeset') && !contains(github.event.pull_request.title, 'Version Packages') && github.actor != 'dependabot[bot]'"
+    if: "github.actor != 'dependabot[bot]'"
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -26,7 +26,11 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
+      - name: Lint
+        run: npm run lint
+
       - name: Check for Changesets
+        if: "!contains(github.event.pull_request.labels.*.name, 'skip-changeset') && !contains(github.event.pull_request.title, 'Version Packages')"
         run: |
           CHANGESET_FILES=$(git diff --name-only origin/main...HEAD -- '.changeset/*.md' '!.changeset/README.md')
           if [ -z "$CHANGESET_FILES" ]; then

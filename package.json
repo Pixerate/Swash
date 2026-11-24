@@ -5,6 +5,7 @@
   "description": "Native macOS Markdown Editor",
   "type": "module",
   "scripts": {
+    "lint": "node scripts/lint-swift.mjs",
     "changeset": "changeset",
     "version": "changeset version",
     "changeset:status": "changeset status --since=origin/main"
