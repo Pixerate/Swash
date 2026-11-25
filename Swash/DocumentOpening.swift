@@ -12,6 +12,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import Combine
+import OSLog
 import PixerateMarkdown
 
 // MARK: - Opening
@@ -120,20 +121,61 @@ final class DocumentOpener {
 
 // MARK: - New documents with content
 
-/// Text for the next untitled documents to start with (quick capture, import). `ContentView`
-/// takes one when an empty, unsaved document appears.
+/// Initial text for untitled documents (quick capture, import). Keys seeds to the specific
+/// `NSDocument` and `NSWindow` created for them so concurrent ⌘N or restored windows
+/// never claim another document's seed.
 @MainActor
 enum NewDocumentSeed {
-    private static var queue: [String] = []
+    private static var seeds: [ObjectIdentifier: String] = [:]
+    private static let logger = Logger(subsystem: "com.pixerate.Swash", category: "Document")
 
     static func createDocument(with text: String) {
-        queue.append(text)
-        NSDocumentController.shared.newDocument(nil)
+        do {
+            let document = try NSDocumentController.shared.openUntitledDocumentAndDisplay(true)
+            let docID = ObjectIdentifier(document)
+            seeds[docID] = text
+            for wc in document.windowControllers {
+                if let window = wc.window {
+                    seeds[ObjectIdentifier(window)] = text
+                }
+            }
+        } catch {
+            logger.error("Failed to open untitled document: \(error.localizedDescription)")
+        }
     }
 
-    static func take() -> String? {
-        queue.isEmpty ? nil : queue.removeFirst()
+    static func take(for window: NSWindow) -> String? {
+        let windowID = ObjectIdentifier(window)
+        if let seed = seeds.removeValue(forKey: windowID) {
+            if let doc = NSDocumentController.shared.document(for: window) {
+                seeds.removeValue(forKey: ObjectIdentifier(doc))
+            }
+            return seed
+        }
+        if let doc = NSDocumentController.shared.document(for: window) {
+            let docID = ObjectIdentifier(doc)
+            if let seed = seeds.removeValue(forKey: docID) {
+                seeds.removeValue(forKey: windowID)
+                return seed
+            }
+        }
+        return nil
     }
+
+    #if DEBUG
+    static func registerForTesting(text: String, document: NSDocument? = nil, window: NSWindow? = nil) {
+        if let doc = document {
+            seeds[ObjectIdentifier(doc)] = text
+        }
+        if let win = window {
+            seeds[ObjectIdentifier(win)] = text
+        }
+    }
+
+    static func clearForTesting() {
+        seeds.removeAll()
+    }
+    #endif
 }
 
 // MARK: - Reopening

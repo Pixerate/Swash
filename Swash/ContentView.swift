@@ -132,6 +132,13 @@ struct ContentView: View {
         fileURL ?? windowDocumentURL
     }
     
+    private func claimSeededTextIfNeeded() {
+        guard fileURL == nil, document.text.isEmpty, let window = window else { return }
+        if let seed = NewDocumentSeed.take(for: window) {
+            document.text = seed
+        }
+    }
+
     private func refreshWindowDocumentURL() {
         let url = window?.representedURL ?? window.flatMap { NSDocumentController.shared.document(for: $0)?.fileURL }
         if url != windowDocumentURL { windowDocumentURL = url }
@@ -266,6 +273,7 @@ struct ContentView: View {
         }
         .background(WindowAccessor(window: $window))
         .onChange(of: window) { _, _ in
+            claimSeededTextIfNeeded()
             refreshWindowDocumentURL()
             updateDraftName()
         }
@@ -326,9 +334,7 @@ struct ContentView: View {
             outlineState.select = { heading in editor.reveal(rawLocation: heading.range.location) }
             editor.onPartnerMarksChange = { partnerMarkCount = $0 }
             // An untitled document created for a quick note or an import starts with its text
-            if fileURL == nil, document.text.isEmpty, let seed = NewDocumentSeed.take() {
-                document.text = seed
-            }
+            claimSeededTextIfNeeded()
             updateDraftName()
         }
     }
