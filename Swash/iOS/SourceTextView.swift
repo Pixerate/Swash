@@ -66,6 +66,7 @@ struct SourceTextView: UIViewRepresentable {
             textView.text = text
             let length = (text as NSString).length
             textView.selectedRange = NSRange(location: min(selection.location, length), length: 0)
+            textView.refreshFormattingBarState()
         }
         textView.flavor = flavor
         textView.baseURL = baseURL
