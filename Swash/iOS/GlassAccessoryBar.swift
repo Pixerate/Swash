@@ -116,6 +116,232 @@ class GlassAccessoryBar: UIView {
         for item in items {
             stack.addArrangedSubview(item)
         }
+        formatButtonRegistrations.removeAll { reg in
+            guard let button = reg.button else { return true }
+            return !items.contains(where: { $0 === button })
+        }
+    }
+
+    /// A registered formatting button and its associated format command / entry.
+    struct FormatButtonRegistration {
+        weak var button: UIButton?
+        let command: FormatCommand
+        let defaultSymbol: String
+        let defaultLabel: String
+    }
+
+    private var formatButtonRegistrations: [FormatButtonRegistration] = []
+
+    /// The formatting buttons currently registered in the bar.
+    var registeredFormattingButtons: [UIButton] {
+        formatButtonRegistrations.compactMap(\.button)
+    }
+
+    /// Registers a button for active formatting updates.
+    func registerFormatButton(_ button: UIButton, command: FormatCommand, entry: FormatMenuEntry? = nil) {
+        let defaultSymbol = entry?.command.symbolName ?? command.symbolName
+        let defaultLabel = entry?.label.replacingOccurrences(of: "…", with: "") ?? command.label ?? ""
+        formatButtonRegistrations.removeAll { $0.button === button || $0.button == nil }
+        formatButtonRegistrations.append(FormatButtonRegistration(
+            button: button,
+            command: command,
+            defaultSymbol: defaultSymbol,
+            defaultLabel: defaultLabel
+        ))
+    }
+
+    /// Registers multiple formatting buttons at once.
+    func registerFormatButtons(_ items: [(button: UIButton, command: FormatCommand, entry: FormatMenuEntry?)]) {
+        formatButtonRegistrations = items.map { item in
+            FormatButtonRegistration(
+                button: item.button,
+                command: item.command,
+                defaultSymbol: item.entry?.command.symbolName ?? item.command.symbolName,
+                defaultLabel: item.entry?.label.replacingOccurrences(of: "…", with: "") ?? item.command.label ?? ""
+            )
+        }
+    }
+
+    /// Updates the visual states of registered buttons according to the active formatting commands.
+    func update(activeFormats: Set<FormatCommand>) {
+        formatButtonRegistrations.removeAll { $0.button == nil }
+        let activeListCommand: FormatCommand? = {
+            if activeFormats.contains(.numberedList) { return .numberedList }
+            if activeFormats.contains(.bulletList) { return .bulletList }
+            if activeFormats.contains(.taskList) { return .taskList }
+            return nil
+        }()
+        let activeHeading: FormatCommand? = activeFormats.first {
+            if case .heading = $0 { return true }
+            return false
+        }
+
+        let hasExactListMatch = formatButtonRegistrations.contains { $0.command == activeListCommand }
+        let hasExactHeadingMatch = formatButtonRegistrations.contains { $0.command == activeHeading }
+
+        var listAdapted = false
+        var headingAdapted = false
+
+        for registration in formatButtonRegistrations {
+            guard let button = registration.button else { continue }
+            if registration.command.isListCommand {
+                updateListButton(
+                    button,
+                    registration: registration,
+                    activeListCommand: activeListCommand,
+                    hasExactMatch: hasExactListMatch,
+                    adaptedAlready: &listAdapted
+                )
+            } else if registration.command.isHeadingCommand {
+                updateHeadingButton(
+                    button,
+                    registration: registration,
+                    activeHeading: activeHeading,
+                    hasExactMatch: hasExactHeadingMatch,
+                    adaptedAlready: &headingAdapted
+                )
+            } else {
+                updateInlineButton(button, registration: registration, activeFormats: activeFormats)
+            }
+        }
+    }
+
+    private func updateListButton(
+        _ button: UIButton,
+        registration: FormatButtonRegistration,
+        activeListCommand: FormatCommand?,
+        hasExactMatch: Bool,
+        adaptedAlready: inout Bool
+    ) {
+        let shouldHighlight: Bool
+        let symbol: String
+        let label: String
+
+        if let activeList = activeListCommand {
+            if hasExactMatch {
+                shouldHighlight = (registration.command == activeList)
+                symbol = shouldHighlight ? activeList.symbolName : registration.defaultSymbol
+                label = shouldHighlight ? listLabel(for: activeList) : registration.defaultLabel
+            } else if !adaptedAlready {
+                shouldHighlight = true
+                adaptedAlready = true
+                symbol = activeList.symbolName
+                label = listLabel(for: activeList)
+            } else {
+                shouldHighlight = false
+                symbol = registration.defaultSymbol
+                label = registration.defaultLabel
+            }
+        } else {
+            shouldHighlight = false
+            symbol = registration.defaultSymbol
+            label = registration.defaultLabel
+        }
+
+        applyButtonState(button, isSelected: shouldHighlight, symbol: symbol, label: label)
+        if let menu = button.menu {
+            button.menu = updateMenuState(menu, activeList: activeListCommand)
+        }
+    }
+
+    private func updateHeadingButton(
+        _ button: UIButton,
+        registration: FormatButtonRegistration,
+        activeHeading: FormatCommand?,
+        hasExactMatch: Bool,
+        adaptedAlready: inout Bool
+    ) {
+        let shouldHighlight: Bool
+        let symbol: String
+        let label: String
+
+        if let activeHeading, case .heading(let level) = activeHeading {
+            if hasExactMatch {
+                shouldHighlight = (registration.command == activeHeading)
+                symbol = shouldHighlight ? ((1...6).contains(level) ? "\(level).square" : "textformat.size") : registration.defaultSymbol
+                label = shouldHighlight ? "Heading \(level)" : registration.defaultLabel
+            } else if !adaptedAlready {
+                shouldHighlight = true
+                adaptedAlready = true
+                symbol = (1...6).contains(level) ? "\(level).square" : "textformat.size"
+                label = "Heading \(level)"
+            } else {
+                shouldHighlight = false
+                symbol = registration.defaultSymbol
+                label = registration.defaultLabel
+            }
+        } else {
+            shouldHighlight = false
+            symbol = registration.defaultSymbol
+            label = registration.defaultLabel
+        }
+
+        applyButtonState(button, isSelected: shouldHighlight, symbol: symbol, label: label)
+        if let menu = button.menu {
+            button.menu = updateMenuHeadingState(menu, activeHeading: activeHeading)
+        }
+    }
+
+    private func updateInlineButton(_ button: UIButton, registration: FormatButtonRegistration, activeFormats: Set<FormatCommand>) {
+        let isSelected = activeFormats.contains(registration.command)
+        applyButtonState(button, isSelected: isSelected, symbol: registration.defaultSymbol, label: registration.defaultLabel)
+    }
+
+    private func applyButtonState(_ button: UIButton, isSelected: Bool, symbol: String, label: String) {
+        button.isSelected = isSelected
+        var configuration = button.configuration
+        configuration?.image = UIImage(systemName: symbol)
+        configuration?.baseForegroundColor = isSelected ? .tintColor : .label
+        button.configuration = configuration
+        button.accessibilityLabel = label
+        button.largeContentTitle = label
+        button.setNeedsUpdateConfiguration()
+    }
+
+    private func listLabel(for command: FormatCommand) -> String {
+        switch command {
+        case .numberedList: return "Numbered List"
+        case .bulletList: return "Bullet List"
+        case .taskList: return "Task List"
+        default: return "List"
+        }
+    }
+
+    private func updateMenuState(_ menu: UIMenu, activeList: FormatCommand?) -> UIMenu {
+        let updatedChildren = menu.children.map { element -> UIMenuElement in
+            if let submenu = element as? UIMenu {
+                return updateMenuState(submenu, activeList: activeList)
+            } else if let action = element as? UIAction {
+                if let activeList {
+                    let matches = action.title.localizedCaseInsensitiveContains("Numbered") && activeList == .numberedList
+                        || action.title.localizedCaseInsensitiveContains("Bullet") && activeList == .bulletList
+                        || action.title.localizedCaseInsensitiveContains("Task") && activeList == .taskList
+                    action.state = matches ? .on : .off
+                } else {
+                    action.state = .off
+                }
+                return action
+            }
+            return element
+        }
+        return menu.replacingChildren(updatedChildren)
+    }
+
+    private func updateMenuHeadingState(_ menu: UIMenu, activeHeading: FormatCommand?) -> UIMenu {
+        let updatedChildren = menu.children.map { element -> UIMenuElement in
+            if let submenu = element as? UIMenu {
+                return updateMenuHeadingState(submenu, activeHeading: activeHeading)
+            } else if let action = element as? UIAction {
+                if let activeHeading, case .heading(let level) = activeHeading {
+                    action.state = action.title.contains("\(level)") ? .on : .off
+                } else {
+                    action.state = .off
+                }
+                return action
+            }
+            return element
+        }
+        return menu.replacingChildren(updatedChildren)
     }
 
     /// A plain icon button for a capsule bar.
@@ -351,5 +577,21 @@ struct FormatPanel: View {
         close: {}
     )
     .frame(height: 220)
+}
+
+extension FormatCommand {
+    var isListCommand: Bool {
+        switch self {
+        case .bulletList, .numberedList, .taskList: return true
+        default: return false
+        }
+    }
+
+    var isHeadingCommand: Bool {
+        switch self {
+        case .heading: return true
+        default: return false
+        }
+    }
 }
 #endif

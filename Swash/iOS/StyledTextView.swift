@@ -26,7 +26,16 @@ struct StyledTextView: UIViewRepresentable {
     /// Font, size (already adjusted for Dynamic Type), line width and theme (GOTCHAS #43).
     var typography = EditorTypography()
 
-    func makeUIView(context: Context) -> StyledUITextView {
+    func makeUIView(context: Context) -> EditorHostView<StyledUITextView> {
+        controller.seedInitialText(text)
+        if let existing = controller.retainedStyledTextView {
+            let host = EditorHostView(textView: existing, controller: controller)
+            controller.activeStyledHost = host
+            updateUIView(host, context: context)
+            controller.restoreScroll(in: existing)
+            return host
+        }
+
         let storage = NSTextStorage()
         let layoutManager = StyledLayoutManager()
         storage.addLayoutManager(layoutManager)
@@ -47,23 +56,48 @@ struct StyledTextView: UIViewRepresentable {
         textView.smartInsertDeleteType = .no
         textView.dataDetectorTypes = []
         textView.typingAttributes = context.coordinator.baseAttributes
-        textView.text = text
-        textView.typingAttributes = context.coordinator.baseAttributes
-        controller.attach(textView)
-        textView.flavor = flavor
-        textView.baseURL = baseURL
-        textView.installFormattingBar(enabled: formattingEnabled)
-        context.coordinator.textView = textView
-        context.coordinator.installWritingPartner(in: textView)
-        context.coordinator.applyWritingOptions(writingOptions, in: textView)
-        context.coordinator.scheduleFullRestyle()
+        context.coordinator.pendingRawSelection = controller.savedSelection
+        if let initial = controller.initialText, controller.hasUserEdits, initial != text {
+            textView.text = initial
+            textView.typingAttributes = context.coordinator.baseAttributes
+            controller.attach(textView)
+            textView.flavor = flavor
+            textView.baseURL = baseURL
+            textView.installFormattingBar(enabled: formattingEnabled)
+            context.coordinator.textView = textView
+            context.coordinator.installWritingPartner(in: textView)
+            context.coordinator.applyWritingOptions(writingOptions, in: textView)
+            context.coordinator.forceFullRestyle = true
+            context.coordinator.applyEdit(in: textView, newRawText: text, rawSelection: controller.savedSelection, actionName: "Typing")
+        } else {
+            textView.text = text
+            textView.typingAttributes = context.coordinator.baseAttributes
+            controller.attach(textView)
+            textView.flavor = flavor
+            textView.baseURL = baseURL
+            textView.installFormattingBar(enabled: formattingEnabled)
+            context.coordinator.textView = textView
+            context.coordinator.installWritingPartner(in: textView)
+            context.coordinator.applyWritingOptions(writingOptions, in: textView)
+            context.coordinator.scheduleFullRestyle()
+        }
         textView.setTopBarInset(topInset)
-        return textView
+        if controller.savedScrollOffsetY > 0 {
+            controller.restoreScroll(in: textView)
+        }
+        controller.retainedStyledTextView = textView
+        let host = EditorHostView(textView: textView, controller: controller)
+        controller.activeStyledHost = host
+        return host
     }
 
-    func updateUIView(_ textView: StyledUITextView, context: Context) {
+    func updateUIView(_ host: EditorHostView<StyledUITextView>, context: Context) {
+        let textView = host.textView
+        host.adoptTextView()
         let coordinator = context.coordinator
         coordinator.parent = self
+        textView.coordinator = coordinator
+        textView.delegate = coordinator
         textView.flavor = flavor
         textView.baseURL = baseURL
         textView.installFormattingBar(enabled: formattingEnabled)
@@ -77,14 +111,24 @@ struct StyledTextView: UIViewRepresentable {
         }
         let current = swashRawMarkdown(from: textView.textStorage)
         if coordinator.lastStyledText != text, current != text {
-            // External change (revert, another window, flavour conversion)
             let offset = textView.contentOffset
-            textView.textStorage.setAttributedString(NSAttributedString(string: text, attributes: context.coordinator.baseAttributes))
-            coordinator.invalidateOffsetMap()
-            textView.contentOffset = offset
-            coordinator.scheduleFullRestyle()
+            if controller.hasUserEdits {
+                coordinator.forceFullRestyle = true
+                coordinator.applyEdit(in: textView, newRawText: text, rawSelection: controller.savedSelection, actionName: "Typing")
+                textView.contentOffset = offset
+            } else {
+                // External change (revert, another window, flavour conversion)
+                textView.textStorage.setAttributedString(NSAttributedString(string: text, attributes: context.coordinator.baseAttributes))
+                coordinator.invalidateOffsetMap()
+                textView.contentOffset = offset
+                coordinator.scheduleFullRestyle()
+            }
         } else if coordinator.lastFlavor != flavor || coordinator.lastBaseURL != baseURL {
             coordinator.scheduleFullRestyle()
+        } else if coordinator.lastStyledText != nil, !textView.isFirstResponder,
+                  textView.markdownSelection != controller.savedSelection {
+            textView.selectedRange = coordinator.storageRange(forRaw: controller.savedSelection, in: textView)
+            textView.refreshFormattingBarState()
         }
         if coordinator.lastTypography != typography {
             coordinator.lastTypography = typography
@@ -95,12 +139,20 @@ struct StyledTextView: UIViewRepresentable {
 
     /// Fill the space offered: a text view's own fitting size is its whole content height, which
     /// would stop it scrolling.
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: StyledUITextView, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: EditorHostView<StyledUITextView>, context: Context) -> CGSize? {
         guard let width = proposal.width, let height = proposal.height else { return nil }
         return CGSize(width: width, height: height)
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeCoordinator() -> Coordinator {
+        if let existing = controller.retainedStyledCoordinator {
+            existing.parent = self
+            return existing
+        }
+        let coordinator = Coordinator(self)
+        controller.retainedStyledCoordinator = coordinator
+        return coordinator
+    }
 
     // MARK: - Coordinator
 
@@ -121,7 +173,7 @@ struct StyledTextView: UIViewRepresentable {
         let writingPartner = WritingPartnerSession()
         private(set) var partnerHost: IOSWritingPartnerHost?
         /// Raw-markdown selection to restore after the next styling pass.
-        private var pendingRawSelection: NSRange?
+        var pendingRawSelection: NSRange?
         private var editGeneration = 0
         private var highlightedGeneration = -1
         /// Caret position before the latest selection change, to tell arrow steps from jumps.
@@ -237,6 +289,7 @@ struct StyledTextView: UIViewRepresentable {
             editGeneration += 1
             pendingRawSelection = rawSelection
             highlight(in: textView)
+            parent.controller.noteUserEdit(in: textView)
         }
 
         /// Runs a structural editing command on the raw Markdown; false falls back to the default key behaviour.
@@ -299,6 +352,7 @@ struct StyledTextView: UIViewRepresentable {
             textView.setNeedsOverlayLayout()
             guard !isUpdatingFromSwiftUI, !isHighlighting else { return }
             parent.text = swashRawMarkdown(from: textView.textStorage)
+            parent.controller.noteUserEdit(in: textView)
             if !textView.isApplyingEdit { partnerDidChange(textView) }
             editGeneration += 1
             let generation = editGeneration
@@ -362,12 +416,17 @@ struct StyledTextView: UIViewRepresentable {
             }
             sanitizeTypingAttributes(textView)
             if let styled = textView as? StyledUITextView {
+                parent.controller.recordSelection(from: styled)
                 applyFocus(in: styled)
                 centerCaret(in: styled)
-                styled.refreshFormattingBarState()
+                styled.textViewDidChangeSelection()
                 // The Formatting voice tidies a block once the caret has left it (#113)
                 if !styled.isApplyingEdit, let host = partnerHost { writingPartner.selectionDidChange(in: host) }
             }
+        }
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            parent.controller.recordScroll(from: scrollView)
         }
 
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
@@ -519,7 +578,7 @@ struct StyledTextView: UIViewRepresentable {
 
             lastBlocks = Self.blockSummaries(document, raw: rawText as NSString)
             lastRawLength = (rawText as NSString).length
-            finishStyling(in: textView, rawText: rawText, savedRawSelection: savedRawSelection, savedOffset: savedOffset)
+            finishStyling(in: textView, rawText: rawText, savedRawSelection: savedRawSelection, savedOffset: savedOffset, fullPass: true)
         }
 
         /// Restyles only the top-level blocks that changed since the last pass. Returns false when a
@@ -584,7 +643,7 @@ struct StyledTextView: UIViewRepresentable {
 
             lastBlocks = current
             lastRawLength = raw.length
-            finishStyling(in: textView, rawText: rawText, savedRawSelection: savedRawSelection, savedOffset: savedOffset)
+            finishStyling(in: textView, rawText: rawText, savedRawSelection: savedRawSelection, savedOffset: savedOffset, fullPass: false)
             return true
         }
 
@@ -648,7 +707,7 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         /// Bookkeeping after a styling pass: selection, scroll position, state.
-        private func finishStyling(in textView: StyledUITextView, rawText: String, savedRawSelection: NSRange, savedOffset: CGPoint) {
+        private func finishStyling(in textView: StyledUITextView, rawText: String, savedRawSelection: NSRange, savedOffset: CGPoint, fullPass: Bool) {
             cachedOffsetMap = nil
             highlightedGeneration = editGeneration
             let restored = storageRange(forRaw: savedRawSelection, in: textView)
@@ -658,11 +717,12 @@ struct StyledTextView: UIViewRepresentable {
             }
             lastSelection = restored
             isHighlighting = false
+            parent.controller.recordSelection(from: textView)
             textView.typingAttributes = baseAttributes
             applyFocus(in: textView)
             if parent.writingOptions.typewriter {
                 centerCaret(in: textView)
-            } else if textView.contentOffset != savedOffset, !textView.isFirstResponder || textView.isDragging || textView.isDecelerating {
+            } else if textView.contentOffset != savedOffset, fullPass || !textView.isFirstResponder || textView.isDragging || textView.isDecelerating {
                 textView.contentOffset = savedOffset
             }
             textView.setNeedsOverlayLayout()

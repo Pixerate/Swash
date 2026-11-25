@@ -403,6 +403,121 @@ final class StyledTextViewTests: XCTestCase {
         XCTAssertEqual(e.textView.recentButton(for: .bold)?.isSelected, false)
     }
 
+    func testMovingCaretIntoListTypesAndInlineFormatsUpdatesKeyboardBarAndMenus() throws {
+        let suiteName = "SwashKeyboardBarUpdatesTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let markdown = """
+        Plain text line
+
+        1. Numbered item
+
+        - Bullet item
+
+        - [ ] Task item
+
+        ## Heading Two
+
+        Some **bold text** and *italic text* and [link target](https://example.com)
+        """
+        let e = try editor(markdown)
+        e.textView.recentFormats = RecentFormatCommands(defaults: defaults)
+        e.pump()
+
+        guard let bar = e.textView.inputAccessoryView as? GlassAccessoryBar else {
+            XCTFail("Expected GlassAccessoryBar as inputAccessoryView")
+            return
+        }
+
+        let listButton = try XCTUnwrap(e.textView.recentButton(for: .bulletList))
+        let headingButton = try XCTUnwrap(e.textView.recentButton(for: .heading(1)))
+        let boldButton = try XCTUnwrap(e.textView.recentButton(for: .bold))
+        let italicButton = try XCTUnwrap(e.textView.recentButton(for: .italic))
+        let linkButton = try XCTUnwrap(e.textView.recentButton(for: .link))
+
+        // 1. In plain text: everything unselected, default symbols and labels
+        e.caret(after: "Plain")
+        e.textView.textViewDidChangeSelection()
+        XCTAssertFalse(listButton.isSelected)
+        XCTAssertEqual(listButton.configuration?.image, UIImage(systemName: "list.bullet"))
+        XCTAssertEqual(listButton.accessibilityLabel, "Bullet List")
+        XCTAssertEqual(listButton.configuration?.baseForegroundColor, .label)
+        XCTAssertFalse(headingButton.isSelected)
+        XCTAssertEqual(headingButton.configuration?.image, UIImage(systemName: "1.square"))
+        XCTAssertFalse(boldButton.isSelected)
+        XCTAssertFalse(italicButton.isSelected)
+        XCTAssertFalse(linkButton.isSelected)
+
+        // 2. Moving into numbered list: list button turns to list.number, selected and tinted
+        e.caret(after: "Numbered")
+        e.textView.textViewDidChangeSelection()
+        XCTAssertTrue(listButton.isSelected)
+        XCTAssertEqual(listButton.configuration?.image, UIImage(systemName: "list.number"))
+        XCTAssertEqual(listButton.accessibilityLabel, "Numbered List")
+        XCTAssertEqual(listButton.configuration?.baseForegroundColor, .tintColor)
+        XCTAssertFalse(boldButton.isSelected)
+        XCTAssertFalse(headingButton.isSelected)
+
+        // 3. Moving back to plain text clears list button and restores list.bullet
+        e.caret(after: "Plain")
+        e.textView.textViewDidChangeSelection()
+        XCTAssertFalse(listButton.isSelected)
+        XCTAssertEqual(listButton.configuration?.image, UIImage(systemName: "list.bullet"))
+        XCTAssertEqual(listButton.accessibilityLabel, "Bullet List")
+        XCTAssertEqual(listButton.configuration?.baseForegroundColor, .label)
+
+        // 4. Moving into bullet list: list button is selected with list.bullet
+        e.caret(after: "Bullet")
+        e.textView.textViewDidChangeSelection()
+        XCTAssertTrue(listButton.isSelected)
+        XCTAssertEqual(listButton.configuration?.image, UIImage(systemName: "list.bullet"))
+        XCTAssertEqual(listButton.accessibilityLabel, "Bullet List")
+        XCTAssertEqual(listButton.configuration?.baseForegroundColor, .tintColor)
+
+        // 5. Moving into task list: list button turns to checklist, selected and tinted
+        e.caret(after: "Task")
+        e.textView.textViewDidChangeSelection()
+        XCTAssertTrue(listButton.isSelected)
+        XCTAssertEqual(listButton.configuration?.image, UIImage(systemName: "checklist"))
+        XCTAssertEqual(listButton.accessibilityLabel, "Task List")
+        XCTAssertEqual(listButton.configuration?.baseForegroundColor, .tintColor)
+
+        // 6. Moving into Heading 2: heading button adapts to 2.square, selected and tinted
+        e.caret(after: "Heading")
+        e.textView.textViewDidChangeSelection()
+        XCTAssertTrue(headingButton.isSelected)
+        XCTAssertEqual(headingButton.configuration?.image, UIImage(systemName: "2.square"))
+        XCTAssertEqual(headingButton.accessibilityLabel, "Heading 2")
+        XCTAssertEqual(headingButton.configuration?.baseForegroundColor, .tintColor)
+        XCTAssertFalse(listButton.isSelected)
+
+        // 7. Moving into bold text: bold selected and tinted
+        e.caret(after: "**bo")
+        e.textView.textViewDidChangeSelection()
+        XCTAssertTrue(boldButton.isSelected)
+        XCTAssertEqual(boldButton.configuration?.baseForegroundColor, .tintColor)
+        XCTAssertFalse(italicButton.isSelected)
+        XCTAssertFalse(linkButton.isSelected)
+        XCTAssertFalse(listButton.isSelected)
+        XCTAssertFalse(headingButton.isSelected)
+
+        // 8. Moving into italic text: italic selected and tinted
+        e.caret(after: "*ita")
+        e.textView.textViewDidChangeSelection()
+        XCTAssertTrue(italicButton.isSelected)
+        XCTAssertEqual(italicButton.configuration?.baseForegroundColor, .tintColor)
+        XCTAssertFalse(boldButton.isSelected)
+
+        // 9. Moving into link: link selected and tinted
+        e.caret(after: "[lin")
+        e.textView.textViewDidChangeSelection()
+        XCTAssertTrue(linkButton.isSelected)
+        XCTAssertEqual(linkButton.configuration?.baseForegroundColor, .tintColor)
+        XCTAssertFalse(boldButton.isSelected)
+        XCTAssertFalse(italicButton.isSelected)
+    }
+
     func testFormatPanelOffersEveryAvailableIOSFormatGroupedByManifestGroup() throws {
         let panelEntries = FormatManifestLayout.formatPanelEntries
         let expectedMenuEntries = FormatManifest.entries(for: .menu).filter(\.command.isAvailableOnIOS)

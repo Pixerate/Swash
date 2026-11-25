@@ -31,6 +31,27 @@ final class IOSEditorController {
 
     var isAttached: Bool { textView != nil }
 
+    /// Selection in raw-Markdown offsets preserved across mode and size-class changes.
+    var savedSelection = NSRange(location: 0, length: 0)
+    /// Vertical scroll offset (`contentOffset.y + adjustedContentInset.top`) preserved across mode and size-class changes.
+    var savedScrollOffsetY: CGFloat = 0
+    /// Whether the active editor had keyboard focus before a mode or size-class change.
+    var wasFirstResponder = false
+    /// Initial document text when first attached, and whether the user has edited since open.
+    private(set) var initialText: String?
+    private(set) var hasUserEdits = false
+    /// Called when the Source editor gains focus or is edited (e.g. in Split mode, so closing falls back to Source).
+    var onSourceFocus: (() -> Void)?
+
+    /// Retained editor instances for this document scene, so folding, unfolding and switching modes
+    /// never destroys the live UITextView, its undo stack, or its Writing Partner session.
+    var retainedSourceTextView: MarkdownEditingTextView?
+    var retainedSourceCoordinator: SourceTextView.Coordinator?
+    weak var activeSourceHost: UIView?
+    var retainedStyledTextView: StyledUITextView?
+    var retainedStyledCoordinator: StyledTextView.Coordinator?
+    weak var activeStyledHost: UIView?
+
     /// Whether the writing partner is paused for this document (#112, #109). Kept here rather than
     /// in the editor's session, so switching between Source and Formatted keeps it.
     private(set) var partnerPaused = false
@@ -42,15 +63,56 @@ final class IOSEditorController {
         textView?.writingPartner?.setPaused(paused, in: textView?.writingPartnerHost)
     }
 
+    func seedInitialText(_ text: String) {
+        if initialText == nil { initialText = text }
+    }
+
+    func noteUserEdit(in textView: MarkdownEditingTextView) {
+        hasUserEdits = true
+        savedSelection = textView.markdownSelection
+        recordScroll(from: textView)
+        if !(textView is StyledUITextView) {
+            onSourceFocus?()
+        }
+    }
+
+    func recordSelection(from textView: MarkdownEditingTextView) {
+        guard !textView.isMovingBetweenHosts else { return }
+        savedSelection = textView.markdownSelection
+    }
+
+    func recordScroll(from scrollView: UIScrollView) {
+        guard scrollView.bounds.height > 0 else { return }
+        if let textView = scrollView as? MarkdownEditingTextView, textView.isMovingBetweenHosts { return }
+        savedScrollOffsetY = max(0, scrollView.contentOffset.y + scrollView.adjustedContentInset.top)
+    }
+
+    func restoreScroll(in scrollView: UIScrollView) {
+        let target = savedScrollOffsetY - scrollView.adjustedContentInset.top
+        if abs(scrollView.contentOffset.y - target) > 0.5 {
+            scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: target), animated: false)
+        }
+    }
+
     var selection: NSRange {
-        textView?.markdownSelection ?? NSRange(location: 0, length: 0)
+        textView?.markdownSelection ?? savedSelection
     }
 
     func apply(_ edit: MarkdownEdit, actionName: String) {
+        savedSelection = edit.selection
         textView?.applyMarkdownEdit(edit, actionName: actionName)
     }
 
     func attach(_ textView: MarkdownEditingTextView) {
+        if let previous = self.textView, previous !== textView {
+            savedSelection = previous.markdownSelection
+            if previous.bounds.height > 0 {
+                savedScrollOffsetY = max(0, previous.contentOffset.y + previous.adjustedContentInset.top)
+            }
+            if previous.isFirstResponder {
+                wasFirstResponder = true
+            }
+        }
         self.textView = textView
         textView.controller = self
         if let partner = textView.writingPartner {
@@ -64,11 +126,94 @@ final class IOSEditorController {
     }
 
     func focus() {
-        textView?.becomeFirstResponder()
+        wasFirstResponder = true
+        _ = textView?.becomeFirstResponder()
     }
 
     /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
     nonisolated deinit {}
+}
+
+/// Lightweight UIViewRepresentable container that re-parents a retained `MarkdownEditingTextView`
+/// when SwiftUI switches branches (such as `NavigationSplitView` ↔ compact root on fold/unfold),
+/// preserving the UITextView's undo stack, selection, scroll offset and keyboard focus.
+final class EditorHostView<TextView: MarkdownEditingTextView>: UIView {
+    let textView: TextView
+    weak var controller: IOSEditorController?
+
+    init(textView: TextView, controller: IOSEditorController) {
+        self.textView = textView
+        self.controller = controller
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        adoptTextView()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+    nonisolated deinit {}
+
+    private var isActiveHost: Bool {
+        guard let controller else { return true }
+        if textView is StyledUITextView {
+            return controller.activeStyledHost === self || controller.activeStyledHost == nil
+        } else {
+            return controller.activeSourceHost === self || controller.activeSourceHost == nil
+        }
+    }
+
+    func adoptTextView() {
+        guard isActiveHost || textView.superview == nil || textView.superview?.window == nil else { return }
+        guard textView.superview !== self else {
+            if bounds.size != .zero, textView.frame != bounds {
+                textView.frame = bounds
+            }
+            return
+        }
+        let shouldFocus = textView.isFirstResponder || (controller?.wasFirstResponder ?? false)
+        textView.isMovingBetweenHosts = true
+        if bounds.size != .zero {
+            textView.frame = bounds
+        }
+        textView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        addSubview(textView)
+        textView.isMovingBetweenHosts = false
+        if shouldFocus, window != nil, !textView.isFirstResponder {
+            _ = textView.becomeFirstResponder()
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if textView.superview === self, textView.frame != bounds {
+            textView.frame = bounds
+        }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil {
+            if let controller {
+                if textView is StyledUITextView {
+                    controller.activeStyledHost = self
+                } else {
+                    controller.activeSourceHost = self
+                }
+            }
+            adoptTextView()
+            if controller?.wasFirstResponder == true, !textView.isFirstResponder {
+                _ = textView.becomeFirstResponder()
+            }
+        } else if textView.superview === self, let controller {
+            let replacement = (textView is StyledUITextView) ? controller.activeStyledHost : controller.activeSourceHost
+            if let replacement = replacement as? EditorHostView<TextView>, replacement !== self {
+                replacement.adoptTextView()
+            }
+        }
+    }
 }
 
 /// A TextKit 1 UITextView (the same text system as the macOS editor) with Markdown editing aids.
@@ -78,6 +223,40 @@ class MarkdownEditingTextView: UITextView {
     private var formattingBarEnabled: Bool?
     /// Set while a Markdown edit replaces text, so the delegate doesn't intercept the replacement.
     var isApplyingEdit = false
+    /// Set while `EditorHostView` moves the text view between superviews, so `willMove(toWindow: nil)`
+    /// and `resignFirstResponder()` do not wipe the undo stack or clear `wasFirstResponder`.
+    var isMovingBetweenHosts = false
+    private let editorUndoManager = UndoManager()
+    private var isSuppressingUndoClear = false
+
+    override var undoManager: UndoManager? {
+        isSuppressingUndoClear ? nil : editorUndoManager
+    }
+
+    override func willMove(toWindow newWindow: UIWindow?) {
+        if newWindow == nil {
+            if isFirstResponder {
+                controller?.wasFirstResponder = true
+            }
+            isSuppressingUndoClear = true
+            super.willMove(toWindow: newWindow)
+            isSuppressingUndoClear = false
+        } else {
+            super.willMove(toWindow: newWindow)
+        }
+    }
+
+    @discardableResult
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became {
+            controller?.wasFirstResponder = true
+            if !(self is StyledUITextView) {
+                controller?.onSourceFocus?()
+            }
+        }
+        return became
+    }
     /// The document's flavour, for finding links (Slack mrkdwn writes them as `<url|text>`).
     var flavor: MarkdownFlavor = .github {
         didSet {
@@ -126,6 +305,14 @@ class MarkdownEditingTextView: UITextView {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.rebuildFormattingBarItems()
+            }
+        }
+    }
+
+    override var selectedRange: NSRange {
+        didSet {
+            if oldValue != selectedRange, !isApplyingEdit, undoManager?.isUndoing != true, undoManager?.isRedoing != true {
+                refreshFormattingBarState()
             }
         }
     }
@@ -421,11 +608,16 @@ class MarkdownEditingTextView: UITextView {
     }
 
     /// The keyboard comes back the next time editing starts.
+    @discardableResult
     override func resignFirstResponder() -> Bool {
+        let wasMoving = isMovingBetweenHosts || window == nil
         let resigned = super.resignFirstResponder()
-        if resigned, isShowingFormatPanel {
-            inputView = nil
-            formatPanelButton?.isSelected = false
+        if resigned, !wasMoving {
+            controller?.wasFirstResponder = false
+            if isShowingFormatPanel {
+                inputView = nil
+                formatPanelButton?.isSelected = false
+            }
         }
         return resigned
     }
@@ -439,6 +631,11 @@ class MarkdownEditingTextView: UITextView {
     /// The keyboard bar button for a recent command, if it is currently in the bar.
     func recentButton(for command: FormatCommand) -> UIButton? {
         recentButtonsByCommand[command]
+    }
+
+    /// Evaluates selection updates and refreshes formatting bar and format panel states.
+    func textViewDidChangeSelection() {
+        refreshFormattingBarState()
     }
 
     /// The last parse behind `activeFormats`: the bar refreshes on every edit and selection
@@ -513,9 +710,22 @@ class MarkdownEditingTextView: UITextView {
     func refreshFormattingBarState() {
         guard formattingBarEnabled == true else { return }
         let active = activeFormats
+        formattingBar?.update(activeFormats: active)
         for (command, button) in recentButtonsByCommand {
-            if button.isSelected != active.contains(command) {
-                button.isSelected = active.contains(command)
+            if command.isListCommand {
+                let hasList = active.contains(.bulletList) || active.contains(.numberedList) || active.contains(.taskList)
+                if button.isSelected != hasList {
+                    button.isSelected = hasList
+                }
+            } else if command.isHeadingCommand {
+                let hasHeading = active.contains { if case .heading = $0 { return true }; return false }
+                if button.isSelected != hasHeading {
+                    button.isSelected = hasHeading
+                }
+            } else {
+                if button.isSelected != active.contains(command) {
+                    button.isSelected = active.contains(command)
+                }
             }
         }
         (inputView as? FormatPanelInputView)?.update(activeFormats: active)
@@ -525,12 +735,19 @@ class MarkdownEditingTextView: UITextView {
     func rebuildFormattingBarItems() {
         guard let bar = formattingBar else { return }
         UIView.performWithoutAnimation {
-            bar.setItems(makeFormattingBarItems())
+            let (items, bindings) = makeFormattingBarItemsWithBindings()
+            bar.setItems(items)
+            bar.registerFormatButtons(bindings)
+            bar.update(activeFormats: activeFormats)
             bar.layoutIfNeeded()
         }
     }
 
     private func makeFormattingBarItems() -> [UIView] {
+        makeFormattingBarItemsWithBindings().items
+    }
+
+    private func makeFormattingBarItemsWithBindings() -> (items: [UIView], bindings: [(button: UIButton, command: FormatCommand, entry: FormatMenuEntry?)]) {
         var items: [UIView] = []
         let panel = GlassAccessoryBar.iconButton(symbol: "textformat", label: "Format",
                                                  action: UIAction(title: "Format") { [weak self] _ in self?.toggleFormatPanel() })
@@ -542,6 +759,7 @@ class MarkdownEditingTextView: UITextView {
         recentButtonsByCommand.removeAll()
         let active = activeFormats
         var formatButtons: [UIView] = []
+        var bindings: [(button: UIButton, command: FormatCommand, entry: FormatMenuEntry?)] = []
         for entry in FormatManifestLayout.keyboardBarEntries(from: recentFormats) {
             let label = entry.label.replacingOccurrences(of: "…", with: "")
             let button = GlassAccessoryBar.iconButton(symbol: entry.command.symbolName, label: label, action: action(entry))
@@ -549,6 +767,7 @@ class MarkdownEditingTextView: UITextView {
             recentFormatButtons.append(button)
             recentButtonsByCommand[entry.command] = button
             formatButtons.append(button)
+            bindings.append((button: button, command: entry.command, entry: entry))
         }
 
         // In Source mode, character buttons come first; in Formatted mode, format commands (#191)
@@ -566,7 +785,7 @@ class MarkdownEditingTextView: UITextView {
                 items.append(contentsOf: characterButtons)
             }
         }
-        return items
+        return (items, bindings)
     }
 
     /// Aa opens the format panel; next to it sit the most recently used format commands as icon
@@ -574,12 +793,14 @@ class MarkdownEditingTextView: UITextView {
     /// Markdown character buttons (#191), followed by Hide Keyboard at the trailing edge. The
     /// items scroll in a glass capsule (`GlassAccessoryBar`).
     private func makeFormattingBar() -> UIView {
-        let items = makeFormattingBarItems()
+        let (items, bindings) = makeFormattingBarItemsWithBindings()
         let dismiss = GlassAccessoryBar.trailingButton(symbol: "keyboard.chevron.compact.down", label: "Hide Keyboard",
                                                        action: UIAction(title: "Hide Keyboard") { [weak self] _ in
             _ = self?.resignFirstResponder()
         })
         let bar = GlassAccessoryBar(items: items, trailing: dismiss, groupedInCapsule: true)
+        bar.registerFormatButtons(bindings)
+        bar.update(activeFormats: activeFormats)
         formattingBar = bar
         return bar
     }

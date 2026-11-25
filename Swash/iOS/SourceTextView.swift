@@ -24,10 +24,18 @@ struct SourceTextView: UIViewRepresentable {
     /// Settings › Text Size (before Dynamic Type, which the font applies itself).
     var textSize: CGFloat = EditorTypography.defaultTextSize
 
-    func makeUIView(context: Context) -> MarkdownEditingTextView {
+    func makeUIView(context: Context) -> EditorHostView<MarkdownEditingTextView> {
+        controller.seedInitialText(text)
+        if let existing = controller.retainedSourceTextView {
+            let host = EditorHostView(textView: existing, controller: controller)
+            controller.activeSourceHost = host
+            updateUIView(host, context: context)
+            controller.restoreScroll(in: existing)
+            return host
+        }
+
         let textView = MarkdownEditingTextView(usingTextLayoutManager: false)
         textView.delegate = context.coordinator
-        textView.text = text
         textView.font = Self.font(textSize: textSize)
         context.coordinator.lastTextSize = textSize
         textView.adjustsFontForContentSizeCategory = true
@@ -42,30 +50,56 @@ struct SourceTextView: UIViewRepresentable {
         textView.smartInsertDeleteType = .no
         textView.autocapitalizationType = .sentences
         textView.dataDetectorTypes = []
+        let targetSelection = Self.clampedSelection(controller.savedSelection, in: text)
+        if let initial = controller.initialText, controller.hasUserEdits, initial != text {
+            textView.text = initial
+            textView.applyMinimalEdit(MarkdownEdit(text: text, selection: targetSelection), actionName: "Typing")
+        } else {
+            textView.text = text
+            textView.selectedRange = targetSelection
+        }
         controller.attach(textView)
         textView.flavor = flavor
         textView.baseURL = baseURL
         textView.installFormattingBar(enabled: formattingEnabled)
         scrollSync?.register(textView)
         textView.setTopBarInset(topInset)
+        if controller.savedScrollOffsetY > 0 {
+            controller.restoreScroll(in: textView)
+        }
         context.coordinator.lastBaseURL = baseURL
         context.coordinator.installWritingPartner(in: textView)
-        return textView
+        controller.retainedSourceTextView = textView
+        let host = EditorHostView(textView: textView, controller: controller)
+        controller.activeSourceHost = host
+        return host
     }
 
-    func updateUIView(_ textView: MarkdownEditingTextView, context: Context) {
+    func updateUIView(_ host: EditorHostView<MarkdownEditingTextView>, context: Context) {
+        let textView = host.textView
+        host.adoptTextView()
         context.coordinator.parent = self
+        textView.delegate = context.coordinator
         controller.attach(textView)
+        scrollSync?.register(textView)
         if context.coordinator.lastBaseURL != nil, context.coordinator.lastBaseURL != baseURL {
             context.coordinator.writingPartner.resetBandleaderSession()
         }
         context.coordinator.lastBaseURL = baseURL
+        let targetSelection = Self.clampedSelection(controller.savedSelection, in: text)
         if textView.text != text {
-            // External change (revert, another window)
-            let selection = textView.selectedRange
-            textView.text = text
-            let length = (text as NSString).length
-            textView.selectedRange = NSRange(location: min(selection.location, length), length: 0)
+            let offset = textView.contentOffset
+            if controller.hasUserEdits {
+                textView.applyMinimalEdit(MarkdownEdit(text: text, selection: targetSelection), actionName: "Typing")
+            } else {
+                textView.text = text
+                textView.selectedRange = targetSelection
+            }
+            textView.contentOffset = offset
+            textView.refreshFormattingBarState()
+        } else if !textView.isFirstResponder, textView.selectedRange != targetSelection {
+            textView.selectedRange = targetSelection
+            textView.refreshFormattingBarState()
         }
         textView.flavor = flavor
         textView.baseURL = baseURL
@@ -78,6 +112,13 @@ struct SourceTextView: UIViewRepresentable {
         }
     }
 
+    private static func clampedSelection(_ selection: NSRange, in text: String) -> NSRange {
+        let length = (text as NSString).length
+        let location = min(max(0, selection.location), length)
+        let span = min(max(0, selection.length), length - location)
+        return NSRange(location: location, length: span)
+    }
+
     /// Monospaced, 15 pt at the default text size, scaled for Dynamic Type.
     static func font(textSize: CGFloat) -> UIFont {
         let size = (15 * textSize / EditorTypography.defaultTextSize).rounded()
@@ -86,12 +127,20 @@ struct SourceTextView: UIViewRepresentable {
 
     /// Fill the space offered: a text view's own fitting size is its whole content height, which
     /// would stop it scrolling.
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: MarkdownEditingTextView, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: EditorHostView<MarkdownEditingTextView>, context: Context) -> CGSize? {
         guard let width = proposal.width, let height = proposal.height else { return nil }
         return CGSize(width: width, height: height)
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+    func makeCoordinator() -> Coordinator {
+        if let existing = controller.retainedSourceCoordinator {
+            existing.parent = self
+            return existing
+        }
+        let coordinator = Coordinator(parent: self)
+        controller.retainedSourceCoordinator = coordinator
+        return coordinator
+    }
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: SourceTextView
@@ -129,15 +178,25 @@ struct SourceTextView: UIViewRepresentable {
 
         func textViewDidChange(_ textView: UITextView) {
             parent.text = textView.text
+            if let textView = textView as? MarkdownEditingTextView {
+                parent.controller.noteUserEdit(in: textView)
+            }
             if let host = partnerHost, !host.isApplyingPartnerEdit { writingPartner.didChange(in: host) }
             (textView as? MarkdownEditingTextView)?.refreshFormattingBarState()
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
-            if let textView = textView as? MarkdownEditingTextView, !textView.isApplyingEdit, let host = partnerHost {
-                writingPartner.selectionDidChange(in: host)
+            if let textView = textView as? MarkdownEditingTextView, !textView.isApplyingEdit {
+                parent.controller.recordSelection(from: textView)
+                if let host = partnerHost {
+                    writingPartner.selectionDidChange(in: host)
+                }
             }
-            (textView as? MarkdownEditingTextView)?.refreshFormattingBarState()
+            (textView as? MarkdownEditingTextView)?.textViewDidChangeSelection()
+        }
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            parent.controller.recordScroll(from: scrollView)
         }
 
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
