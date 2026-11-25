@@ -17,8 +17,8 @@ import PixerateMarkdown
 final class StyledTextViewTests: XCTestCase {
     private var harnesses: [EditorHarness] = []
 
-    private func editor(_ markdown: String, file: StaticString = #filePath, line: UInt = #line) throws -> EditorHarness {
-        let harness = try EditorHarness(markdown, file: file, line: line)
+    private func editor(_ markdown: String, size: CGSize = CGSize(width: 390, height: 800), file: StaticString = #filePath, line: UInt = #line) throws -> EditorHarness {
+        let harness = try EditorHarness(markdown, size: size, file: file, line: line)
         harnesses.append(harness)
         return harness
     }
@@ -1029,6 +1029,184 @@ final class StyledTextViewTests: XCTestCase {
         e.textView.invokeFormatCommand(.bulletList)
         XCTAssertEqual(e.text, "- milk")
         XCTAssertEqual(listMarkers(in: e).map(\.info.text), ["•"])
+    }
+
+    // MARK: - Brand list markers: scaling, first-line alignment, contrast & rendering (SWA-62 / #184)
+
+    func testListMarkerKindsForTasksNestedBulletsAndNumbers() throws {
+        let markdown = """
+        - [ ] todo
+        - [x] done
+        - level 1
+          - level 2
+            - level 3
+              - level 4
+        1. first
+        2. second
+        """
+        let e = try editor(markdown)
+        let markers = listMarkers(in: e).map(\.info)
+        XCTAssertEqual(markers.map(\.kind), [
+            .task(checked: false),
+            .task(checked: true),
+            .bullet(level: 1),
+            .bullet(level: 2),
+            .bullet(level: 3),
+            .bullet(level: 4),
+            .number,
+            .number,
+        ])
+    }
+
+    func testCheckboxesAndBulletsScaleWithTypographyAndDynamicTypeAndAlignWithFirstLine() throws {
+        let longWrapped = String(repeating: "wrapped words in a multi-line list item ", count: 8)
+        let markdown = """
+        - [ ] \(longWrapped)
+        - \(longWrapped)
+        - # Heading inside bullet
+        """
+        let e = try editor(markdown, size: CGSize(width: 320, height: 600))
+        let layoutManager = try XCTUnwrap(e.textView.layoutManager as? StyledLayoutManager)
+        let initialMarkers = listMarkers(in: e)
+        XCTAssertEqual(initialMarkers.count, 3)
+
+        // 1. First-line alignment on wrapped items (not whole paragraph / multi-line fragment midY)
+        let taskMarker = initialMarkers[0]
+        let taskMetrics = layoutManager.listMarkerMetrics(for: taskMarker.range, marker: taskMarker.info, in: e.storage)
+        let taskRect = taskMarker.info.markerRect(contentX: taskMetrics.contentX, baselineY: taskMetrics.baselineY, font: taskMetrics.font)
+        let expectedTaskMidY = taskMetrics.baselineY - taskMetrics.font.capHeight / 2
+        XCTAssertEqual(taskRect.midY, expectedTaskMidY, accuracy: 0.5, "checkbox centres on the first line's cap height")
+        XCTAssertEqual(taskRect.width, ListMarkerInfo.checkboxSide(for: taskMetrics.font), accuracy: 0.5)
+
+        // Verify the item actually wrapped onto multiple line fragments and the marker stays on the first line
+        let itemParaRange = (e.storage.string as NSString).paragraphRange(for: taskMarker.range)
+        let itemGlyphs = layoutManager.glyphRange(forCharacterRange: itemParaRange, actualCharacterRange: nil)
+        var lineRects: [CGRect] = []
+        layoutManager.enumerateLineFragments(forGlyphRange: itemGlyphs) { rect, _, _, _, _ in
+            lineRects.append(rect)
+        }
+        XCTAssertGreaterThan(lineRects.count, 2, "wrapped list item spans multiple lines")
+        let firstLineRect = try XCTUnwrap(lineRects.first)
+        XCTAssertLessThan(taskRect.maxY, firstLineRect.maxY + 2, "checkbox sits on the first line fragment, not mid-paragraph")
+
+        // 2. Bullet alignment on first line's x-height
+        let bulletMarker = initialMarkers[1]
+        let bulletMetrics = layoutManager.listMarkerMetrics(for: bulletMarker.range, marker: bulletMarker.info, in: e.storage)
+        let bulletRect = bulletMarker.info.markerRect(contentX: bulletMetrics.contentX, baselineY: bulletMetrics.baselineY, font: bulletMetrics.font)
+        let expectedBulletMidY = bulletMetrics.baselineY - bulletMetrics.font.xHeight / 2
+        XCTAssertEqual(bulletRect.midY, expectedBulletMidY, accuracy: 0.5, "bullet centres on the first line's x-height")
+
+        // 3. Heading inside list item scales marker to the heading font
+        let headingMarker = initialMarkers[2]
+        let headingMetrics = layoutManager.listMarkerMetrics(for: headingMarker.range, marker: headingMarker.info, in: e.storage)
+        let headingBulletRect = headingMarker.info.markerRect(contentX: headingMetrics.contentX, baselineY: headingMetrics.baselineY, font: headingMetrics.font)
+        XCTAssertGreaterThan(headingMetrics.font.pointSize, bulletMetrics.font.pointSize, "heading line uses larger font")
+        XCTAssertGreaterThan(headingBulletRect.width, bulletRect.width, "bullet next to heading scales with heading font")
+
+        // 4. Scaling with Typography textSize and Dynamic Type
+        let defaultCheckboxSide = taskRect.width
+        let defaultBulletSide = bulletRect.width
+        var largerTypography = EditorTypography()
+        largerTypography.textSize = EditorTypography.defaultTextSize * IOSTypographySettings.dynamicTypeScale(.accessibility1)
+        e.setTypography(largerTypography)
+
+        let scaledMarkers = listMarkers(in: e)
+        let scaledTaskMetrics = layoutManager.listMarkerMetrics(for: scaledMarkers[0].range, marker: scaledMarkers[0].info, in: e.storage)
+        let scaledTaskRect = scaledMarkers[0].info.markerRect(contentX: scaledTaskMetrics.contentX, baselineY: scaledTaskMetrics.baselineY, font: scaledTaskMetrics.font)
+        let scaledBulletMetrics = layoutManager.listMarkerMetrics(for: scaledMarkers[1].range, marker: scaledMarkers[1].info, in: e.storage)
+        let scaledBulletRect = scaledMarkers[1].info.markerRect(contentX: scaledBulletMetrics.contentX, baselineY: scaledBulletMetrics.baselineY, font: scaledBulletMetrics.font)
+
+        XCTAssertGreaterThan(scaledTaskRect.width, defaultCheckboxSide, "checkbox grows with Dynamic Type / Typography textSize")
+        XCTAssertGreaterThan(scaledBulletRect.width, defaultBulletSide, "bullet grows with Dynamic Type / Typography textSize")
+
+        // 5. 44 pt tap target on wrapped item hits on the first line and not on wrapped continuation lines
+        let inset = e.textView.textContainerInset
+        let tapPoint = CGPoint(x: scaledTaskRect.midX + inset.left, y: scaledTaskRect.midY + inset.top)
+        XCTAssertEqual(e.textView.taskMarkerRange(at: tapPoint), scaledMarkers[0].range)
+    }
+
+    func testMarkerColoursMeetThreeToOneContrastInLightDarkAndIncreaseContrast() throws {
+        func relativeLuminance(_ color: UIColor, traits: UITraitCollection) -> CGFloat {
+            let resolved = color.resolvedColor(with: traits)
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            resolved.getRed(&r, green: &g, blue: &b, alpha: &a)
+            func linear(_ c: CGFloat) -> CGFloat {
+                c <= 0.03928 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        }
+
+        func blend(_ fg: UIColor, over bg: UIColor, traits: UITraitCollection) -> UIColor {
+            let rFg = fg.resolvedColor(with: traits)
+            let rBg = bg.resolvedColor(with: traits)
+            var fr: CGFloat = 0, fgG: CGFloat = 0, fb: CGFloat = 0, fa: CGFloat = 0
+            var br: CGFloat = 0, bgG: CGFloat = 0, bb: CGFloat = 0, ba: CGFloat = 0
+            rFg.getRed(&fr, green: &fgG, blue: &fb, alpha: &fa)
+            rBg.getRed(&br, green: &bgG, blue: &bb, alpha: &ba)
+            return UIColor(
+                red: fr * fa + br * (1 - fa),
+                green: fgG * fa + bgG * (1 - fa),
+                blue: fb * fa + bb * (1 - fa),
+                alpha: 1
+            )
+        }
+
+        func contrastRatio(_ fg: UIColor, against bg: UIColor, traits: UITraitCollection) -> CGFloat {
+            let composited = blend(fg, over: bg, traits: traits)
+            let l1 = relativeLuminance(composited, traits: traits)
+            let l2 = relativeLuminance(bg, traits: traits)
+            let lighter = max(l1, l2)
+            let darker = min(l1, l2)
+            return (lighter + 0.05) / (darker + 0.05)
+        }
+
+        let traitVariants: [(name: String, traits: UITraitCollection, highContrast: Bool)] = [
+            ("Light", UITraitCollection(userInterfaceStyle: .light), false),
+            ("Dark", UITraitCollection(userInterfaceStyle: .dark), false),
+            ("Light + Increase Contrast", UITraitCollection(traitsFrom: [
+                UITraitCollection(userInterfaceStyle: .light),
+                UITraitCollection(accessibilityContrast: .high),
+            ]), true),
+            ("Dark + Increase Contrast", UITraitCollection(traitsFrom: [
+                UITraitCollection(userInterfaceStyle: .dark),
+                UITraitCollection(accessibilityContrast: .high),
+            ]), true),
+        ]
+
+        for variant in traitVariants {
+            let bg = UIColor.systemBackground
+            let muted = ListMarkerInfo.mutedMarkerColor(highContrast: variant.highContrast)
+            let accent = ListMarkerInfo.bulletAccentColor(custom: nil, highContrast: variant.highContrast)
+            let gradientMid = ListMarkerInfo.brandGradientColors[1]
+
+            let mutedContrast = contrastRatio(muted, against: bg, traits: variant.traits)
+            let accentContrast = contrastRatio(accent, against: bg, traits: variant.traits)
+            let gradientContrast = contrastRatio(gradientMid, against: bg, traits: variant.traits)
+
+            XCTAssertGreaterThanOrEqual(mutedContrast, 3.0, "\(variant.name): muted marker contrast \(mutedContrast) < 3:1")
+            XCTAssertGreaterThanOrEqual(accentContrast, 3.0, "\(variant.name): level-1 bullet accent contrast \(accentContrast) < 3:1")
+            XCTAssertGreaterThanOrEqual(gradientContrast, 3.0, "\(variant.name): ticked checkbox gradient contrast \(gradientContrast) < 3:1")
+        }
+    }
+
+    func testSnapshotRenderingOfTaskListAndNestedBullets() throws {
+        let markdown = """
+        # Tasks & Bullets
+
+        - [ ] Unticked task
+        - [x] Ticked task
+        - Level 1 bullet
+          - Level 2 bullet
+            - Level 3 bullet
+        1. Numbered item
+        """
+        let e = try editor(markdown, size: CGSize(width: 360, height: 320))
+        let renderer = UIGraphicsImageRenderer(bounds: e.textView.bounds)
+        let image = renderer.image { _ in
+            e.textView.drawHierarchy(in: e.textView.bounds, afterScreenUpdates: true)
+        }
+        let png = try XCTUnwrap(image.pngData())
+        XCTAssertGreaterThan(png.count, 1000, "rendered snapshot of task checkboxes and nested bullets is non-empty")
     }
 }
 

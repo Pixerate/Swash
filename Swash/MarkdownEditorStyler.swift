@@ -309,15 +309,22 @@ final class MarkdownEditorStyler {
             guard s.content.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
             let glyph: String
             var color: PlatformColor? = nil
+            let kind: ListMarkerInfo.Kind
+            let indentColumns = s.indent.reduce(0) { $0 + ($1 == "\t" ? 4 - ($0 % 4) : 1) }
+            let depth = max(1, indentColumns / 2 + 1)
             switch s.format {
             case .bulletList:
-                glyph = "•"
+                glyph = ["•", "◦", "▪"][(depth - 1) % 3]
+                color = depth == 1 ? typography.theme.accent : nil
+                kind = .bullet(level: depth)
             case .numberedList:
                 glyph = s.marker.trimmingCharacters(in: .whitespaces)
+                kind = .number
             case .taskList:
                 let checked = s.marker.contains("[x]") || s.marker.contains("[X]")
                 glyph = checked ? "☑" : "☐"
                 color = checked ? typography.accentColor : .secondaryTextColor
+                kind = .task(checked: checked)
             default:
                 continue
             }
@@ -328,9 +335,9 @@ final class MarkdownEditorStyler {
                   storage.attribute(.listMarker, at: storageMarker.location, effectiveRange: nil) == nil else { continue }
             var inner = BlockContext()
             inner.inline.size = typography.textSize
-            inner.listDepth = 1
+            inner.listDepth = depth
             inner.isTightList = true
-            inner.indent = 24
+            inner.indent = CGFloat(depth) * 24
             #if os(iOS)
             if let existing = storage.attribute(.blockDecorations, at: storageMarker.location, effectiveRange: nil) as? [BlockDecoration],
                let box = existing.last {
@@ -351,7 +358,7 @@ final class MarkdownEditorStyler {
                 hideMarker(NSRange(location: lineRange.location + (s.quotePrefix as NSString).length, length: (s.indent as NSString).length))
             }
             hideMarker(markerRange)
-            storage.addAttribute(.listMarker, value: ListMarkerInfo(text: glyph, indent: inner.indent, color: color), range: storageMarker)
+            storage.addAttribute(.listMarker, value: ListMarkerInfo(text: glyph, indent: inner.indent, color: color, kind: kind), range: storageMarker)
             setParagraphStyle(inner, lineSpacing: 5, paragraphSpacing: 6, over: lineRange)
         }
     }
@@ -758,13 +765,18 @@ final class MarkdownEditorStyler {
                 let markerRange = markers.count > 1 ? NSUnionRange(bullet, markers[1]) : bullet
                 let glyph: String
                 var color: PlatformColor? = nil
+                let kind: ListMarkerInfo.Kind
                 if let task = task {
                     glyph = task == .checked ? "☑" : "☐"
                     color = task == .checked ? typography.accentColor : .secondaryTextColor
+                    kind = .task(checked: task == .checked)
                 } else if let parent = node.parent, case .list(let ordered, _, _, _, _) = parent.kind, ordered {
                     glyph = source(bullet).trimmingCharacters(in: .whitespaces)
+                    kind = .number
                 } else {
                     glyph = ["•", "◦", "▪"][(inner.listDepth - 1) % 3]
+                    color = inner.listDepth == 1 ? typography.theme.accent : nil
+                    kind = .bullet(level: inner.listDepth)
                 }
                 hideMarker(markerRange)
                 // Indentation before the marker on its own line
@@ -775,7 +787,7 @@ final class MarkdownEditorStyler {
                 }
                 let r = valid(markerRange)
                 if r.length > 0 {
-                    storage.addAttribute(.listMarker, value: ListMarkerInfo(text: glyph, indent: inner.indent, color: color), range: r)
+                    storage.addAttribute(.listMarker, value: ListMarkerInfo(text: glyph, indent: inner.indent, color: color, kind: kind), range: r)
                 }
                 // Continuation lines are indented to the item's content column in the source
                 let contentColumn = bullet.location + bullet.length - lineStart(of: bullet.location)

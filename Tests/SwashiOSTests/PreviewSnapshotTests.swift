@@ -79,6 +79,46 @@ final class PreviewSnapshotTests: XCTestCase {
                     )
                 )
             },
+            PreviewCase(name: "iOS-StyledEditor-Lists-Light", style: .light) {
+                let listSample = """
+                    # Tasks & Nested Lists
+
+                    - [ ] Unticked task item
+                    - [x] Completed task item
+                    - Level 1 bullet
+                      - Level 2 bullet
+                        - Level 3 bullet
+                    1. Numbered item
+                    """
+                return AnyView(
+                    StyledTextView(
+                        text: .constant(listSample),
+                        controller: IOSEditorController(),
+                        flavor: .github,
+                        baseURL: nil
+                    )
+                )
+            },
+            PreviewCase(name: "iOS-StyledEditor-Lists-Dark", style: .dark) {
+                let listSample = """
+                    # Tasks & Nested Lists
+
+                    - [ ] Unticked task item
+                    - [x] Completed task item
+                    - Level 1 bullet
+                      - Level 2 bullet
+                        - Level 3 bullet
+                    1. Numbered item
+                    """
+                return AnyView(
+                    StyledTextView(
+                        text: .constant(listSample),
+                        controller: IOSEditorController(),
+                        flavor: .github,
+                        baseURL: nil
+                    )
+                )
+            },
         ]
 
         for entry in cases {
