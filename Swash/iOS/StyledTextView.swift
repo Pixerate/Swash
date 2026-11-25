@@ -849,6 +849,7 @@ final class StyledUITextView: MarkdownEditingTextView {
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
+        (layoutManager as? StyledLayoutManager)?.styledTextView = self
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTaskTap(_:)))
         taskTapFilter.textView = self
         tap.delegate = taskTapFilter
@@ -1193,15 +1194,34 @@ final class StyledUITextView: MarkdownEditingTextView {
         let glyphIndex = layoutManager.glyphIndex(for: containerPoint, in: textContainer)
         var lineGlyphs = NSRange()
         let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &lineGlyphs)
-        guard containerPoint.y >= lineRect.minY, containerPoint.y <= lineRect.maxY else { return nil }
+        let verticalMargin = max(0, (44.0 - lineRect.height) / 2.0)
+        guard containerPoint.y >= lineRect.minY - verticalMargin, containerPoint.y <= lineRect.maxY + verticalMargin else { return nil }
         let lineCharacters = layoutManager.characterRange(forGlyphRange: lineGlyphs, actualGlyphRange: nil)
         var hit: NSRange?
         textStorage.enumerateAttribute(.listMarker, in: lineCharacters, options: []) { value, range, stop in
-            guard let info = value as? ListMarkerInfo, info.text == "☐" || info.text == "☑" else { return }
-            let contentGlyph = layoutManager.glyphIndexForCharacter(at: min(NSMaxRange(range), max(0, textStorage.length - 1)))
-            let contentX = lineRect.minX + layoutManager.location(forGlyphAt: contentGlyph).x
-            // The checkbox is drawn just left of the item's text; a finger needs a generous target
-            if containerPoint.x >= contentX - 40 && containerPoint.x <= contentX + 4 {
+            guard let info = value as? ListMarkerInfo, info.isTask else { return }
+            let contentChar = min(NSMaxRange(range), max(0, textStorage.length - 1))
+            let contentGlyph = layoutManager.glyphIndexForCharacter(at: contentChar)
+            let glyphLoc = layoutManager.location(forGlyphAt: contentGlyph)
+            let contentX = lineRect.minX + glyphLoc.x
+            let effectiveContentX = contentX > 0 ? contentX : info.indent
+
+            let textFont = (contentChar < textStorage.length ? textStorage.attribute(.font, at: contentChar, effectiveRange: nil) as? UIFont : nil) ?? UIFont.systemFont(ofSize: 16 * MarkdownEditorStyler.fontScale)
+            let boxSize = round(max(14.0, textFont.pointSize * 0.95))
+            let baselineY = lineRect.origin.y + (glyphLoc.y > 0 ? glyphLoc.y : (lineRect.height + textFont.descender))
+            let lineMidY = baselineY - textFont.capHeight / 2.0
+
+            let boxX = effectiveContentX - boxSize - 6.0
+            let boxCenter = CGPoint(x: boxX + boxSize / 2.0, y: lineMidY)
+
+            let hitTargetSize: CGFloat = max(44.0, boxSize + 16.0)
+            let minX = min(boxCenter.x - hitTargetSize / 2.0, effectiveContentX - max(44.0, boxSize + 12.0))
+            let maxX = min(boxCenter.x + hitTargetSize / 2.0, effectiveContentX + 4.0)
+            let minY = boxCenter.y - hitTargetSize / 2.0
+            let maxY = boxCenter.y + hitTargetSize / 2.0
+
+            if containerPoint.x >= minX && containerPoint.x <= maxX &&
+               containerPoint.y >= minY && containerPoint.y <= maxY {
                 hit = range
                 stop.pointee = true
             }

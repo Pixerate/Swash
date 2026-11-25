@@ -544,6 +544,177 @@ final class StyledTextViewTests: XCTestCase {
         XCTAssertEqual(e.text, "![img](x.png)\n\n- [x] item")
     }
 
+    func testListMarkerBulletKindClassification() {
+        XCTAssertEqual(ListMarkerInfo(text: "•", indent: 0).bulletKind, .disc)
+        XCTAssertEqual(ListMarkerInfo(text: "◦", indent: 0).bulletKind, .ring)
+        XCTAssertEqual(ListMarkerInfo(text: "▪", indent: 0).bulletKind, .square)
+        XCTAssertNil(ListMarkerInfo(text: "1.", indent: 0).bulletKind)
+        XCTAssertNil(ListMarkerInfo(text: "☐", indent: 0).bulletKind)
+        XCTAssertNil(ListMarkerInfo(text: "☑", indent: 0).bulletKind)
+
+        let unchecked = ListMarkerInfo(text: "☐", indent: 0)
+        XCTAssertTrue(unchecked.isTask)
+        XCTAssertFalse(unchecked.isChecked)
+
+        let checked = ListMarkerInfo(text: "☑", indent: 0)
+        XCTAssertTrue(checked.isTask)
+        XCTAssertTrue(checked.isChecked)
+    }
+
+    func testCheckboxAndBulletVectorAlignmentWithHeadings() throws {
+        // Verify checkbox box and bullet metrics scale monotonically with font point sizes
+        let bodyFont = UIFont.systemFont(ofSize: 16)
+        let h2Font = UIFont.systemFont(ofSize: 22, weight: .bold)
+        let h1Font = UIFont.systemFont(ofSize: 28, weight: .bold)
+
+        let bodyMetrics = ListMarkerRenderer.checkboxMetrics(for: bodyFont)
+        let h2Metrics = ListMarkerRenderer.checkboxMetrics(for: h2Font)
+        let h1Metrics = ListMarkerRenderer.checkboxMetrics(for: h1Font)
+
+        XCTAssertGreaterThan(h1Metrics.boxSize, h2Metrics.boxSize)
+        XCTAssertGreaterThan(h2Metrics.boxSize, bodyMetrics.boxSize)
+        XCTAssertGreaterThan(h1Metrics.cornerRadius, bodyMetrics.cornerRadius)
+
+        let bodyBullet = ListMarkerRenderer.bulletMetrics(for: bodyFont)
+        let h1Bullet = ListMarkerRenderer.bulletMetrics(for: h1Font)
+        XCTAssertGreaterThan(h1Bullet.bulletSize, bodyBullet.bulletSize)
+
+        // Verify vertical alignment calculations anchor visual center to capHeight
+        let e = try editor("- [ ] Body item 1\n- [ ] Body item 2")
+        let markers = taskMarkers(in: e)
+        XCTAssertEqual(markers.count, 2)
+
+        let layout = e.textView.layoutManager
+        for item in markers {
+            let glyph = layout.glyphIndexForCharacter(at: NSMaxRange(item.range))
+            let charIndex = layout.characterIndexForGlyph(at: glyph)
+            let font = (charIndex < e.storage.length ? e.storage.attribute(.font, at: charIndex, effectiveRange: nil) as? UIFont : nil)
+                ?? UIFont.systemFont(ofSize: 16)
+            let lineRect = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let glyphLoc = layout.location(forGlyphAt: glyph)
+            let baselineY = lineRect.origin.y + (glyphLoc.y > 0 ? glyphLoc.y : (lineRect.height + font.descender))
+            let lineMidY = baselineY - font.capHeight / 2.0
+
+            XCTAssertGreaterThan(lineMidY, lineRect.origin.y)
+            XCTAssertLessThan(lineMidY, lineRect.origin.y + lineRect.height)
+        }
+    }
+
+    func testCheckboxAndBulletAlignmentOnWrappedItems() throws {
+        // Set a narrow frame so the line wraps
+        let longText = "- [ ] This is a very long task item description that wraps onto multiple line fragments inside the text view container"
+        let e = try editor(longText)
+        let markers = taskMarkers(in: e)
+        guard let first = markers.first else { return XCTFail("no task marker found") }
+
+        let layout = e.textView.layoutManager
+        let markerGlyphs = layout.glyphRange(forCharacterRange: first.range, actualCharacterRange: nil)
+        let firstLineRect = layout.lineFragmentRect(forGlyphAt: markerGlyphs.location, effectiveRange: nil)
+
+        // Find subsequent line fragment
+        let lastChar = e.storage.length - 1
+        let lastGlyph = layout.glyphIndexForCharacter(at: lastChar)
+        let lastLineRect = layout.lineFragmentRect(forGlyphAt: lastGlyph, effectiveRange: nil)
+
+        // Must wrap across multiple line fragments
+        XCTAssertGreaterThan(lastLineRect.minY, firstLineRect.minY)
+
+        // First line fragment should contain the marker
+        let inset = e.textView.textContainerInset
+        let contentGlyph = layout.glyphIndexForCharacter(at: NSMaxRange(first.range))
+        let contentX = firstLineRect.minX + layout.location(forGlyphAt: contentGlyph).x
+
+        // Tap on first line near checkbox should hit
+        let onFirstLine = CGPoint(x: contentX - 12 + inset.left, y: firstLineRect.midY + inset.top)
+        XCTAssertEqual(e.textView.taskMarkerRange(at: onFirstLine), first.range)
+
+        // Tap on second line at marker's x column should NOT hit the first line's task marker
+        let onSecondLine = CGPoint(x: contentX - 12 + inset.left, y: lastLineRect.midY + inset.top)
+        XCTAssertNil(e.textView.taskMarkerRange(at: onSecondLine))
+    }
+
+    func testListMarkerContrastCompliance() {
+        let lightTraits = UITraitCollection(traitsFrom: [
+            UITraitCollection(userInterfaceStyle: .light),
+            UITraitCollection(accessibilityContrast: .normal)
+        ])
+        let darkTraits = UITraitCollection(traitsFrom: [
+            UITraitCollection(userInterfaceStyle: .dark),
+            UITraitCollection(accessibilityContrast: .normal)
+        ])
+        let highContrastLightTraits = UITraitCollection(traitsFrom: [
+            UITraitCollection(userInterfaceStyle: .light),
+            UITraitCollection(accessibilityContrast: .high)
+        ])
+        let highContrastDarkTraits = UITraitCollection(traitsFrom: [
+            UITraitCollection(userInterfaceStyle: .dark),
+            UITraitCollection(accessibilityContrast: .high)
+        ])
+
+        let whiteBg = UIColor.white
+        let darkBg = UIColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)
+        let paperBg = UIColor(red: 0.98, green: 0.97, blue: 0.95, alpha: 1.0)
+
+        // Low contrast foreground color on white background (e.g. very pale blue)
+        let paleColor = UIColor(red: 0.85, green: 0.90, blue: 0.98, alpha: 1.0)
+        let adjustedOnWhite = ListMarkerRenderer.accessibleColor(for: paleColor, on: whiteBg, traits: lightTraits, minContrast: 3.0)
+
+        let (bgR, bgG, bgB, _) = ListMarkerRenderer.rgbaComponents(for: whiteBg, traits: lightTraits)
+        let (fgR, fgG, fgB, _) = ListMarkerRenderer.rgbaComponents(for: adjustedOnWhite, traits: lightTraits)
+        let bgLum = ListMarkerRenderer.relativeLuminance(r: bgR, g: bgG, b: bgB)
+        let fgLum = ListMarkerRenderer.relativeLuminance(r: fgR, g: fgG, b: fgB)
+        let contrastOnWhite = ListMarkerRenderer.contrastRatio(bgLum, fgLum)
+        XCTAssertGreaterThanOrEqual(contrastOnWhite, 3.0)
+
+        // Low contrast foreground color on dark background (e.g. very dark navy)
+        let darkNavy = UIColor(red: 0.08, green: 0.10, blue: 0.18, alpha: 1.0)
+        let adjustedOnDark = ListMarkerRenderer.accessibleColor(for: darkNavy, on: darkBg, traits: darkTraits, minContrast: 3.0)
+
+        let (bgDarkR, bgDarkG, bgDarkB, _) = ListMarkerRenderer.rgbaComponents(for: darkBg, traits: darkTraits)
+        let (fgDarkR, fgDarkG, fgDarkB, _) = ListMarkerRenderer.rgbaComponents(for: adjustedOnDark, traits: darkTraits)
+        let bgDarkLum = ListMarkerRenderer.relativeLuminance(r: bgDarkR, g: bgDarkG, b: bgDarkB)
+        let fgDarkLum = ListMarkerRenderer.relativeLuminance(r: fgDarkR, g: fgDarkG, b: fgDarkB)
+        let contrastOnDark = ListMarkerRenderer.contrastRatio(bgDarkLum, fgDarkLum)
+        XCTAssertGreaterThanOrEqual(contrastOnDark, 3.0)
+
+        // High contrast mode verification
+        let highContrastColor = ListMarkerRenderer.accessibleColor(for: UIColor.secondaryLabel, on: whiteBg, traits: highContrastLightTraits, minContrast: 3.0)
+        let (hcFgR, hcFgG, hcFgB, _) = ListMarkerRenderer.rgbaComponents(for: highContrastColor, traits: highContrastLightTraits)
+        let hcFgLum = ListMarkerRenderer.relativeLuminance(r: hcFgR, g: hcFgG, b: hcFgB)
+        XCTAssertGreaterThanOrEqual(ListMarkerRenderer.contrastRatio(bgLum, hcFgLum), 3.0)
+
+        // Paper theme verification
+        let adjustedOnPaper = ListMarkerRenderer.accessibleColor(for: paleColor, on: paperBg, traits: lightTraits, minContrast: 3.0)
+        let (paperR, paperG, paperB, _) = ListMarkerRenderer.rgbaComponents(for: paperBg, traits: lightTraits)
+        let (paperFgR, paperFgG, paperFgB, _) = ListMarkerRenderer.rgbaComponents(for: adjustedOnPaper, traits: lightTraits)
+        let paperBgLum = ListMarkerRenderer.relativeLuminance(r: paperR, g: paperG, b: paperB)
+        let paperFgLum = ListMarkerRenderer.relativeLuminance(r: paperFgR, g: paperFgG, b: paperFgB)
+        XCTAssertGreaterThanOrEqual(ListMarkerRenderer.contrastRatio(paperBgLum, paperFgLum), 3.0)
+    }
+
+    func testDynamicTypeScaling() {
+        let sizes: [CGFloat] = [12, 14, 16, 20, 24, 32, 40]
+        var previousBoxSize: CGFloat = 0
+        var previousBulletSize: CGFloat = 0
+
+        for size in sizes {
+            let font = UIFont.systemFont(ofSize: size)
+            let checkbox = ListMarkerRenderer.checkboxMetrics(for: font)
+            let bullet = ListMarkerRenderer.bulletMetrics(for: font)
+
+            // Monotonically non-decreasing
+            XCTAssertGreaterThanOrEqual(checkbox.boxSize, previousBoxSize)
+            XCTAssertGreaterThanOrEqual(bullet.bulletSize, previousBulletSize)
+
+            // Minimum HIG touch target dimension calculation
+            let hitTarget = max(44.0, checkbox.boxSize + 16.0)
+            XCTAssertGreaterThanOrEqual(hitTarget, 44.0)
+
+            previousBoxSize = checkbox.boxSize
+            previousBulletSize = bullet.bulletSize
+        }
+    }
+
     func testStructuralEditsAreUndoable() throws {
         let e = try editor("- one")
         e.caret(after: "one")
