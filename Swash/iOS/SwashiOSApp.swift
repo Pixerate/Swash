@@ -36,6 +36,14 @@ struct SwashApp: App {
                 break
             }
         }
+
+        // The document manager keeps the system's background, Create Document button and layout,
+        // and draws the site's hero wordmark where the title was (IOSSwashWordmark.swift). The
+        // launch scene ignores a Text title's font and colour, and a nil title falls back to the
+        // app's name, so the title is blank: its row still holds the button where it was.
+        DocumentGroupLaunchScene(Text(verbatim: " "), overlayAccessoryView: { geometry in
+            SwashLaunchWordmark(titleViewFrame: geometry.titleViewFrame)
+        })
     }
 }
 
