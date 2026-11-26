@@ -29,6 +29,7 @@ struct IOSTypographySettings: DynamicProperty {
     @AppStorage(WritingDefaults.focusMode) private var focusMode = false
     @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
     @AppStorage(WritingDefaults.typewriterScrolling) private var typewriterScrolling = false
+    @AppStorage(AppSettings.showEmptyLineInsertAffordance) var showEmptyLineInsertAffordance = true
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     /// The saved settings, without Dynamic Type.
@@ -70,13 +71,14 @@ struct IOSTypographySettingsSections: View {
     @AppStorage(WritingDefaults.focusMode) private var focusMode = false
     @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
     @AppStorage(WritingDefaults.typewriterScrolling) private var typewriterScrolling = false
+    @AppStorage(AppSettings.showEmptyLineInsertAffordance) private var showEmptyLineInsertAffordance = true
 
     private var typography: EditorTypography {
         EditorTypography(font: font, textSize: EditorTypography.clampedSize(textSize), lineWidth: lineWidth, theme: theme)
     }
 
     private var isDefault: Bool {
-        typography == EditorTypography() && !focusMode && focusUnit == .paragraph && !typewriterScrolling
+        typography == EditorTypography() && !focusMode && focusUnit == .paragraph && !typewriterScrolling && showEmptyLineInsertAffordance
     }
 
     /// Text size relative to the default, as the reader sees it ("100%").
@@ -116,10 +118,11 @@ struct IOSTypographySettingsSections: View {
                 }
             }
             Toggle("Typewriter Scrolling", isOn: $typewriterScrolling)
+            Toggle("Empty-Line Insert Button", isOn: $showEmptyLineInsertAffordance)
         } header: {
             Text("Writing")
         } footer: {
-            Text("Focus Mode dims everything outside the current paragraph or sentence. Typewriter Scrolling keeps the line you’re typing centred on the screen.")
+            Text("Focus Mode dims everything outside the current paragraph or sentence. Typewriter Scrolling keeps the line you’re typing centred on the screen. The Empty-Line Insert Button reveals an add button after a pause on an empty line.")
         }
 
         Section {
@@ -151,6 +154,7 @@ struct IOSTypographySettingsSections: View {
                 focusMode = false
                 focusUnit = .paragraph
                 typewriterScrolling = false
+                showEmptyLineInsertAffordance = true
             }
             .disabled(isDefault)
         }

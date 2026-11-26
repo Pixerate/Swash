@@ -13,6 +13,8 @@ import SwiftUI
 import UIKit
 import PixerateMarkdown
 
+typealias EditorCoordinator = StyledTextView.Coordinator
+
 struct StyledTextView: UIViewRepresentable {
     @Binding var text: String
     let controller: IOSEditorController
@@ -25,6 +27,8 @@ struct StyledTextView: UIViewRepresentable {
     var writingOptions = WritingOptions()
     /// Font, size (already adjusted for Dynamic Type), line width and theme (GOTCHAS #43).
     var typography = EditorTypography()
+    /// Controls whether the insert affordance appears after a pause on an empty line.
+    var showEmptyLineInsertAffordance: Bool = UserDefaults.standard.object(forKey: AppSettings.showEmptyLineInsertAffordance) as? Bool ?? true
 
     func makeUIView(context: Context) -> StyledUITextView {
         let storage = NSTextStorage()
@@ -40,6 +44,7 @@ struct StyledTextView: UIViewRepresentable {
         textView.backgroundColor = typography.theme.background ?? .systemBackground
         textView.textContainerInset = UIEdgeInsets(top: 20, left: 14, bottom: 20, right: 14)
         context.coordinator.lastTypography = typography
+        context.coordinator.showEmptyLineInsertAffordance = showEmptyLineInsertAffordance
         textView.alwaysBounceVertical = true
         textView.keyboardDismissMode = .interactive
         textView.smartQuotesType = .no
@@ -90,6 +95,9 @@ struct StyledTextView: UIViewRepresentable {
             coordinator.lastTypography = typography
             coordinator.applyTypography(in: textView)
         }
+        if coordinator.showEmptyLineInsertAffordance != showEmptyLineInsertAffordance {
+            coordinator.showEmptyLineInsertAffordance = showEmptyLineInsertAffordance
+        }
         coordinator.applyWritingOptions(writingOptions, in: textView)
     }
 
@@ -115,6 +123,15 @@ struct StyledTextView: UIViewRepresentable {
         var lastBaseURL: URL?
         var lastTypography = EditorTypography()
         var lastWritingOptions = WritingOptions()
+        var showEmptyLineInsertAffordance: Bool {
+            didSet {
+                guard showEmptyLineInsertAffordance != oldValue else { return }
+                if !showEmptyLineInsertAffordance {
+                    cancelInsertAffordanceTimer()
+                    textView?.hideInsertAffordance(animated: false)
+                }
+            }
+        }
 
         private var cachedOffsetMap: AttachmentOffsetMap?
         /// The writing partner (#109): the Mac's session, with this editor as its host.
@@ -132,7 +149,16 @@ struct StyledTextView: UIViewRepresentable {
 
         init(_ parent: StyledTextView) {
             self.parent = parent
+            self.showEmptyLineInsertAffordance = parent.showEmptyLineInsertAffordance
             super.init()
+            NotificationCenter.default.addObserver(self, selector: #selector(userDefaultsDidChange(_:)), name: UserDefaults.didChangeNotification, object: nil)
+        }
+
+        @objc private func userDefaultsDidChange(_ notification: Notification) {
+            let enabled = UserDefaults.standard.object(forKey: AppSettings.showEmptyLineInsertAffordance) as? Bool ?? true
+            if showEmptyLineInsertAffordance != enabled {
+                showEmptyLineInsertAffordance = enabled
+            }
         }
 
         /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
@@ -416,6 +442,7 @@ struct StyledTextView: UIViewRepresentable {
 
         func scheduleInsertAffordanceTimer(in textView: StyledUITextView) {
             cancelInsertAffordanceTimer()
+            guard showEmptyLineInsertAffordance else { return }
             guard textView.isFirstResponder else { return }
             guard textView.selectedRange.length == 0 else { return }
             guard isCaretOnEmptyLine(in: textView) else { return }
@@ -441,6 +468,7 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         func showInsertAffordanceIfEligible(in textView: StyledUITextView) {
+            guard showEmptyLineInsertAffordance else { return }
             guard textView.isFirstResponder else { return }
             guard textView.selectedRange.length == 0 else { return }
             guard isCaretOnEmptyLine(in: textView) else { return }
@@ -1017,6 +1045,10 @@ final class StyledUITextView: MarkdownEditingTextView {
     }
 
     private func layoutInsertAffordance() {
+        guard coordinator?.showEmptyLineInsertAffordance == true else {
+            hideInsertAffordance(animated: false)
+            return
+        }
         guard let button = insertAffordanceButton, !button.isHidden, button.alpha > 0 else { return }
         guard isFirstResponder, selectedRange.length == 0, coordinator?.isCaretOnEmptyLine(in: self) == true else {
             hideInsertAffordance(animated: false)

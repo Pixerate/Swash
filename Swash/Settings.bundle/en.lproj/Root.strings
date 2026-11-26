@@ -1,0 +1,4 @@
+/* A single strings file, whose title is specified in your preferences schema. The strings it contains are displayed in style */
+
+"Editor" = "Editor";
+"Empty-Line Insert Button" = "Empty-Line Insert Button";

@@ -1168,5 +1168,49 @@ final class StyledTextViewTests: XCTestCase {
         let blockButtons = blockMenuButtons(in: e)
         XCTAssertFalse(blockButtons.isEmpty, "Tapping insert affordance should open block menu")
     }
+
+    func testInsertAffordanceDoesNotShowWhenPreferenceDisabled() throws {
+        UserDefaults.standard.set(false, forKey: AppSettings.showEmptyLineInsertAffordance)
+        defer { UserDefaults.standard.removeObject(forKey: AppSettings.showEmptyLineInsertAffordance) }
+
+        let e = try editor("")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+        e.select(raw: NSRange(location: 0, length: 0))
+        e.pump(0.85)
+
+        if let button = e.textView.insertAffordanceButton {
+            XCTAssertTrue(button.isHidden || button.alpha == 0, "Affordance must not show when showEmptyLineInsertAffordance is disabled")
+        }
+    }
+
+    func testInsertAffordanceDynamicToggleDismissesActiveAffordanceImmediately() throws {
+        UserDefaults.standard.set(true, forKey: AppSettings.showEmptyLineInsertAffordance)
+        defer { UserDefaults.standard.removeObject(forKey: AppSettings.showEmptyLineInsertAffordance) }
+
+        let e = try editor("")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+        e.select(raw: NSRange(location: 0, length: 0))
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertFalse(button.isHidden)
+        XCTAssertEqual(button.alpha, 1.0)
+
+        // Toggle preference to false dynamically via coordinator / UserDefaults notification
+        UserDefaults.standard.set(false, forKey: AppSettings.showEmptyLineInsertAffordance)
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: nil)
+        e.pump(0.05)
+
+        XCTAssertTrue(button.isHidden || button.alpha == 0, "Toggling preference off must immediately dismiss active affordance")
+        XCTAssertFalse(e.coordinator.showEmptyLineInsertAffordance)
+
+        // Toggle back on
+        UserDefaults.standard.set(true, forKey: AppSettings.showEmptyLineInsertAffordance)
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: nil)
+        XCTAssertTrue(e.coordinator.showEmptyLineInsertAffordance)
+    }
 }
+
 

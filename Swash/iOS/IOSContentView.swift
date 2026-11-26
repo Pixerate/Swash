@@ -276,7 +276,8 @@ struct IOSContentView: View {
             StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL,
                            formattingEnabled: !distractionFree, topInset: topInset,
                            writingOptions: typography.writingOptions(distractionFree: distractionFree),
-                           typography: typography.scaled)
+                           typography: typography.scaled,
+                           showEmptyLineInsertAffordance: typography.showEmptyLineInsertAffordance)
                 .id(folderAccessManager.accessGrantedTrigger)
         case .split:
             HStack(spacing: 0) {
