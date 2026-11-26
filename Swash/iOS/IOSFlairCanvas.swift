@@ -6,7 +6,7 @@
 //  the document manager's wordmark (IOSSwashWordmark.swift) and its pixel speckles
 //  (IOSLaunchSpeckles.swift). Frames are encoded and presented on a render thread of their own,
 //  so the effects keep moving while the main thread is busy (opening a document, say). See
-//  GOTCHAS #111, #112 and #115.
+//  GOTCHAS #111, #112 and #117.
 //
 
 #if os(iOS)

@@ -48,7 +48,7 @@ final class IOSWritingPartnerHost: WritingPartnerHost {
     init(textView: MarkdownEditingTextView, isStyled: Bool) {
         self.textView = textView
         self.isStyled = isStyled
-        WritingPartnerCopy.isPad = UIDevice.current.userInterfaceIdiom == .pad
+        WritingPartnerCopy.isPad = textView.traitCollection.userInterfaceIdiom == .pad
     }
 
     var partnerRawText: String { rawText() }
