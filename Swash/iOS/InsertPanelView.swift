@@ -8,6 +8,7 @@
 #if os(iOS)
 import SwiftUI
 import UIKit
+import PixerateMarkdown
 
 /// Block insert types available in the Insert panel.
 public enum BlockInsertKind: String, CaseIterable, Identifiable, Sendable {
@@ -40,6 +41,59 @@ public enum BlockInsertKind: String, CaseIterable, Identifiable, Sendable {
         case .mermaid: return "point.3.connected.trianglepath.dotted"
         case .image: return "photo"
         }
+    }
+}
+
+// MARK: - Block Insertion Command
+
+extension MarkdownEditingCommands {
+    /// Inserts a block template of the given kind replacing the line at `location`.
+    public static func insertBlock(_ kind: BlockInsertKind, text: String, at location: Int) -> MarkdownEdit {
+        let ns = text as NSString
+        let boundedLocation = max(0, min(location, ns.length))
+        var lineStart = 0
+        var lineEnd = 0
+        var contentsEnd = 0
+        ns.getLineStart(&lineStart, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: boundedLocation, length: 0))
+        let lineRange = NSRange(location: lineStart, length: contentsEnd - lineStart)
+        let lineText = ns.substring(with: lineRange)
+        let structure = MarkdownFormatting.structure(of: lineText)
+        let prefix = structure.quotePrefix + structure.indent
+
+        let blockText: String
+        let caretOffset: Int
+        switch kind {
+        case .table:
+            let header = prefix + "| Column 1 | Column 2 |"
+            let separator = prefix + "| --- | --- |"
+            let row = prefix + "|  |  |"
+            blockText = "\(header)\n\(separator)\n\(row)"
+            caretOffset = (header + "\n" + separator + "\n" + prefix + "| ").utf16.count
+        case .callout:
+            let open = prefix + "> [!NOTE]\n" + prefix + "> "
+            blockText = open
+            caretOffset = (open as NSString).length
+        case .codeBlock:
+            let open = prefix + "```\n" + prefix
+            blockText = open + "\n" + prefix + "```"
+            caretOffset = (open as NSString).length
+        case .math:
+            let open = prefix + "$$\n" + prefix
+            blockText = open + "\n" + prefix + "$$"
+            caretOffset = (open as NSString).length
+        case .mermaid:
+            let open = prefix + "```mermaid\ngraph TD\n" + prefix + "    "
+            blockText = open + "\n" + prefix + "```"
+            caretOffset = (open as NSString).length
+        case .image:
+            let open = prefix + "![Image]()"
+            blockText = open
+            caretOffset = (prefix + "![Image](").utf16.count
+        }
+
+        let edited = ns.replacingCharacters(in: lineRange, with: blockText)
+        let caret = lineRange.location + caretOffset
+        return MarkdownEdit(text: edited, selection: NSRange(location: caret, length: 0))
     }
 }
 

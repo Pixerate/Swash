@@ -1150,7 +1150,7 @@ final class StyledTextViewTests: XCTestCase {
         }
     }
 
-    func testInsertAffordanceTapOpensBlockMenu() throws {
+    func testInsertAffordanceTapOpensInsertPanel() throws {
         let e = try editor("")
         _ = e.textView.becomeFirstResponder()
         e.pump(0.1)
@@ -1159,14 +1159,112 @@ final class StyledTextViewTests: XCTestCase {
 
         let button = try XCTUnwrap(e.textView.insertAffordanceButton)
         XCTAssertFalse(button.isHidden)
+        XCTAssertTrue(button.isAccessibilityElement)
 
         // Tap the affordance button
         button.sendActions(for: .touchUpInside)
         e.pump(0.1)
 
-        // The block menu should now be presented (as buttons or popover)
-        let blockButtons = blockMenuButtons(in: e)
-        XCTAssertFalse(blockButtons.isEmpty, "Tapping insert affordance should open block menu")
+        // The button should hide immediately and fall out of accessibility tree
+        XCTAssertTrue(button.isHidden, "Affordance must hide immediately upon tap")
+        XCTAssertEqual(button.alpha, 0, "Affordance alpha must be 0 upon tap")
+        XCTAssertFalse(button.isAccessibilityElement, "Affordance must not be an accessibility element when hidden")
+
+        // The insert panel should now be presented
+        XCTAssertTrue(e.textView.isShowingInsertPanel, "Tapping insert affordance should open insert panel")
+        XCTAssertTrue(e.textView.inputView is InsertPanelInputView, "Input view should be InsertPanelInputView")
+    }
+
+    func testInsertAffordanceVoiceOverAccessibilityState() throws {
+        let e = try editor("First\n\nSecond")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+
+        // Caret on empty line (offset 6)
+        e.select(raw: NSRange(location: 6, length: 0))
+        e.pump(0.1)
+
+        // Before debounce, button is either nil or not an accessibility element
+        if let button = e.textView.insertAffordanceButton {
+            XCTAssertFalse(button.isAccessibilityElement, "Affordance must not be an accessibility element before visible")
+        }
+
+        // Wait for debounce reveal
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertFalse(button.isHidden)
+        XCTAssertEqual(button.alpha, 1.0, accuracy: 0.05)
+        XCTAssertTrue(button.isAccessibilityElement, "Affordance must be an accessibility element strictly while visible")
+        XCTAssertEqual(button.accessibilityLabel, "Insert block", "Accessibility label must be 'Insert block'")
+        XCTAssertTrue(button.accessibilityTraits.contains(.button), "Accessibility traits must include .button")
+        XCTAssertEqual(button.accessibilityIdentifier, "EmptyLineInsertButton")
+
+        // Accessibility activation triggers the button action
+        XCTAssertTrue(button.accessibilityActivate())
+        e.pump(0.1)
+
+        XCTAssertTrue(button.isHidden)
+        XCTAssertFalse(button.isAccessibilityElement, "Affordance must not be accessible after tap/activation")
+        XCTAssertTrue(e.textView.isShowingInsertPanel)
+    }
+
+    func testTappingEmptyLineInsertAffordanceOpensInsertPanelAndInsertsAtTargetLine() throws {
+        let e = try editor("Intro\n\nOutro")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+
+        // Caret on the empty line (offset 6)
+        e.select(raw: NSRange(location: 6, length: 0))
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertFalse(button.isHidden)
+
+        // Tap affordance
+        button.sendActions(for: .primaryActionTriggered)
+        e.pump(0.1)
+
+        XCTAssertTrue(button.isHidden)
+        XCTAssertFalse(button.isAccessibilityElement)
+        XCTAssertTrue(e.textView.isShowingInsertPanel)
+
+        // Insert a callout block via the insert panel callback
+        e.textView.handleInsertBlock(.callout)
+        e.pump(0.1)
+
+        XCTAssertFalse(e.textView.isShowingInsertPanel)
+        XCTAssertNil(e.textView.inputView)
+        XCTAssertEqual(e.textView.markdownText, "Intro\n> [!NOTE]\n> \nOutro")
+        XCTAssertEqual(e.textView.markdownSelection.location, "Intro\n> [!NOTE]\n> ".count)
+    }
+
+    func testBlockInsertKindCommands() throws {
+        // Table
+        let tableEdit = MarkdownEditingCommands.insertBlock(.table, text: "Intro\n\nOutro", at: 6)
+        XCTAssertTrue(tableEdit.text.contains("| Column 1 | Column 2 |"))
+        XCTAssertTrue(tableEdit.text.contains("| --- | --- |"))
+        XCTAssertTrue(tableEdit.text.contains("|  |  |"))
+
+        // Code block
+        let codeEdit = MarkdownEditingCommands.insertBlock(.codeBlock, text: "", at: 0)
+        XCTAssertEqual(codeEdit.text, "```\n\n```")
+        XCTAssertEqual(codeEdit.selection.location, 4)
+
+        // Math
+        let mathEdit = MarkdownEditingCommands.insertBlock(.math, text: "", at: 0)
+        XCTAssertEqual(mathEdit.text, "$$\n\n$$")
+        XCTAssertEqual(mathEdit.selection.location, 3)
+
+        // Mermaid
+        let mermaidEdit = MarkdownEditingCommands.insertBlock(.mermaid, text: "", at: 0)
+        XCTAssertEqual(mermaidEdit.text, "```mermaid\ngraph TD\n    \n```")
+        XCTAssertEqual(mermaidEdit.selection.location, "```mermaid\ngraph TD\n    ".count)
+
+        // Image
+        let imageEdit = MarkdownEditingCommands.insertBlock(.image, text: "", at: 0)
+        XCTAssertEqual(imageEdit.text, "![Image]()")
+        XCTAssertEqual(imageEdit.selection.location, "![Image](".count)
     }
 
     func testInsertAffordanceDoesNotShowWhenPreferenceDisabled() throws {

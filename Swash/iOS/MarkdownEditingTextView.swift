@@ -430,7 +430,32 @@ class MarkdownEditingTextView: UITextView, UIPopoverPresentationControllerDelega
         reloadInputViews()
     }
 
-    /// Toggles the insert panel: an inputView accessory overlay on iPhone, or an anchored popover on iPad.
+    /// Targeted location for block insertion (e.g. from the empty-line affordance).
+    var targetedInsertLocation: Int?
+
+    /// Presents the insert panel targeting the given markdown location (or the current selection location).
+    func presentInsertPanel(targeting location: Int? = nil) {
+        if isShowingFormatPanel {
+            inputView = nil
+            formatPanelButton?.isSelected = false
+        }
+
+        targetedInsertLocation = location ?? markdownSelection.location
+
+        inputView = InsertPanelInputView(
+            onSelect: { [weak self] kind in
+                self?.handleInsertBlock(kind)
+            },
+            close: { [weak self] in
+                self?.dismissInsertPanel()
+            }
+        )
+        insertButton?.isSelected = true
+        if !isFirstResponder { becomeFirstResponder() }
+        reloadInputViews()
+    }
+
+    /// Toggles the insert panel: an inputView accessory overlay on iPhone and iPad.
     func toggleInsertPanel() {
         if isShowingFormatPanel {
             inputView = nil
@@ -440,47 +465,13 @@ class MarkdownEditingTextView: UITextView, UIPopoverPresentationControllerDelega
         if isShowingInsertPanel {
             dismissInsertPanel()
         } else {
-            if traitCollection.horizontalSizeClass == .regular,
-               let presenter = topViewController(),
-               let source = insertButton {
-                let panelView = InsertPanelView(
-                    onSelect: { [weak self] kind in
-                        self?.handleInsertBlock(kind)
-                    },
-                    close: { [weak self] in
-                        self?.dismissInsertPanel()
-                    }
-                )
-                let host = UIHostingController(rootView: panelView)
-                host.modalPresentationStyle = .popover
-                host.preferredContentSize = CGSize(width: 320, height: 260)
-                if let popover = host.popoverPresentationController {
-                    popover.sourceView = source
-                    popover.sourceRect = source.bounds
-                    popover.permittedArrowDirections = [.up, .down]
-                    popover.delegate = self
-                }
-                presenter.present(host, animated: true)
-                insertPanelPopover = host
-                insertButton?.isSelected = true
-            } else {
-                inputView = InsertPanelInputView(
-                    onSelect: { [weak self] kind in
-                        self?.handleInsertBlock(kind)
-                    },
-                    close: { [weak self] in
-                        self?.toggleInsertPanel()
-                    }
-                )
-                insertButton?.isSelected = true
-                if !isFirstResponder { becomeFirstResponder() }
-                reloadInputViews()
-            }
+            presentInsertPanel(targeting: markdownSelection.location)
         }
     }
 
     /// Closes the insert panel if open.
     func dismissInsertPanel() {
+        targetedInsertLocation = nil
         if let popover = insertPanelPopover {
             popover.dismiss(animated: true)
             insertPanelPopover = nil
@@ -499,9 +490,12 @@ class MarkdownEditingTextView: UITextView, UIPopoverPresentationControllerDelega
         }
     }
 
-    /// Placeholder handler for block insertion selection from Insert panel.
-    private func handleInsertBlock(_ kind: BlockInsertKind) {
+    /// Handles block insertion selection from the Insert panel.
+    func handleInsertBlock(_ kind: BlockInsertKind) {
+        let location = targetedInsertLocation ?? markdownSelection.location
         dismissInsertPanel()
+        let edit = MarkdownEditingCommands.insertBlock(kind, text: markdownText, at: location)
+        applyMarkdownEdit(edit, actionName: "Insert \(kind.title)")
     }
 
     private func topViewController() -> UIViewController? {

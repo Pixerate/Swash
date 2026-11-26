@@ -298,6 +298,13 @@ struct StyledTextView: UIViewRepresentable {
             applyEdit(in: textView, newRawText: edit.text, rawSelection: edit.selection, actionName: kind.title)
         }
 
+        /// Replaces the block at `location` (raw) with the chosen block from the Insert panel.
+        func insertBlock(_ kind: BlockInsertKind, at location: Int, in textView: StyledUITextView) {
+            let raw = swashRawMarkdown(from: textView.textStorage)
+            let edit = MarkdownEditingCommands.insertBlock(kind, text: raw, at: location)
+            applyEdit(in: textView, newRawText: edit.text, rawSelection: edit.selection, actionName: "Insert \(kind.title)")
+        }
+
         /// Sets (or clears) the language of the fenced code block whose badge is at `location` (storage).
         func setCodeLanguage(_ language: String?, atStorageLocation location: Int, in textView: StyledUITextView) {
             let raw = swashRawMarkdown(from: textView.textStorage)
@@ -1008,6 +1015,13 @@ final class StyledUITextView: MarkdownEditingTextView {
 
     // MARK: - Insert Affordance Overlay
 
+    func handleInsertAffordanceTap() {
+        hideInsertAffordance(animated: false)
+        coordinator?.cancelInsertAffordanceTimer()
+        let rawLocation = coordinator?.rawRange(forStorage: selectedRange, in: self).location ?? selectedRange.location
+        presentInsertPanel(targeting: rawLocation)
+    }
+
     func showInsertAffordance(at caretRect: CGRect) {
         let button: InsertAffordanceButton
         if let existing = insertAffordanceButton {
@@ -1015,13 +1029,7 @@ final class StyledUITextView: MarkdownEditingTextView {
         } else {
             let newButton = InsertAffordanceButton { [weak self] in
                 guard let self = self else { return }
-                self.hideInsertAffordance(animated: false)
-                self.coordinator?.cancelInsertAffordanceTimer()
-                self.presentBlockMenu { [weak self] kind in
-                    guard let self = self else { return }
-                    let rawLocation = self.coordinator?.rawRange(forStorage: self.selectedRange, in: self).location ?? 0
-                    self.coordinator?.insertBlock(kind, slashLocation: rawLocation, in: self)
-                }
+                self.handleInsertAffordanceTap()
             }
             addSubview(newButton)
             insertAffordanceButton = newButton
@@ -1560,8 +1568,11 @@ final class InsertAffordanceButton: UIButton {
         layer.masksToBounds = true
 
         isPointerInteractionEnabled = true
-        accessibilityLabel = "Insert"
+        accessibilityLabel = "Insert block"
+        accessibilityTraits = [.button]
+        accessibilityIdentifier = "EmptyLineInsertButton"
         accessibilityHint = "Double-tap to insert a block or media"
+        isAccessibilityElement = false
         alpha = 0
         isHidden = true
 
@@ -1581,9 +1592,15 @@ final class InsertAffordanceButton: UIButton {
         return expanded.contains(point)
     }
 
+    override func accessibilityActivate() -> Bool {
+        action()
+        return true
+    }
+
     func fadeIn() {
         layer.removeAllAnimations()
         isHidden = false
+        isAccessibilityElement = true
         UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .curveEaseOut]) {
             self.alpha = 1
         }
@@ -1591,6 +1608,7 @@ final class InsertAffordanceButton: UIButton {
 
     func fadeOut() {
         layer.removeAllAnimations()
+        isAccessibilityElement = false
         UIView.animate(withDuration: 0.2, delay: 0, options: [.beginFromCurrentState, .curveEaseIn], animations: {
             self.alpha = 0
         }, completion: { finished in
@@ -1602,6 +1620,7 @@ final class InsertAffordanceButton: UIButton {
 
     func hideImmediate() {
         layer.removeAllAnimations()
+        isAccessibilityElement = false
         alpha = 0
         isHidden = true
     }
