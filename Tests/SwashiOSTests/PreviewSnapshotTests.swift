@@ -53,6 +53,12 @@ final class PreviewSnapshotTests: XCTestCase {
             PreviewCase(name: "iOS-FormatPanel-Dark", style: .dark, size: CGSize(width: 393, height: 260)) {
                 AnyView(FormatPanel(entries: formatEntries, apply: { _ in }, close: {}))
             },
+            PreviewCase(name: "iOS-InsertPanel-Light", style: .light, size: CGSize(width: 393, height: 260)) {
+                AnyView(InsertPanelView(onSelect: { _ in }, close: {}))
+            },
+            PreviewCase(name: "iOS-InsertPanel-Dark", style: .dark, size: CGSize(width: 393, height: 260)) {
+                AnyView(InsertPanelView(onSelect: { _ in }, close: {}))
+            },
             PreviewCase(name: "iOS-OutlineList-Light", style: .light) {
                 AnyView(
                     NavigationStack {
@@ -76,46 +82,6 @@ final class PreviewSnapshotTests: XCTestCase {
                         document: sampleStats,
                         selection: sampleSelectionStats,
                         headings: sampleOutline.headings.count
-                    )
-                )
-            },
-            PreviewCase(name: "iOS-StyledEditor-Lists-Light", style: .light) {
-                let listSample = """
-                    # Tasks & Nested Lists
-
-                    - [ ] Unticked task item
-                    - [x] Completed task item
-                    - Level 1 bullet
-                      - Level 2 bullet
-                        - Level 3 bullet
-                    1. Numbered item
-                    """
-                return AnyView(
-                    StyledTextView(
-                        text: .constant(listSample),
-                        controller: IOSEditorController(),
-                        flavor: .github,
-                        baseURL: nil
-                    )
-                )
-            },
-            PreviewCase(name: "iOS-StyledEditor-Lists-Dark", style: .dark) {
-                let listSample = """
-                    # Tasks & Nested Lists
-
-                    - [ ] Unticked task item
-                    - [x] Completed task item
-                    - Level 1 bullet
-                      - Level 2 bullet
-                        - Level 3 bullet
-                    1. Numbered item
-                    """
-                return AnyView(
-                    StyledTextView(
-                        text: .constant(listSample),
-                        controller: IOSEditorController(),
-                        flavor: .github,
-                        baseURL: nil
                     )
                 )
             },

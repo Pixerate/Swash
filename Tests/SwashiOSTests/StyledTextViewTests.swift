@@ -1208,5 +1208,39 @@ final class StyledTextViewTests: XCTestCase {
         let png = try XCTUnwrap(image.pngData())
         XCTAssertGreaterThan(png.count, 1000, "rendered snapshot of task checkboxes and nested bullets is non-empty")
     }
+
+    // MARK: - Insert Panel & Keyboard Bar Toggle (SWA-92)
+
+    func testInsertPanelToggleAndMutualExclusivityWithFormatPanel() throws {
+        let e = try editor("# Test")
+        let textView = e.textView
+
+        // Initially neither panel is showing
+        XCTAssertFalse(textView.isShowingInsertPanel)
+        XCTAssertFalse(textView.isShowingFormatPanel)
+
+        // Toggle Insert panel
+        textView.toggleInsertPanel()
+        XCTAssertTrue(textView.isShowingInsertPanel)
+        XCTAssertFalse(textView.isShowingFormatPanel)
+        XCTAssertTrue(textView.inputView is InsertPanelInputView)
+
+        // Opening format panel while insert panel is showing dismisses insert panel
+        textView.toggleFormatPanel()
+        XCTAssertTrue(textView.isShowingFormatPanel)
+        XCTAssertFalse(textView.isShowingInsertPanel)
+        XCTAssertTrue(textView.inputView is FormatPanelInputView)
+
+        // Opening insert panel while format panel is showing dismisses format panel
+        textView.toggleInsertPanel()
+        XCTAssertTrue(textView.isShowingInsertPanel)
+        XCTAssertFalse(textView.isShowingFormatPanel)
+        XCTAssertTrue(textView.inputView is InsertPanelInputView)
+
+        // Resigning first responder dismisses the panel
+        _ = textView.resignFirstResponder()
+        XCTAssertFalse(textView.isShowingInsertPanel)
+        XCTAssertNil(textView.inputView)
+    }
 }
 
