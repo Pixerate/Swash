@@ -85,6 +85,7 @@ struct ContentView: View {
 
     @ObservedObject private var folderAccessManager = FolderAccessManager.shared
     @State private var editor = SwashEditorController()
+    @State private var focusedActions = FocusedActions()
     @State private var dismissedFolderBanner: URL? = nil
     @AppStorage("showOutline") private var showOutline = false
     @State private var ownOutline = DocumentOutlineState()
@@ -288,15 +289,25 @@ struct ContentView: View {
     }
 
     /// Values the menu commands read from the focused document.
+    /// The closures come from `focusedActions`, made once: a new closure each pass counts as a
+    /// changed value, re-running the commands and the document's scene in a loop (GOTCHAS #116).
     private var withFocusedValues: some View {
-        withSelectionTracking
-        .focusedSceneValue(\.formatCommandHandler, { handleFormatCommand($0) })
+        let actions = focusedActions
+        // Point the stable closures at this pass's view, which may now show another document
+        actions.onFormatCommand = { handleFormatCommand($0) }
+        actions.onDocumentCommand = { handleDocumentCommand($0) }
+        actions.onSelectViewMode = { viewMode = $0 }
+        actions.onSelectFlavor = { requestFlavorChange(to: $0) }
+        actions.onToggleDistractionFree = { toggleDistractionFree() }
+        actions.onExport = { exportAction($0) }
+        return withSelectionTracking
+        .focusedSceneValue(\.formatCommandHandler, actions.formatCommand)
         .modifier(exportAndWritingCommands)
-        .focusedSceneValue(\.documentCommandHandler, { handleDocumentCommand($0) })
+        .focusedSceneValue(\.documentCommandHandler, actions.documentCommand)
         .focusedSceneValue(\.documentFileURL, effectiveBaseURL)
         .focusedSceneValue(\.outlineVisibility, hostedOutline == nil ? $showOutline : nil)
-        .focusedSceneValue(\.viewModeSelection, ViewModeSelection(current: viewMode) { viewMode = $0 })
-        .focusedSceneValue(\.markdownFlavorSelection, MarkdownFlavorSelection(current: document.flavor) { requestFlavorChange(to: $0) })
+        .focusedSceneValue(\.viewModeSelection, ViewModeSelection(current: viewMode, select: actions.selectViewMode))
+        .focusedSceneValue(\.markdownFlavorSelection, MarkdownFlavorSelection(current: document.flavor, select: actions.selectFlavor))
     }
 
     /// Mode changes, insights, the folder banner and first appearance.
@@ -509,8 +520,8 @@ struct ContentView: View {
     /// Export and writing-mode menu actions, kept out of `body`'s modifier chain so it type-checks quickly.
     private var exportAndWritingCommands: some ViewModifier {
         ExportAndWritingCommandsModifier(
-            exportActions: exportActions,
-            distractionFree: DistractionFreeToggle(isOn: distractionFree, toggle: toggleDistractionFree),
+            exportActions: focusedActions.exportActions,
+            distractionFree: DistractionFreeToggle(isOn: distractionFree, toggle: focusedActions.toggleDistractionFree),
             partnerPaused: $isPartnerPaused,
             window: window,
             onExitFullScreen: {
@@ -541,19 +552,19 @@ struct ContentView: View {
         DocumentExporter.Source(text: document.text, flavor: document.flavor, fileURL: effectiveBaseURL, title: documentTitle)
     }
 
-    private var exportActions: DocumentExportActions {
-        DocumentExportActions(
-            exportPDF: { export(as: .pdf) },
-            exportHTML: { export(as: .html) },
-            print: {
-                let source = exportSource
-                Task {
-                    do { try await DocumentExporter.print(source, window: window) } catch { presentExportError(error) }
-                }
-            },
-            copyRichText: { DocumentExporter.copyRichText(exportSource) },
-            copyHTML: { DocumentExporter.copyHTML(exportSource) }
-        )
+    /// File › Export, Print and the Copy As commands (`focusedActions.exportActions` calls this).
+    private func exportAction(_ action: FocusedActions.Export) {
+        switch action {
+        case .pdf: export(as: .pdf)
+        case .html: export(as: .html)
+        case .print:
+            let source = exportSource
+            Task {
+                do { try await DocumentExporter.print(source, window: window) } catch { presentExportError(error) }
+            }
+        case .richText: DocumentExporter.copyRichText(exportSource)
+        case .htmlText: DocumentExporter.copyHTML(exportSource)
+        }
     }
 
     /// Asks where to save, then writes a PDF or a self-contained HTML file.
@@ -1974,6 +1985,35 @@ struct ContentView: View {
             window.animator().setFrame(newFrame, display: true)
         }
     }
+}
+
+/// The closures the menu commands call through focused values, made once per view. Focused values
+/// aren't Equatable, so SwiftUI compares them by their bits: a closure made in `body` differs every
+/// time and re-runs the commands that read it, then the document's scene (GOTCHAS #116). The
+/// `on…` handlers are pointed at the current view on each pass; the published closures never change.
+@MainActor
+private final class FocusedActions {
+    enum Export { case pdf, html, print, richText, htmlText }
+
+    var onFormatCommand: (FormatCommand) -> Void = { _ in }
+    var onDocumentCommand: (DocumentCommand) -> Void = { _ in }
+    var onSelectViewMode: (ViewMode) -> Void = { _ in }
+    var onSelectFlavor: (MarkdownFlavor) -> Void = { _ in }
+    var onToggleDistractionFree: () -> Void = {}
+    var onExport: (Export) -> Void = { _ in }
+
+    private(set) lazy var formatCommand: (FormatCommand) -> Void = { [unowned self] in onFormatCommand($0) }
+    private(set) lazy var documentCommand: (DocumentCommand) -> Void = { [unowned self] in onDocumentCommand($0) }
+    private(set) lazy var selectViewMode: (ViewMode) -> Void = { [unowned self] in onSelectViewMode($0) }
+    private(set) lazy var selectFlavor: (MarkdownFlavor) -> Void = { [unowned self] in onSelectFlavor($0) }
+    private(set) lazy var toggleDistractionFree: () -> Void = { [unowned self] in onToggleDistractionFree() }
+    private(set) lazy var exportActions = DocumentExportActions(
+        exportPDF: { [unowned self] in onExport(.pdf) },
+        exportHTML: { [unowned self] in onExport(.html) },
+        print: { [unowned self] in onExport(.print) },
+        copyRichText: { [unowned self] in onExport(.richText) },
+        copyHTML: { [unowned self] in onExport(.htmlText) }
+    )
 }
 
 private struct ExportAndWritingCommandsModifier: ViewModifier {
