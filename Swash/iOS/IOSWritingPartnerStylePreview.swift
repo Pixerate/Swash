@@ -135,24 +135,13 @@ final class IOSWritingPartnerStylePreviewView: UIView {
     }
 
     private static func rgba(_ color: UIColor, in traits: UITraitCollection) -> FlairRGBA {
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        color.resolvedColor(with: traits).getRed(&r, green: &g, blue: &b, alpha: &a)
-        return FlairRGBA(Double(r), Double(g), Double(b), Double(a))
+        IOSWritingPartnerOverlay.rgba(color, in: traits)
     }
 
+    /// The editor overlay's look for the chosen style, so the preview matches it.
     private func resolvedStages() -> FlairJSON? {
         if let stages { return stages }
-        guard let treatment = FlairTextTreatments.treatment(id: style)
-                ?? FlairTextTreatments.treatment(id: WritingPartnerDefaults.defaultStyle)
-                ?? FlairTextTreatments.all.first else { return nil }
-        let tint = Self.rgba(IOSWritingPartnerOverlay.tint, in: traitCollection)
-        let values = treatment.values(values: [
-            "color": .string(String(format: "#%02X%02X%02X", Int((tint.r * 255).rounded()),
-                                    Int((tint.g * 255).rounded()), Int((tint.b * 255).rounded()))),
-            "darkTheme": .bool(traitCollection.userInterfaceStyle == .dark),
-            "nameTag": .bool(false),
-        ])
-        stages = FlairTextTreatments.resolve(treatment, values: values)
+        stages = IOSWritingPartnerOverlay.look(id: style, traits: traitCollection)?.stages
         return stages
     }
 
