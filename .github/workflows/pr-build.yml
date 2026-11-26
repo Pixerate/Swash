@@ -122,9 +122,9 @@ jobs:
       - name: iOS editor tests (Simulator)
         run: |
           DEVICE_ID=$(xcrun simctl list devices available --json | python3 -c '
-          import json, sys
+          import itertools, json, sys
           runtimes = json.load(sys.stdin)["devices"]
-          ios = sorted((r for r in runtimes if ".iOS-" in r), key=lambda r: [int(p) for p in r.rsplit(".iOS-", 1)[1].split("-")], reverse=True)
+          ios = sorted((r for r in runtimes if ".iOS-" in r), key=lambda r: [int(p) for p in itertools.takewhile(str.isdigit, r.rsplit(".iOS-", 1)[1].split("-"))], reverse=True)
           print(next(d["udid"] for r in ios for d in runtimes[r] if d["name"].startswith("iPhone")))
           ')
           echo "Testing on $(xcrun simctl list devices | grep "$DEVICE_ID")"
