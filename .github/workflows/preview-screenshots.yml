@@ -19,7 +19,7 @@ concurrency:
 jobs:
   render-previews:
     name: Render Preview Screenshots
-    runs-on: macos-26
+    runs-on: xcode-27
     if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Checkout PR branch
@@ -30,7 +30,7 @@ jobs:
       - name: Set up Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
+          xcode-version: '^27.1'
 
       - name: Render iOS preview screenshots
         run: |

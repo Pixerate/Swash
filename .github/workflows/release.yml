@@ -16,7 +16,7 @@ permissions:
 jobs:
   release:
     name: Build, Package & Release
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 90
     env:
       # Secrets can't be read in a step's `if`, so expose only whether this one is set.
@@ -65,7 +65,7 @@ jobs:
         if: steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch'
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
+          xcode-version: '^27.1'
 
       - name: Import Signing Certificate
         if: steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch'
