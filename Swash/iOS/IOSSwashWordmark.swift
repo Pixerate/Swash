@@ -120,18 +120,38 @@ struct SwashWordmark: View {
 /// system title's baseline sits a little above the area's middle.
 struct SwashLaunchWordmark: View {
     let titleViewFrame: CGRect
+    /// The prototype pixel decoration around the wordmark (IOSLaunchDecorations.swift).
+    var decoration = SwashLaunchDecoration.current
 
     @ScaledMetric(relativeTo: .largeTitle) private var baselineLift: CGFloat = 10
     @ScaledMetric(relativeTo: .largeTitle) private var size = SwashWordmarkStyle.baseSize
 
     var body: some View {
-        let ascender = SwashWordmarkStyle.font(size: size).ascender
-        SwashWordmark()
-            .frame(width: titleViewFrame.width)
-            .offset(x: titleViewFrame.minX, y: titleViewFrame.midY - baselineLift - ascender)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
+        let font = SwashWordmarkStyle.font(size: size)
+        let baseline = titleViewFrame.midY - baselineLift
+        let box = SwashWordmarkStyle.textSize("Swash", size: size)
+        ZStack(alignment: .topLeading) {
+            switch decoration {
+            case .none:
+                EmptyView()
+            case .trail:
+                SwashPixelTrail(anchor: CGPoint(x: titleViewFrame.midX + box.width / 2 - size * 0.15, y: baseline - font.capHeight * 1.4),
+                                size: size)
+            case .speckles:
+                // Clear of the wordmark (with room for its ribbon) and of Create Document below it
+                let word = CGRect(x: titleViewFrame.midX - box.width / 2 - size * 0.4, y: baseline - font.ascender - size * 0.3,
+                                  width: box.width + size * 0.8, height: font.ascender - font.descender + size * 0.5)
+                let button = CGRect(x: titleViewFrame.minX, y: baseline + 16,
+                                    width: titleViewFrame.width, height: 90)
+                SwashPixelSpeckles(area: titleViewFrame.insetBy(dx: 16, dy: 12), keepClear: [word, button])
+            }
+            SwashWordmark()
+                .frame(width: titleViewFrame.width)
+                .offset(x: titleViewFrame.minX, y: baseline - font.ascender)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 }
 
