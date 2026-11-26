@@ -282,24 +282,14 @@ struct IOSContentView: View {
         let source = mode != .preview ? sourceEditor(topInset: topInset) : nil
         let styled = mode == .preview ? styledEditor(topInset: topInset) : nil
         let previewPane = mode == .split ? preview(topInset: topInset) : nil
-        if #available(iOS 27.1, *) {
-            // A split arrangement keeps the two panes on either side of the iPhone Duo's fold, and
-            // stacks them when the window is taller than it is wide
-            ArrangementView {
-                source
-                styled
-            } secondary: {
+        // Not a split `ArrangementView` (iOS 27.1): wrapping the editors in one left the whole
+        // document screen blank, toolbar included, on iOS 27.2 (GOTCHAS #114)
+        HStack(spacing: 0) {
+            source
+            styled
+            if let previewPane {
+                Divider()
                 previewPane
-            }
-            .arrangementViewStyle(.split)
-        } else {
-            HStack(spacing: 0) {
-                source
-                styled
-                if let previewPane {
-                    Divider()
-                    previewPane
-                }
             }
         }
     }
