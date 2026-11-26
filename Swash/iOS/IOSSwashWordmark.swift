@@ -120,8 +120,6 @@ struct SwashWordmark: View {
 /// system title's baseline sits a little above the area's middle.
 struct SwashLaunchWordmark: View {
     let titleViewFrame: CGRect
-    /// The prototype pixel decoration around the wordmark (IOSLaunchDecorations.swift).
-    var decoration = SwashLaunchDecoration.current
 
     @ScaledMetric(relativeTo: .largeTitle) private var baselineLift: CGFloat = 10
     @ScaledMetric(relativeTo: .largeTitle) private var size = SwashWordmarkStyle.baseSize
@@ -130,21 +128,14 @@ struct SwashLaunchWordmark: View {
         let font = SwashWordmarkStyle.font(size: size)
         let baseline = titleViewFrame.midY - baselineLift
         let box = SwashWordmarkStyle.textSize("Swash", size: size)
+        // Speckles keep clear of the wordmark (with room for its ribbon) and of Create Document
+        let word = CGRect(x: titleViewFrame.midX - box.width / 2 - size * 0.4, y: baseline - font.ascender - size * 0.3,
+                          width: box.width + size * 0.8, height: font.ascender - font.descender + size * 0.5)
+        let button = CGRect(x: titleViewFrame.minX, y: baseline + 16, width: titleViewFrame.width, height: 110)
         ZStack(alignment: .topLeading) {
-            switch decoration {
-            case .none:
-                EmptyView()
-            case .trail:
-                SwashPixelTrail(anchor: CGPoint(x: titleViewFrame.midX + box.width / 2 - size * 0.15, y: baseline - font.capHeight * 1.4),
-                                size: size)
-            case .speckles:
-                // Clear of the wordmark (with room for its ribbon) and of Create Document below it
-                let word = CGRect(x: titleViewFrame.midX - box.width / 2 - size * 0.4, y: baseline - font.ascender - size * 0.3,
-                                  width: box.width + size * 0.8, height: font.ascender - font.descender + size * 0.5)
-                let button = CGRect(x: titleViewFrame.minX, y: baseline + 16,
-                                    width: titleViewFrame.width, height: 90)
-                SwashPixelSpeckles(area: titleViewFrame.insetBy(dx: 16, dy: 12), keepClear: [word, button])
-            }
+            SwashLaunchSpeckles(keepClear: [word, button].map { $0.offsetBy(dx: -titleViewFrame.minX, dy: -titleViewFrame.minY) })
+                .frame(width: titleViewFrame.width, height: titleViewFrame.height)
+                .offset(x: titleViewFrame.minX, y: titleViewFrame.minY)
             SwashWordmark()
                 .frame(width: titleViewFrame.width)
                 .offset(x: titleViewFrame.minX, y: baseline - font.ascender)
@@ -172,91 +163,25 @@ private struct SwashWordmarkCanvas: UIViewRepresentable {
     }
 }
 
-/// Calls back to a target it doesn't keep alive, so a `CADisplayLink` doesn't keep its view.
-private final class SwashWordmarkFrameProxy: NSObject {
-    weak var target: SwashWordmarkCanvasView?
-
-    init(_ target: SwashWordmarkCanvasView) { self.target = target }
-
-    @objc func tick(_ link: CADisplayLink) {
-        guard let target else { link.invalidate(); return }
-        target.drawFrame()
-    }
-}
-
-/// An `MTKView` drawing `SwashText` once a frame. The words are a texture made once per text, size
-/// and appearance and bound as the shader's live `uText`, rather than an image input, which the
-/// renderer would upload again every frame.
-final class SwashWordmarkCanvasView: MTKView {
-    var onFirstFrame: (() -> Void)?
-
-    private let renderer: FlairRenderer?
-    private var effect: AnyFlairEffect?
+/// `SwashText` over the words. The words are a texture made once per text, size and appearance
+/// and bound as the shader's live `uText`, rather than an image input, which the renderer would
+/// upload again every frame.
+final class SwashWordmarkCanvasView: FlairCanvasView {
     private var text = ""
     private var size: CGFloat = 0
-    private var link: CADisplayLink?
-    private let start = CACurrentMediaTime()
-    private var last: CFTimeInterval = 0
-    private var frameCount: Int32 = 0
-    private var drewFirstFrame = false
-
-    init() {
-        let device = MTLCreateSystemDefaultDevice()
-        renderer = try? FlairRenderer(device: device)
-        super.init(frame: .zero, device: device)
-        colorPixelFormat = .bgra8Unorm
-        framebufferOnly = false
-        clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
-        isOpaque = false
-        backgroundColor = .clear
-        // Frames come from the display link below, not MTKView's own loop
-        isPaused = true
-        enableSetNeedsDisplay = false
-        isAccessibilityElement = false
-        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitDisplayScale.self]) { (self: Self, _: UITraitCollection) in
-            self.effect = nil
-        }
-    }
-
-    required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
-
-    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
-    nonisolated deinit {}
 
     func configure(text: String, size: CGFloat) {
         guard text != self.text || size != self.size else { return }
         self.text = text
         self.size = size
-        effect = nil
+        invalidateEffect()
     }
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        link?.invalidate()
-        link = nil
-        guard window != nil, renderer != nil else { return }
-        let link = CADisplayLink(target: SwashWordmarkFrameProxy(self), selector: #selector(SwashWordmarkFrameProxy.tick))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
-        link.add(to: .main, forMode: .common)
-        self.link = link
-    }
-
-    override func removeFromSuperview() {
-        link?.invalidate()
-        link = nil
-        super.removeFromSuperview()
-    }
-
-    /// The effect for the current text and appearance, with the words bound as `uText`.
-    private func resolvedEffect() -> AnyFlairEffect? {
-        if let effect { return effect }
-        guard let renderer, !text.isEmpty, size > 0 else { return nil }
-        let ink = SwashWordmarkStyle.ink.resolvedColor(with: traitCollection)
-        guard let texture = textTexture(device: renderer.device) else { return nil }
+    override func makeEffect(renderer: FlairRenderer) -> AnyFlairEffect? {
+        guard !text.isEmpty, size > 0, let texture = textTexture(device: renderer.device) else { return nil }
         renderer.setLiveTexture(texture, for: "uText")
-        let effect = AnyFlairEffect(SwashWordmarkStyle.effect(dark: traitCollection.userInterfaceStyle == .dark, ink: ink))
-        self.effect = effect
-        return effect
+        let ink = SwashWordmarkStyle.ink.resolvedColor(with: traitCollection)
+        return AnyFlairEffect(SwashWordmarkStyle.effect(dark: traitCollection.userInterfaceStyle == .dark, ink: ink))
     }
 
     /// The words in white on clear, the size of their own box at the screen's scale, as the site's
@@ -279,33 +204,6 @@ final class SwashWordmarkCanvasView: MTKView {
             .generateMipmaps: true,
             .SRGB: false,
         ])
-    }
-
-    fileprivate func drawFrame() {
-        guard let renderer, let effect = resolvedEffect(), bounds.width > 0, bounds.height > 0,
-              let drawable = currentDrawable else { return }
-        let now = CACurrentMediaTime()
-        let delta = last == 0 ? 1.0 / 60.0 : Float(max(1.0 / 240.0, now - last))
-        last = now
-        let state = FlairFrameState(width: Float(drawable.texture.width), height: Float(drawable.texture.height),
-                                    time: Float(now - start), delta: delta, frame: frameCount, flipY: true)
-        frameCount &+= 1
-        guard let commands = renderer.commandQueue.makeCommandBuffer() else { return }
-        do {
-            // The shader's colour is straight alpha and Core Animation's is premultiplied: blending
-            // over the cleared drawable multiplies it in, or the glow's faint edges show as white
-            try renderer.render(anyEffect: effect, state: state, to: drawable.texture, commandBuffer: commands, blendOver: true)
-        } catch {
-            return
-        }
-        commands.present(drawable)
-        if !drewFirstFrame {
-            drewFirstFrame = true
-            commands.addCompletedHandler { [weak self] _ in
-                DispatchQueue.main.async { self?.onFirstFrame?() }
-            }
-        }
-        commands.commit()
     }
 }
 

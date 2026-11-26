@@ -1862,7 +1862,7 @@
 			repositoryURL = "https://github.com/Pixerate/flair";
 			requirement = {
 				kind = upToNextMinorVersion;
-				minimumVersion = 0.135.2;
+				minimumVersion = 0.145.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
