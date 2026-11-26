@@ -248,7 +248,7 @@
   });
 </script>
 
-<figure bind:this={host} class="demo">
+<figure bind:this={host} class="demo" data-speckles-clear="demo">
   <div class="bar" aria-hidden="true">
     <span class="dots"><i></i><i></i><i></i></span>
     <span class="name">Untitled.md</span>
