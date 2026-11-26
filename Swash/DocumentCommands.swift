@@ -31,6 +31,11 @@ struct OutlineVisibilityKey: FocusedValueKey {
     typealias Value = Binding<Bool>
 }
 
+/// Whether the focused window shows Pixie's chat, for View › Show Pixie.
+struct PixieVisibilityKey: FocusedValueKey {
+    typealias Value = Binding<Bool>
+}
+
 /// Whether the writing partner is paused for the focused document (#112).
 struct PartnerPausedKey: FocusedValueKey {
     typealias Value = Binding<Bool>
@@ -67,6 +72,11 @@ extension FocusedValues {
         set { self[OutlineVisibilityKey.self] = newValue }
     }
 
+    var pixieVisibility: Binding<Bool>? {
+        get { self[PixieVisibilityKey.self] }
+        set { self[PixieVisibilityKey.self] = newValue }
+    }
+
     var partnerPaused: Binding<Bool>? {
         get { self[PartnerPausedKey.self] }
         set { self[PartnerPausedKey.self] = newValue }
@@ -79,6 +89,7 @@ struct DocumentMenuCommands: Commands {
     @FocusedValue(\.viewModeSelection) private var viewMode
     @FocusedValue(\.documentFileURL) private var fileURL
     @FocusedValue(\.outlineVisibility) private var showOutline
+    @FocusedValue(\.pixieVisibility) private var showPixie
     @FocusedValue(\.partnerPaused) private var partnerPaused
 
     var body: some Commands {
@@ -161,6 +172,9 @@ struct DocumentMenuCommands: Commands {
             Button(showOutline?.wrappedValue == true ? "Hide Outline" : "Show Outline") { showOutline?.wrappedValue.toggle() }
                 .keyboardShortcut("s", modifiers: [.command, .control])
                 .disabled(showOutline == nil)
+            Button(showPixie?.wrappedValue == true ? "Hide Pixie" : "Show Pixie") { showPixie?.wrappedValue.toggle() }
+                .keyboardShortcut("i", modifiers: [.command, .option])
+                .disabled(showPixie == nil)
             Divider()
         }
     }

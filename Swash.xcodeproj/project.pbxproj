@@ -15,6 +15,8 @@
 		046013C830045F6A00853817 /* PixerateCore in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C730045F6A00853817 /* PixerateCore */; };
 		0460F1A630045F6A00853817 /* FlairEffects in Frameworks */ = {isa = PBXBuildFile; productRef = 0460F1A530045F6A00853817 /* FlairEffects */; };
 		0460F1A830045F6A00853817 /* FlairEffects in Frameworks */ = {isa = PBXBuildFile; productRef = 0460F1A730045F6A00853817 /* FlairEffects */; };
+		0460B1A330045F6A00853817 /* PixieKit in Frameworks */ = {isa = PBXBuildFile; productRef = 0460B1A130045F6A00853817 /* PixieKit */; platformFilters = (macos, ); };
+		0460B1A430045F6A00853817 /* PixieUI in Frameworks */ = {isa = PBXBuildFile; productRef = 0460B1A230045F6A00853817 /* PixieUI */; platformFilters = (macos, ); };
 		046013F230045F6A00853817 /* PixerateAccount in Frameworks */ = {isa = PBXBuildFile; productRef = 046013F130045F6A00853817 /* PixerateAccount */; };
 		046013F430045F6A00853817 /* PixerateStore in Frameworks */ = {isa = PBXBuildFile; productRef = 046013F330045F6A00853817 /* PixerateStore */; };
 		0460137130045F6800853817 /* SwashQuickLookExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0460137030045F6800853817 /* SwashQuickLookExtension.appex */; platformFilters = (macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -145,6 +147,10 @@
 				Rendering/katex.min.js,
 				Rendering/mermaid.min.js,
 				"Rendering/swash-render.html",
+				"Pixie/PixieSwashHost.swift",
+				"Pixie/PixieSwashInspector.swift",
+				"Pixie/PixieSwashModel.swift",
+				"Pixie/PixieSwashPanel.swift",
 				PixerateAccess.swift,
 				PixerateAccountSettings.swift,
 				PixerateWritingBandleader.swift,
@@ -268,7 +274,8 @@
 				046013C630045F6A00853817 /* PixerateCore in Frameworks */,
 				0460F1A630045F6A00853817 /* FlairEffects in Frameworks */,
 				046013F230045F6A00853817 /* PixerateAccount in Frameworks */,
-				046013F430045F6A00853817 /* PixerateStore in Frameworks */,
+				046013F430045F6A00853817 /* PixerateStore in Frameworks */,				0460B1A330045F6A00853817 /* PixieKit in Frameworks */,
+				0460B1A430045F6A00853817 /* PixieUI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -374,6 +381,8 @@
 				0460F1A530045F6A00853817 /* FlairEffects */,
 				046013F130045F6A00853817 /* PixerateAccount */,
 				046013F330045F6A00853817 /* PixerateStore */,
+				0460B1A130045F6A00853817 /* PixieKit */,
+				0460B1A230045F6A00853817 /* PixieUI */,
 			);
 			productName = Swash;
 			productReference = 0460134030045F6800853817 /* Swash.app */;
@@ -562,6 +571,7 @@
 				046013E030045F6A00853817 /* XCLocalSwiftPackageReference "Packages/PixerateStickers" */,
 				046013C030045F6A00853817 /* XCRemoteSwiftPackageReference "editor" */,
 				0460F1A030045F6A00853817 /* XCRemoteSwiftPackageReference "flair" */,
+				0460B1A030045F6A00853817 /* XCRemoteSwiftPackageReference "pixie" */,
 				046013F030045F6A00853817 /* XCRemoteSwiftPackageReference "PixerateAccount" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -1865,6 +1875,14 @@
 				minimumVersion = 0.145.0;
 			};
 		};
+		0460B1A030045F6A00853817 /* XCRemoteSwiftPackageReference "pixie" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Pixerate/pixie.git";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.6.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1937,6 +1955,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 0460F1A030045F6A00853817 /* XCRemoteSwiftPackageReference "flair" */;
 			productName = FlairEffects;
+		};
+		0460B1A130045F6A00853817 /* PixieKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0460B1A030045F6A00853817 /* XCRemoteSwiftPackageReference "pixie" */;
+			productName = PixieKit;
+		};
+		0460B1A230045F6A00853817 /* PixieUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0460B1A030045F6A00853817 /* XCRemoteSwiftPackageReference "pixie" */;
+			productName = PixieUI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

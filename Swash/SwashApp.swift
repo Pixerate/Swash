@@ -95,6 +95,13 @@ struct SwashApp: App {
     @StateObject private var sparkleUpdater = SparkleUpdater.shared
     #endif
     @AppStorage("showMenuBarExtra") private var showMenuBarExtra = false
+
+    init() {
+        // Pixie's chat in document windows (View › Show Pixie).
+        ContentView.pixieInspector = { session, name, close in
+            PixieSwashInspector.make(session: session, documentName: name, onClose: close)
+        }
+    }
     
     var body: some Scene {
         DocumentGroup(newDocument: SwashDocument()) { file in
