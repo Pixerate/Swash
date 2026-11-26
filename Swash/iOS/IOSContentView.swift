@@ -236,8 +236,10 @@ struct IOSContentView: View {
         .toolbar(distractionFree || focusMode ? .hidden : .visible, for: .navigationBar)
         .toolbarRole(.editor)
         .background(DocumentShareBridge(source: exportSource, model: features))
-        // Opening or closing an iPhone Duo: tidy up, then fold the old page into the new layout
-        .background(FoldTransitionHost(onHingeMove: { prepareForDisplayChange() }))
+        // Opening or closing an iPhone Duo: tidy up, and turn the words over into the other
+        // display's layout as the hinge moves
+        .background(FoldTransitionHost(onHingeMove: { prepareForDisplayChange() },
+                                       textView: { [editor] in editor.textView }))
     }
 
     /// Before the document moves to the other display: transient menus would come back in the
