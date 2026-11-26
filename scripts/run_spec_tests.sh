@@ -37,7 +37,7 @@ swiftc $EXTRAS \
   Swash/BubbleMenuView.swift \
   Swash/InteractiveTableView.swift \
   Swash/DocumentExporter.swift \
-  Swash/SwashTextView.swift Swash/WritingPartner.swift Swash/FormattingVoice.swift Swash/WritingPartnerSession.swift Swash/WritingPartnerHost.swift Swash/WritingPartnerMacHost.swift Swash/PartnerMarks.swift Swash/WritingPartnerOverlay.swift Swash/WritingBandleader.swift Swash/FolderIndex.swift Swash/WritingModes.swift Swash/EditorTypography.swift Swash/ImageInsertion.swift \
+  Swash/SwashTextView.swift Swash/WritingPartner.swift Swash/EditLayers.swift Swash/FormattingVoice.swift Swash/WritingPartnerSession.swift Swash/WritingPartnerHost.swift Swash/WritingPartnerMacHost.swift Swash/PartnerMarks.swift Swash/WritingPartnerOverlay.swift Swash/WritingBandleader.swift Swash/FolderIndex.swift Swash/WritingModes.swift Swash/EditorTypography.swift Swash/ImageInsertion.swift \
   Tests/GFMSpec/GFMSpecRunner.swift \
   -o "$BIN"
 

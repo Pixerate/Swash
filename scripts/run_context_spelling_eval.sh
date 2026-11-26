@@ -25,7 +25,7 @@ swiftc -O -target arm64-apple-macos14.0 -sdk "$(xcrun --show-sdk-path --sdk maco
   -enable-upcoming-feature NonisolatedNonsendingByDefault -enable-upcoming-feature InferIsolatedConformances \
   $PIXERATE_MARKDOWN $PIXERATE_ACCOUNT \
   Swash/MarkdownFlavor.swift Swash/SlackMarkdown.swift \
-  Swash/WritingPartner.swift Swash/FormattingVoice.swift Swash/PartnerMarks.swift Swash/PixerateAccess.swift "$BANDLEADER" Swash/PixerateWritingBandleader.swift \
+  Swash/WritingPartner.swift Swash/EditLayers.swift Swash/FormattingVoice.swift Swash/PartnerMarks.swift Swash/PixerateAccess.swift "$BANDLEADER" Swash/PixerateWritingBandleader.swift \
   Swash/OnDeviceWritingBandleader.swift \
   Tests/ContextSpellingEval/main.swift -o "$OUT/runner"
 "$OUT/runner" --corpus Tests/WritingPartnerEval/corpus ${ARGS[@]+"${ARGS[@]}"}

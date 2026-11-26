@@ -15,6 +15,7 @@ enum DocumentCommand {
     case copyHeadingLink, copyMarkdownLink, copyFilePath
     case acceptSuggestion, dismissSuggestion, togglePartnerPause
     case reviewPartnerMarks, nextPartnerMark, previousPartnerMark
+    case showPartnerEdits
 }
 
 struct DocumentCommandHandlerKey: FocusedValueKey {
@@ -129,6 +130,12 @@ struct DocumentMenuCommands: Commands {
                 _ = NSApp.sendAction(#selector(SwashNSTextView.nextMarkCandidate(_:)), to: nil, from: nil)
             }
             .keyboardShortcut("'", modifiers: [.command, .option, .shift])
+            .disabled(handler == nil)
+            // What the partner changed this session, on its Copyedit and Ghostwrite layers (#229)
+            Button("Writing Partner Edits…") {
+                handler?(.showPartnerEdits)
+            }
+            .keyboardShortcut("e", modifiers: [.command, .option, .shift])
             .disabled(handler == nil)
         }
         CommandGroup(after: .pasteboard) {

@@ -1,5 +1,24 @@
 # swash
 
+## 1.47.0
+
+### Minor Changes
+
+- e083a9d: The iPhone and iPad document manager now has faint pixel speckles around the "Swash" wordmark: Swash's rounded pixel squares in the brand's pink-to-indigo gradient, twinkling slowly and kept clear of the wordmark and the Create Document button. They use Flair's new `pixel-speckles` effect (FlairEffects 0.145.0), follow light and dark mode, and hold still under Reduce Motion. The wordmark's ribbon no longer draws squashed if its view is resized.
+
+## 1.46.0
+
+### Minor Changes
+
+- bc87432: The "Swash" title on the iPhone and iPad document manager is now the website's hero wordmark: New York Bold with tight tracking in the site's ink colours, with Flair's swash-text ribbon looping through the letters. It follows light and dark mode and Dynamic Type, and shows still under Reduce Motion.
+
+## 1.45.0
+
+### Minor Changes
+
+- ce2d287: The writing partner on iPhone and iPad now draws its edits in the chosen Partner style (Settings › Writing Partner), like the Mac: its cursor, the word it selects and types over, and a Flair treatment on what it changed, in light and dark mode. With Reduce Motion on, each stage holds still and fades.
+- 545faa8: Writing partner levels (#229): Off, Copyedit (the default) and Ghostwrite replace Off, Suggest and Automatically, with Suggestions as its own switch for fixes the partner isn't sure of. Spelling, grammar and formatting rules no longer have switches: they're always on and learn from undo, with Curly quotes kept under Typography. Copyedit turns a standalone title line into a heading, Ghostwrite asks Pixerate to rewrite prose in place when you pause, and Edit › Writing Partner Edits lists the partner's Copyedit and Ghostwrite edits this session so you can revert one edit or a whole layer without undoing your typing. Settings on Mac and iPhone/iPad share one five-section layout, and the Partner style preview, now on iOS too, shows the chosen level.
+
 ## 1.44.0
 
 ### Minor Changes
