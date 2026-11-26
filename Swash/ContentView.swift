@@ -106,6 +106,8 @@ struct ContentView: View {
     @State private var isPartnerPaused = false
     /// How many of the partner's marks are left to check (#128), for the status bar.
     @State private var partnerMarkCount = 0
+    /// Writing Partner Edits (#229): the partner's edit layers for this document.
+    @State private var showPartnerEdits = false
 
     @AppStorage(EditorTypography.Keys.font) private var typographyFont: TypographyFont = .system
     @AppStorage(EditorTypography.Keys.textSize) private var typographyTextSize: Double = Double(EditorTypography.defaultTextSize)
@@ -184,6 +186,11 @@ struct ContentView: View {
                     resolveConflicts(keeping: version, at: url)
                 }, onCancel: { showConflictSheet = false })
             }
+        }
+        .sheet(isPresented: $showPartnerEdits) {
+            WritingPartnerEditsView(load: { editor.partnerLayerEdits() },
+                                    revert: { editor.revertPartnerEdits($0) },
+                                    onDone: { showPartnerEdits = false })
         }
     }
 
@@ -1878,6 +1885,8 @@ struct ContentView: View {
             if !editor.stepPartnerMarks(by: 1) { NSSound.beep() }
         case .previousPartnerMark:
             if !editor.stepPartnerMarks(by: -1) { NSSound.beep() }
+        case .showPartnerEdits:
+            showPartnerEdits = true
         }
     }
     

@@ -923,6 +923,8 @@ struct DocumentShareItem: Transferable {
 @MainActor @Observable
 final class IOSDocumentFeaturesModel {
     var showingOutlineSheet = false
+    /// Writing Partner Edits (#229): the partner's edit layers for this document.
+    var showingPartnerEdits = false
     var info: InfoSnapshot?
     var outline = MarkdownOutline(text: "")
     var currentHeading: Int?
@@ -1036,7 +1038,7 @@ struct IOSDocumentToolbar: ToolbarContent {
     var distractionFree: Binding<Bool>? = nil
     /// Pauses the writing partner for this document (#109).
     var partnerPaused: Binding<Bool>? = nil
-    @AppStorage(WritingPartnerDefaults.mode) private var partnerMode: WritingPartnerMode = .automatic
+    @AppStorage(WritingPartnerDefaults.mode) private var partnerMode: WritingPartnerMode = .copyedit
 
     @AppStorage(WritingDefaults.focusMode) private var focusMode = false
     @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
@@ -1080,6 +1082,9 @@ struct IOSDocumentToolbar: ToolbarContent {
                 Toggle("Typewriter Scrolling", systemImage: "arrow.up.and.down.text.horizontal", isOn: $typewriterScrolling)
                 if let partnerPaused, partnerMode != .off {
                     Toggle("Pause Writing Partner", systemImage: "pause.circle", isOn: partnerPaused)
+                }
+                Button("Writing Partner Edits", systemImage: "square.3.layers.3d") {
+                    model.showingPartnerEdits = true
                 }
                 if let distractionFree {
                     Divider()
@@ -1125,6 +1130,12 @@ struct IOSDocumentFeatures: ViewModifier {
                 }
             }
             .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $model.showingPartnerEdits) {
+            WritingPartnerEditsView(load: { editor.partnerLayerEdits() },
+                                    revert: { editor.revertPartnerEdits($0) },
+                                    onDone: { model.showingPartnerEdits = false })
+                .presentationDetents([.medium, .large])
         }
         .sheet(item: $model.info) { snapshot in
             IOSDocumentInfoView(title: "Document Info", document: snapshot.document, selection: snapshot.selection, headings: snapshot.headings)

@@ -26,7 +26,7 @@ final class WritingPartnerTests: XCTestCase {
         try await super.setUp()
         let defaults = UserDefaults.standard
         for key in keys { savedDefaults[key] = defaults.object(forKey: key) }
-        defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+        defaults.set(WritingPartnerMode.copyedit.rawValue, forKey: WritingPartnerDefaults.mode)
         // What the system spell checker corrects depends on the device (GOTCHAS #78)
         defaults.set(false, forKey: WritingPartnerDefaults.spelling)
         defaults.removeObject(forKey: WritingPartnerDefaults.stats)
@@ -115,27 +115,27 @@ final class WritingPartnerTests: XCTestCase {
         XCTAssertFalse(stats.rules.isEmpty, "undoing a fix should be recorded against its rule")
     }
 
-    // MARK: Suggest Mode & Overlay
+    // MARK: Edit Layers (#229) & Overlay
 
-    func testSuggestModeDrawsUnderlineAndAcceptsWithTab() throws {
-        UserDefaults.standard.set(WritingPartnerMode.suggest.rawValue, forKey: WritingPartnerDefaults.mode)
+    func testCopyeditLayerRevertsWithoutTouchingLaterTyping() throws {
         let harness = try editor()
         harness.textView.becomeFirstResponder()
         type("dont ", in: harness)
         waitForPartner(harness)
-        // Text remains untouched until accepted; overlay shows suggestion underline
-        XCTAssertEqual(harness.text, "dont ")
-        XCTAssertFalse(harness.coordinator.writingPartner.suggestions.isEmpty)
-        let overlay = try XCTUnwrap(harness.coordinator.partnerHost?.existingOverlay)
-        XCTAssertTrue(overlay.hasSuggestionUnderlines)
-        XCTAssertEqual(overlay.accessibilityValue, "Suggestions")
-
-        // Pressing Tab accepts the suggestion at the caret
-        harness.keyCommand("\t")
-        waitForPartner(harness)
         XCTAssertEqual(harness.text, "Don't ")
-        XCTAssertTrue(harness.coordinator.writingPartner.suggestions.isEmpty)
-        XCTAssertFalse(overlay.hasSuggestionUnderlines)
+        type("go", in: harness)
+        let partner = harness.coordinator.writingPartner
+        let host = try XCTUnwrap(harness.coordinator.partnerHost)
+        let edits = partner.currentLayers(in: host).edits
+        XCTAssertEqual(edits.map(\.layer), [.copyedit])
+        XCTAssertEqual(edits.first?.original, "dont")
+
+        // Reverting the Copyedit layer puts back what was typed and keeps "go"
+        XCTAssertEqual(partner.revertLayer(.copyedit, in: host), 1)
+        XCTAssertEqual(harness.text, "dont go")
+        XCTAssertTrue(partner.currentLayers(in: host).isEmpty)
+        let stats = WritingPartnerStats.load(voice: .punctuate)
+        XCTAssertFalse(stats.rules.isEmpty, "reverting a fix counts against its rules like an undo")
     }
 
     func testOverlayDrawsGhostAndCaretDuringPreview() throws {

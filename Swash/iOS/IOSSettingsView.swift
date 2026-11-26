@@ -38,7 +38,7 @@ struct IOSSettingsView: View {
                         IOSWritingPartnerSettings()
                     } label: {
                         LabeledContent("Writing Partner",
-                                       value: (WritingPartnerMode(rawValue: UserDefaults.standard.string(forKey: WritingPartnerDefaults.mode) ?? "") ?? .automatic).title)
+                                       value: (WritingPartnerMode(rawValue: UserDefaults.standard.string(forKey: WritingPartnerDefaults.mode) ?? "") ?? .copyedit).title)
                     }
                 }
                 IOSTypographySettingsSections()

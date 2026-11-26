@@ -42,6 +42,19 @@ final class IOSEditorController {
         textView?.writingPartner?.setPaused(paused, in: textView?.writingPartnerHost)
     }
 
+    /// The partner's edits this session, on their Copyedit and Ghostwrite layers (#229).
+    func partnerLayerEdits() -> [LayeredEdit] {
+        guard let partner = textView?.writingPartner, let host = textView?.writingPartnerHost else { return [] }
+        return partner.currentLayers(in: host).edits
+    }
+
+    /// Reverts the partner's edits `ids` as one undo step, leaving the person's typing alone.
+    @discardableResult
+    func revertPartnerEdits(_ ids: Set<Int>) -> Int {
+        guard let partner = textView?.writingPartner, let host = textView?.writingPartnerHost else { return 0 }
+        return partner.revertEdits(ids, in: host)
+    }
+
     var selection: NSRange {
         textView?.markdownSelection ?? NSRange(location: 0, length: 0)
     }

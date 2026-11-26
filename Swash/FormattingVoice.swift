@@ -7,8 +7,9 @@
 //  person has finished with (never the block the caret is in), and never inside code, math, HTML or
 //  front matter. Each fix is its own undo step and learns from ⌘Z, like the Punctuate voice's.
 //
-//  Structural changes that alter how a document reads (turning lines into a list, adding a heading,
-//  reordering) are not made here: they stay suggestions (#101).
+//  Structural changes that alter how a document reads (turning lines into a list, reordering) are
+//  not made here: they stay suggestions (#101). The one exception is Copyedit's auto-formatting
+//  (#229): a short title line on its own, followed by the text it introduces, becomes a heading.
 //
 
 import Foundation
@@ -18,14 +19,17 @@ nonisolated enum FormattingVoice {
     /// The Formatting voice's rules, in the order Settings › Writing lists them.
     static let rules: [PunctuationRule] = [
         .formatLists, .formatHeadings, .formatSpacing, .formatSpans,
-        .formatEmphasis, .formatTasks, .formatTables, .formatLinks,
+        .formatEmphasis, .formatTasks, .formatTables, .formatLinks, .formatTitleLines,
     ]
 
     /// Rules whose fixes are meant to change what a document renders (a `#Heading` that wasn't a
     /// heading, a `[]` that wasn't a task, two lists that differ only by bullet). Every other fix
     /// must leave the rendered document exactly as it was, and is dropped if it wouldn't.
     private static func mayChangeRendering(_ edit: PunctuationEdit) -> Bool {
-        edit.rules.contains { $0 == .formatHeadings || $0 == .formatTasks || $0 == .formatLists || $0 == .formatSpans || $0 == .formatLinks }
+        edit.rules.contains {
+            $0 == .formatHeadings || $0 == .formatTasks || $0 == .formatLists || $0 == .formatSpans
+                || $0 == .formatLinks || $0 == .formatTitleLines
+        }
     }
 
     /// The fixes for the top-level blocks that `region` touches (the whole document when it's nil),
@@ -67,6 +71,7 @@ nonisolated enum FormattingVoice {
             if isActive(.formatEmphasis), let emphasisMarker { found += emphasisEdits(block, ns: ns, marker: emphasisMarker) }
             if isActive(.formatTables) { found += tableEdits(block, ns: ns) }
             if isActive(.formatLinks) { found += linkEdits(block, ns: ns, flavor: flavor) }
+            if isActive(.formatTitleLines), let edit = titleLineEdit(blocks, index: index, ns: ns) { found.append(edit) }
         }
         if isActive(.formatSpacing) {
             for index in 0..<(blocks.count - 1) {
@@ -239,6 +244,66 @@ nonisolated enum FormattingVoice {
         default:
             return []
         }
+    }
+
+    /// Copyedit's auto-formatting (#229): a top-level paragraph that is one short line with no
+    /// closing punctuation and no markup, set apart by blank lines, and followed by a longer
+    /// paragraph or list that it introduces, becomes a heading. Its level follows the nearest
+    /// heading before it (a sibling section, or `##` under a `#` title), else `#` at the top of the
+    /// document and `##` below.
+    /// Greetings and sign-offs ("Hi Sam", "Thanks") are left alone.
+    private static func titleLineEdit(_ blocks: [MarkdownNode], index: Int, ns: NSString) -> PunctuationEdit? {
+        let block = blocks[index]
+        guard case .paragraph = block.kind, index + 1 < blocks.count,
+              block.children.allSatisfy(isPlainText) else { return nil }
+        let line = lineSpan(of: block.range, in: ns)
+        let source = ns.substring(with: line)
+        let title = source.trimmingCharacters(in: .whitespaces)
+        guard !title.isEmpty, !source.hasPrefix(" "), !title.contains("\n"), title.count <= 60,
+              let first = title.first, first.isUppercase,
+              let last = title.unicodeScalars.last,
+              !CharacterSet(charactersIn: ".,:;!?…)]\"'”’-–—*_`").contains(last) else { return nil }
+        let words = title.split(separator: " ")
+        guard (1...8).contains(words.count), !title.contains(","),
+              !title.contains(where: \.isNumber) || words.count > 1 else { return nil }
+        let lower = words.first.map { $0.lowercased() } ?? ""
+        let openers: Set<String> = ["hi", "hello", "hey", "dear", "thanks", "thank", "cheers", "best", "regards",
+                                    "love", "sincerely", "yours", "kind", "warm", "ok", "okay", "yes", "no", "sure"]
+        guard !openers.contains(lower) else { return nil }
+
+        // Blank lines on both sides: a line straight after a paragraph is part of it
+        let next = blocks[index + 1]
+        guard hasBlankLine(between: block, and: next, ns: ns),
+              index == 0 || hasBlankLine(between: blocks[index - 1], and: block, ns: ns) else { return nil }
+        // What follows is the text it introduces, longer than it
+        switch next.kind {
+        case .paragraph:
+            let body = ns.substring(with: next.range).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard body.count >= max(2 * title.count, 24) else { return nil }
+        case .list:
+            break
+        default:
+            return nil
+        }
+
+        let level: Int
+        if let previous = blocks[..<index].last(where: { if case .heading = $0.kind { return true }; return false }),
+           case .heading(let previousLevel, _) = previous.kind {
+            // Under the document's title (`#`) a section is `##`; otherwise a sibling of the last one
+            level = previousLevel == 1 ? 2 : previousLevel
+        } else {
+            level = index == 0 ? 1 : 2
+        }
+        return PunctuationEdit(range: NSRange(location: line.location, length: 0),
+                               replacement: String(repeating: "#", count: level) + " ", rules: [.formatTitleLines])
+    }
+
+    /// Whether a blank line separates `a` and `b`.
+    private static func hasBlankLine(between a: MarkdownNode, and b: MarkdownNode, ns: NSString) -> Bool {
+        let start = NSMaxRange(lineSpan(of: a.range, in: ns))
+        let end = lineSpan(of: b.range, in: ns).location
+        guard end > start else { return false }
+        return ns.substring(with: NSRange(location: start, length: end - start)).filter { $0 == "\n" }.count >= 2
     }
 
     private static func endsWithAbbreviation(_ text: String) -> Bool {

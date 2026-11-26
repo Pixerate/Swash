@@ -57,7 +57,7 @@ struct SourceTextView: UIViewRepresentable {
         context.coordinator.parent = self
         controller.attach(textView)
         if context.coordinator.lastBaseURL != nil, context.coordinator.lastBaseURL != baseURL {
-            context.coordinator.writingPartner.resetBandleaderSession()
+            context.coordinator.writingPartner.documentDidChange()
         }
         context.coordinator.lastBaseURL = baseURL
         if textView.text != text {
