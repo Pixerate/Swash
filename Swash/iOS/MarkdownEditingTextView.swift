@@ -190,6 +190,74 @@ class MarkdownEditingTextView: UITextView {
         }
     }
 
+    // MARK: Reading position across width changes (#65)
+
+    /// The character at the top of the view and how far into its line the view is scrolled, so a
+    /// width change (an iPhone Duo opening or closing, a window resizing) keeps the same text at
+    /// the top instead of the same pixel offset, which shows other text once the lines rewrap.
+    private var readingAnchor: (character: Int, intoLine: CGFloat)?
+    /// The width `readingAnchor` was measured at; scrolls at another width (mid-resize) aren't recorded.
+    private var readingAnchorWidth: CGFloat = 0
+    private var isRestoringReadingPosition = false
+
+    override var contentOffset: CGPoint {
+        didSet { recordReadingAnchor() }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        keepReadingPositionAcrossWidthChange()
+    }
+
+    /// Restores the reading position once the width has changed. Called after layout (subclasses
+    /// that change insets after `super.layoutSubviews()` get a second pass on the next run loop).
+    func keepReadingPositionAcrossWidthChange() {
+        let width = bounds.width
+        guard width > 0, abs(width - readingAnchorWidth) >= 0.5 else { return }
+        let isFirstLayout = readingAnchorWidth == 0
+        readingAnchorWidth = width
+        // While typing, UIKit scrolls the caret into view as the text reflows, which is what the
+        // person wants to see
+        guard !isFirstLayout, let anchor = readingAnchor, !isFirstResponder else {
+            recordReadingAnchor()
+            return
+        }
+        isRestoringReadingPosition = true
+        scrollToReadingAnchor(anchor)
+        // Insets, the readable column and restyling can still move the text this run loop
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if abs(self.bounds.width - width) < 0.5 { self.scrollToReadingAnchor(anchor) }
+            self.isRestoringReadingPosition = false
+            self.recordReadingAnchor()
+        }
+    }
+
+    private func recordReadingAnchor() {
+        guard !isRestoringReadingPosition, bounds.width > 0, abs(bounds.width - readingAnchorWidth) < 0.5 else { return }
+        let top = contentOffset.y + adjustedContentInset.top - textContainerInset.top
+        guard top > 1, layoutManager.numberOfGlyphs > 0 else {
+            // At the top: a width change keeps it at the top
+            readingAnchor = nil
+            return
+        }
+        let glyph = layoutManager.glyphIndex(for: CGPoint(x: 0, y: top), in: textContainer)
+        let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        readingAnchor = (layoutManager.characterIndexForGlyph(at: glyph), max(0, top - line.minY))
+    }
+
+    private func scrollToReadingAnchor(_ anchor: (character: Int, intoLine: CGFloat)) {
+        let length = textStorage.length
+        guard length > 0 else { return }
+        let glyph = layoutManager.glyphIndexForCharacter(at: min(anchor.character, length - 1))
+        layoutManager.ensureLayout(forGlyphRange: NSRange(location: 0, length: glyph + 1))
+        let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let target = line.minY + min(anchor.intoLine, line.height) + textContainerInset.top - adjustedContentInset.top
+        let maxY = max(-adjustedContentInset.top, contentSize.height - bounds.height + adjustedContentInset.bottom)
+        let y = min(max(target, -adjustedContentInset.top), maxY)
+        if abs(contentOffset.y - y) > 0.5 { contentOffset.y = y }
+    }
+
     private func observeRecentFormats() {
         if let recentsObserver {
             NotificationCenter.default.removeObserver(recentsObserver)

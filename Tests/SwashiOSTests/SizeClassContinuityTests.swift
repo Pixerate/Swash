@@ -108,6 +108,36 @@ final class SizeClassContinuityTests: XCTestCase {
         XCTAssertTrue(box?.document.text.contains("Typed. ") ?? false)
     }
 
+    /// The character at the top of the visible text.
+    private func topCharacter(of textView: UITextView) -> Int {
+        let top = textView.contentOffset.y + textView.adjustedContentInset.top - textView.textContainerInset.top
+        let glyph = textView.layoutManager.glyphIndex(for: CGPoint(x: 0, y: top), in: textView.textContainer)
+        return textView.layoutManager.characterIndexForGlyph(at: glyph)
+    }
+
+    /// Reading at a new width (an iPhone Duo opening or closing): the same text stays at the top,
+    /// not the same pixel offset, which shows other text once the lines rewrap.
+    func testReadingPositionFollowsTheTextAcrossWidthChanges() throws {
+        let (_, editor) = try hostDocument()
+        let window = try XCTUnwrap(window)
+        settle(editor)
+        editor.setContentOffset(CGPoint(x: 0, y: 600), animated: false)
+        settle(editor)
+        let anchor = topCharacter(of: editor)
+        XCTAssertGreaterThan(anchor, 100, "the document didn't scroll")
+
+        for width in [CGFloat(420), 800, 360] {
+            window.frame.size.width = width
+            settle(editor)
+            let top = topCharacter(of: editor)
+            let glyph = editor.layoutManager.glyphIndexForCharacter(at: anchor)
+            let line = editor.layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let visibleTop = editor.contentOffset.y + editor.adjustedContentInset.top - editor.textContainerInset.top
+            XCTAssertEqual(line.minY, visibleTop, accuracy: line.height + 1,
+                           "at width \(width) the top shows character \(top), not \(anchor)'s line")
+        }
+    }
+
     /// Reading (keyboard down): the same text view keeps its scroll position.
     func testReadingPositionSurvivesSizeClassChanges() throws {
         let (host, original) = try hostDocument()

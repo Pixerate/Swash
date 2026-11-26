@@ -902,8 +902,14 @@ final class StyledUITextView: MarkdownEditingTextView {
         coordinator.applyEdit(in: self, newRawText: edit.text, rawSelection: edit.selection, actionName: actionName)
     }
 
+    /// Set during `super.layoutSubviews()`, which would restore the reading position too early.
+    private var isInSuperLayout = false
+
     override func layoutSubviews() {
+        isInSuperLayout = true
         super.layoutSubviews()
+        isInSuperLayout = false
+        defer { keepReadingPositionAcrossWidthChange() }
         let widthChanged = abs(bounds.width - lastLayoutWidth) > 1
         let heightChanged = abs(bounds.height - lastLayoutHeight) > 1
         if widthChanged || heightChanged {
@@ -924,6 +930,13 @@ final class StyledUITextView: MarkdownEditingTextView {
             layoutCodeBadgeButtons()
             coordinator?.refreshPartnerDrawing()
         }
+    }
+
+    /// Runs after the column insets above, not from `super.layoutSubviews()`, where the old
+    /// insets would put the text in the wrong place.
+    override func keepReadingPositionAcrossWidthChange() {
+        guard !isInSuperLayout else { return }
+        super.keepReadingPositionAcrossWidthChange()
     }
 
     /// Set when the text or its layout changed, so the next layout pass repositions the overlays.
