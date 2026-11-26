@@ -322,9 +322,15 @@ enum IOSPresenter {
         onPresent?(activity)
         guard let presenter = frontmost else { return }
         if let popover = activity.popoverPresentationController {
-            popover.sourceView = presenter.view
-            popover.sourceRect = CGRect(x: presenter.view.bounds.maxX - 60, y: presenter.view.safeAreaInsets.top, width: 1, height: 1)
-            popover.permittedArrowDirections = .up
+            if let item = shareBarItem(under: presenter) {
+                // Wherever the bar is: on the iPhone Duo bars can run down the trailing edge (#65)
+                popover.sourceItem = item
+                popover.permittedArrowDirections = .any
+            } else {
+                popover.sourceView = presenter.view
+                popover.sourceRect = CGRect(x: presenter.view.bounds.maxX - 60, y: presenter.view.safeAreaInsets.top, width: 1, height: 1)
+                popover.permittedArrowDirections = .up
+            }
         }
         if let dismissing = presenter.presentedViewController, dismissing.isBeingDismissed,
            let coordinator = dismissing.transitionCoordinator {
@@ -334,6 +340,20 @@ enum IOSPresenter {
         } else {
             presenter.present(activity, animated: true)
         }
+    }
+
+    /// The toolbar's Share item in the visible navigation bar under `controller`, if it shows one.
+    /// SwiftUI turns toolbar items into bar button items titled with their label.
+    private static func shareBarItem(under controller: UIViewController) -> UIBarButtonItem? {
+        if let navigation = controller as? UINavigationController, !navigation.isNavigationBarHidden,
+           navigation.viewIfLoaded?.window != nil, let item = navigation.topViewController?.navigationItem {
+            let items = item.trailingItemGroups.flatMap(\.barButtonItems) + (item.rightBarButtonItems ?? [])
+            if let share = items.first(where: { $0.title == "Share" && !$0.isHidden }) { return share }
+        }
+        for child in controller.children.reversed() {
+            if let share = shareBarItem(under: child) { return share }
+        }
+        return nil
     }
 
     /// The system share sheet for `items` (GOTCHAS #55: not ShareLink, which crashes in the overflow menu).
@@ -1063,6 +1083,7 @@ struct IOSDocumentToolbar: ToolbarContent {
                     Label("Document Info", systemImage: "info.circle")
                 }
             }
+            .overflowPriority(.low)
         }
         ToolbarItem(placement: .secondaryAction) {
             Menu {
@@ -1102,6 +1123,25 @@ struct IOSDocumentToolbar: ToolbarContent {
             } label: {
                 Label("Writing", systemImage: "viewfinder")
             }
+        }
+        .overflowPriority(.low)
+    }
+}
+
+/// How readily a toolbar item gives way when the bar runs out of room (#65). Most needed on the
+/// iPhone Duo's short outer display, where bars turn vertical and the keyboard takes space.
+enum ToolbarOverflowPriority {
+    case high, low
+}
+
+extension ToolbarContent {
+    /// `visibilityPriority(_:)` where available (iOS 27); earlier systems keep the default order.
+    @ToolbarContentBuilder
+    func overflowPriority(_ priority: ToolbarOverflowPriority) -> some ToolbarContent {
+        if #available(iOS 27.0, *) {
+            visibilityPriority(priority == .high ? .high : .low)
+        } else {
+            self
         }
     }
 }

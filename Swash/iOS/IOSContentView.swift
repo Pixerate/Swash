@@ -17,6 +17,9 @@ struct IOSContentView: View {
     let fileURL: URL?
 
     @SceneStorage("viewMode") private var viewMode: ViewMode = .preview
+    /// The last of Source and Formatted, which Split falls back to at compact width (closing an
+    /// iPhone Duo, Slide Over, a narrow Split View) instead of always Source (#65).
+    @SceneStorage("lastSingleViewMode") private var lastSingleMode: ViewMode = .preview
     /// Whether the iPad split view shows the outline sidebar; the system sidebar button sets it.
     @SceneStorage("outlineColumnVisible") private var outlineVisible = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -51,9 +54,9 @@ struct IOSContentView: View {
         self.fileURL = fileURL
     }
 
-    /// Split needs room for two columns; in compact width it falls back to Source.
+    /// Split needs room for two columns; in compact width it falls back to the last single-pane mode.
     private var effectiveMode: ViewMode {
-        viewMode == .split && horizontalSizeClass == .compact ? .edit : viewMode
+        viewMode == .split && horizontalSizeClass == .compact ? lastSingleMode : viewMode
     }
 
     private var availableModes: [ViewMode] {
@@ -140,6 +143,9 @@ struct IOSContentView: View {
         }
         .onChange(of: document.flavor) { _, flavor in
             editor.flavor = flavor
+        }
+        .onChange(of: viewMode, initial: true) { _, mode in
+            if mode != .split, mode != lastSingleMode { lastSingleMode = mode }
         }
         .onChange(of: fileURL) { _, _ in
             refreshConflicts()
@@ -266,25 +272,45 @@ struct IOSContentView: View {
 
     /// The editors ignore the top safe area so text scrolls under the bar; `topInset` is the
     /// bar's (and banner's) height, which they apply as a content inset.
+    ///
+    /// Each pane keeps one structural position whatever the mode, so Split ⇄ Source (opening or
+    /// closing an iPhone Duo, resizing a window) only adds or removes the preview: the source
+    /// editor's text view, with its caret, scroll offset, focus and undo stack, stays (#65).
     @ViewBuilder
     private func content(topInset: CGFloat) -> some View {
-        switch effectiveMode {
-        case .edit:
-            sourceEditor(topInset: topInset)
-        case .preview:
-            // Edit Text for every flavour: Slack mrkdwn is parsed onto the same model (SlackMarkdown)
-            StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL,
-                           formattingEnabled: !distractionFree, topInset: topInset,
-                           writingOptions: typography.writingOptions(distractionFree: distractionFree),
-                           typography: typography.scaled)
-                .id(folderAccessManager.accessGrantedTrigger)
-        case .split:
+        let mode = effectiveMode
+        let source = mode != .preview ? sourceEditor(topInset: topInset) : nil
+        let styled = mode == .preview ? styledEditor(topInset: topInset) : nil
+        let previewPane = mode == .split ? preview(topInset: topInset) : nil
+        if #available(iOS 27.1, *) {
+            // A split arrangement keeps the two panes on either side of the iPhone Duo's fold, and
+            // stacks them when the window is taller than it is wide
+            ArrangementView {
+                source
+                styled
+            } secondary: {
+                previewPane
+            }
+            .arrangementViewStyle(.split)
+        } else {
             HStack(spacing: 0) {
-                sourceEditor(topInset: topInset)
-                Divider()
-                preview(topInset: topInset)
+                source
+                styled
+                if let previewPane {
+                    Divider()
+                    previewPane
+                }
             }
         }
+    }
+
+    /// Edit Text for every flavour: Slack mrkdwn is parsed onto the same model (SlackMarkdown).
+    private func styledEditor(topInset: CGFloat) -> some View {
+        StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL,
+                       formattingEnabled: !distractionFree, topInset: topInset,
+                       writingOptions: typography.writingOptions(distractionFree: distractionFree),
+                       typography: typography.scaled)
+            .id(folderAccessManager.accessGrantedTrigger)
     }
 
     private func sourceEditor(topInset: CGFloat) -> some View {
@@ -339,6 +365,8 @@ struct IOSContentView: View {
                 .accessibilityValue(effectiveMode.rawValue)
                 .accessibilityHint("Switches between Source and Formatted. Touch and hold for more modes.")
             }
+            // The last to overflow: outer-display landscape with the keyboard up has the least room (#65)
+            .overflowPriority(.high)
         }
         IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
                            editor: editor, regularWidth: horizontalSizeClass == .regular,
@@ -362,6 +390,7 @@ struct IOSContentView: View {
                     Label("Markdown Flavor", systemImage: "textformat")
                 }
             }
+            .overflowPriority(.low)
             ToolbarItem(placement: .secondaryAction) {
                 Button {
                     showingSettings = true
@@ -369,6 +398,7 @@ struct IOSContentView: View {
                     Label("Settings", systemImage: "gearshape")
                 }
             }
+            .overflowPriority(.low)
         }
     }
 
@@ -499,7 +529,9 @@ struct IOSContentView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .glassEffect(.regular, in: .rect(cornerRadius: 16))
-        .padding(.horizontal, 12)
+        // The system's margin inside the safe area, which is asymmetric on the iPhone Duo's outer
+        // display (camera on one side, the vertical bar on the other), not a fixed inset (#65)
+        .padding(.horizontal)
         .padding(.bottom, 6)
     }
 

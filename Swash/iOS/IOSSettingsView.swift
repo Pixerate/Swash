@@ -58,6 +58,7 @@ struct IOSSettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .horizontalBarsOnly()
         }
         .task {
             guard !access.isPreview else { return }
@@ -65,6 +66,19 @@ struct IOSSettingsView: View {
         }
         .onAppear {
             access.clearLastError()
+        }
+    }
+}
+
+extension View {
+    /// Keeps a control-heavy sheet's bar horizontal on the iPhone Duo (iOS 27.1). A single text
+    /// button ("Done") gains nothing from a vertical bar and would cost the form its width (#65).
+    @ViewBuilder
+    func horizontalBarsOnly() -> some View {
+        if #available(iOS 27.1, *) {
+            toolbarVerticalBehavior(.disabled)
+        } else {
+            self
         }
     }
 }
