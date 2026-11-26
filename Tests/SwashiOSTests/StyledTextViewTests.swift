@@ -1030,5 +1030,143 @@ final class StyledTextViewTests: XCTestCase {
         XCTAssertEqual(e.text, "- milk")
         XCTAssertEqual(listMarkers(in: e).map(\.info.text), ["•"])
     }
+
+    // MARK: - Insert Affordance Overlay (SWA-94)
+
+    func testInsertAffordanceRevealsAfterDebounceOnEmptyLine() throws {
+        let e = try editor("Hello\n\nWorld")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+
+        // Caret on the empty middle line
+        e.select(raw: NSRange(location: 6, length: 0))
+        e.pump(0.1)
+
+        // Before debounce finishes, affordance shouldn't be visible
+        if let button = e.textView.insertAffordanceButton {
+            XCTAssertTrue(button.isHidden || button.alpha == 0, "Affordance should not be visible immediately")
+        }
+
+        // Wait for 750ms debounce (plus buffer)
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton, "Affordance button must exist after debounce")
+        XCTAssertFalse(button.isHidden, "Affordance button should be visible")
+        XCTAssertEqual(button.alpha, 1.0, accuracy: 0.05, "Affordance button alpha should be 1.0")
+
+        // Button should be centered at the caret
+        let caret = e.textView.caretRect(for: e.textView.selectedTextRange!.start)
+        XCTAssertEqual(button.center.x, caret.minX, accuracy: 2.0)
+        XCTAssertEqual(button.center.y, caret.midY, accuracy: 2.0)
+    }
+
+    func testInsertAffordanceDoesNotShowOnNonEmptyLine() throws {
+        let e = try editor("Hello\nWorld")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+
+        // Move caret to non-empty line
+        e.select(raw: NSRange(location: 2, length: 0))
+        e.pump(0.1)
+
+        // Wait beyond debounce
+        e.pump(0.85)
+
+        if let button = e.textView.insertAffordanceButton {
+            XCTAssertTrue(button.isHidden || button.alpha == 0, "Affordance must not show on a non-empty line")
+        }
+    }
+
+    func testInsertAffordanceHidesImmediatelyOnTyping() throws {
+        let e = try editor("")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+        e.select(raw: NSRange(location: 0, length: 0))
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertFalse(button.isHidden)
+
+        // Type a character
+        e.type("a")
+
+        XCTAssertTrue(button.isHidden, "Affordance must hide immediately upon typing")
+        XCTAssertEqual(button.alpha, 0, "Affordance alpha must be 0 immediately upon typing")
+    }
+
+    func testInsertAffordanceHidesOnSelectionChange() throws {
+        let e = try editor("First\n\nSecond")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+
+        // Move to empty line and wait for affordance
+        e.select(raw: NSRange(location: 6, length: 0))
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertFalse(button.isHidden)
+
+        // Move selection to non-empty line
+        e.select(raw: NSRange(location: 1, length: 0))
+
+        XCTAssertTrue(button.isHidden, "Affordance must hide immediately upon selection change")
+    }
+
+    func testInsertAffordanceHidesOnScroll() throws {
+        let e = try editor("First\n\nSecond")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+
+        e.select(raw: NSRange(location: 6, length: 0))
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertFalse(button.isHidden)
+
+        // Simulate scrolling
+        e.textView.setContentOffset(CGPoint(x: 0, y: 50), animated: false)
+        e.coordinator.scrollViewDidScroll(e.textView)
+
+        XCTAssertTrue(button.isHidden, "Affordance must hide immediately upon scrolling")
+    }
+
+    func testInsertAffordanceTimerCancelledIfInterruptedBeforeFiring() throws {
+        let e = try editor("")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+        e.select(raw: NSRange(location: 0, length: 0))
+
+        // Wait 350ms (less than 750ms)
+        e.pump(0.35)
+
+        // Type before timer fires
+        e.type("x")
+
+        // Wait remainder of time
+        e.pump(0.55)
+
+        if let button = e.textView.insertAffordanceButton {
+            XCTAssertTrue(button.isHidden || button.alpha == 0, "Affordance must not show if typing occurred before debounce elapsed")
+        }
+    }
+
+    func testInsertAffordanceTapOpensBlockMenu() throws {
+        let e = try editor("")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+        e.select(raw: NSRange(location: 0, length: 0))
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertFalse(button.isHidden)
+
+        // Tap the affordance button
+        button.sendActions(for: .touchUpInside)
+        e.pump(0.1)
+
+        // The block menu should now be presented (as buttons or popover)
+        let blockButtons = blockMenuButtons(in: e)
+        XCTAssertFalse(blockButtons.isEmpty, "Tapping insert affordance should open block menu")
+    }
 }
 

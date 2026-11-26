@@ -233,6 +233,8 @@ struct StyledTextView: UIViewRepresentable {
 
             textView.replaceUndoably(storageTarget, with: replacement, actionName: actionName)
             cachedOffsetMap = nil
+            cancelInsertAffordanceTimer()
+            textView.hideInsertAffordance(animated: false)
             parent.text = swashRawMarkdown(from: storage)
             editGeneration += 1
             pendingRawSelection = rawSelection
@@ -293,8 +295,17 @@ struct StyledTextView: UIViewRepresentable {
 
         // MARK: UITextViewDelegate
 
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            if let textView = scrollView as? StyledUITextView {
+                textView.hideInsertAffordance(animated: false)
+            }
+            cancelInsertAffordanceTimer()
+        }
+
         func textViewDidChange(_ textView: UITextView) {
             guard let textView = textView as? StyledUITextView else { return }
+            cancelInsertAffordanceTimer()
+            textView.hideInsertAffordance(animated: false)
             cachedOffsetMap = nil
             textView.setNeedsOverlayLayout()
             guard !isUpdatingFromSwiftUI, !isHighlighting else { return }
@@ -311,6 +322,10 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
+            if let styled = textView as? StyledUITextView {
+                cancelInsertAffordanceTimer()
+                styled.hideInsertAffordance(animated: false)
+            }
             guard let textView = textView as? StyledUITextView, !textView.isApplyingEdit, !isHighlighting,
                   textView.markedTextRange == nil else { return true }
             // The person's own typing, for the writing partner (GOTCHAS #78): not SwiftUI updates or Writing Tools
@@ -348,6 +363,10 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
+            cancelInsertAffordanceTimer()
+            if let styled = textView as? StyledUITextView {
+                styled.hideInsertAffordance(animated: false)
+            }
             guard !isHighlighting, !isUpdatingFromSwiftUI else {
                 lastSelection = textView.selectedRange
                 return
@@ -367,6 +386,7 @@ struct StyledTextView: UIViewRepresentable {
                 styled.refreshFormattingBarState()
                 // The Formatting voice tidies a block once the caret has left it (#113)
                 if !styled.isApplyingEdit, let host = partnerHost { writingPartner.selectionDidChange(in: host) }
+                scheduleInsertAffordanceTimer(in: styled)
             }
         }
 
@@ -384,6 +404,51 @@ struct StyledTextView: UIViewRepresentable {
         /// even though the primary action is removed (#82).
         func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem, defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
             textView.isFirstResponder ? nil : UITextItem.MenuConfiguration(menu: defaultMenu)
+        }
+
+        // MARK: - Insert Affordance Timer
+        private var insertAffordanceTimer: Timer?
+
+        func cancelInsertAffordanceTimer() {
+            insertAffordanceTimer?.invalidate()
+            insertAffordanceTimer = nil
+        }
+
+        func scheduleInsertAffordanceTimer(in textView: StyledUITextView) {
+            cancelInsertAffordanceTimer()
+            guard textView.isFirstResponder else { return }
+            guard textView.selectedRange.length == 0 else { return }
+            guard isCaretOnEmptyLine(in: textView) else { return }
+
+            insertAffordanceTimer = Timer.scheduledTimer(withTimeInterval: 0.75, repeats: false) { [weak self, weak textView] _ in
+                guard let self = self, let textView = textView else { return }
+                self.showInsertAffordanceIfEligible(in: textView)
+            }
+        }
+
+        func isCaretOnEmptyLine(in textView: StyledUITextView) -> Bool {
+            let storage = textView.textStorage
+            let selectedRange = textView.selectedRange
+            guard selectedRange.length == 0 else { return false }
+            let location = selectedRange.location
+            guard location <= storage.length else { return false }
+
+            let nsString = storage.string as NSString
+            let lineRange = nsString.lineRange(for: NSRange(location: location, length: 0))
+            let lineText = nsString.substring(with: lineRange)
+            let trimmed = lineText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty
+        }
+
+        func showInsertAffordanceIfEligible(in textView: StyledUITextView) {
+            guard textView.isFirstResponder else { return }
+            guard textView.selectedRange.length == 0 else { return }
+            guard isCaretOnEmptyLine(in: textView) else { return }
+            guard let selectedTextRange = textView.selectedTextRange else { return }
+
+            let caret = textView.caretRect(for: selectedTextRange.start)
+            guard !caret.isNull, !caret.isInfinite else { return }
+            textView.showInsertAffordance(at: caret)
         }
 
         // MARK: Caret atomicity
@@ -484,6 +549,8 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         func highlight(in textView: StyledUITextView) {
+            cancelInsertAffordanceTimer()
+            textView.hideInsertAffordance(animated: false)
             guard !isHighlighting else { return }
             defer { refreshPartnerDrawing() }
             let storage = textView.textStorage
@@ -843,6 +910,8 @@ final class StyledUITextView: MarkdownEditingTextView {
     private var lastLayoutWidth: CGFloat = 0
     private var lastLayoutHeight: CGFloat = 0
     private var placedTables: [ObjectIdentifier: TableTextAttachment] = [:]
+    /// The '+' insert affordance overlay button shown on empty line pause.
+    private(set) var insertAffordanceButton: InsertAffordanceButton?
     /// The checkbox tap's delegate. Not the text view itself: a scroll view is already the delegate
     /// of its own pan and text gestures, and overriding those callbacks would filter them too.
     private let taskTapFilter = TaskTapFilter()
@@ -895,6 +964,7 @@ final class StyledUITextView: MarkdownEditingTextView {
             needsOverlayLayout = false
             layoutTableViews()
             layoutCodeBadgeButtons()
+            layoutInsertAffordance()
             coordinator?.refreshPartnerDrawing()
         }
     }
@@ -907,6 +977,59 @@ final class StyledUITextView: MarkdownEditingTextView {
         setNeedsLayout()
     }
 
+
+    // MARK: - Insert Affordance Overlay
+
+    func showInsertAffordance(at caretRect: CGRect) {
+        let button: InsertAffordanceButton
+        if let existing = insertAffordanceButton {
+            button = existing
+        } else {
+            let newButton = InsertAffordanceButton { [weak self] in
+                guard let self = self else { return }
+                self.hideInsertAffordance(animated: false)
+                self.coordinator?.cancelInsertAffordanceTimer()
+                self.presentBlockMenu { [weak self] kind in
+                    guard let self = self else { return }
+                    let rawLocation = self.coordinator?.rawRange(forStorage: self.selectedRange, in: self).location ?? 0
+                    self.coordinator?.insertBlock(kind, slashLocation: rawLocation, in: self)
+                }
+            }
+            addSubview(newButton)
+            insertAffordanceButton = newButton
+            button = newButton
+        }
+
+        let buttonSize: CGFloat = 24
+        let originX = caretRect.minX - buttonSize / 2
+        let originY = caretRect.midY - buttonSize / 2
+        button.frame = CGRect(x: originX, y: originY, width: buttonSize, height: buttonSize)
+        button.fadeIn()
+    }
+
+    func hideInsertAffordance(animated: Bool = false) {
+        guard let button = insertAffordanceButton else { return }
+        if animated {
+            button.fadeOut()
+        } else {
+            button.hideImmediate()
+        }
+    }
+
+    private func layoutInsertAffordance() {
+        guard let button = insertAffordanceButton, !button.isHidden, button.alpha > 0 else { return }
+        guard isFirstResponder, selectedRange.length == 0, coordinator?.isCaretOnEmptyLine(in: self) == true else {
+            hideInsertAffordance(animated: false)
+            return
+        }
+        guard let selectedTextRange = selectedTextRange else { return }
+        let caret = caretRect(for: selectedTextRange.start)
+        guard !caret.isNull, !caret.isInfinite else { return }
+        let buttonSize: CGFloat = 24
+        let originX = caret.minX - buttonSize / 2
+        let originY = caret.midY - buttonSize / 2
+        button.frame = CGRect(x: originX, y: originY, width: buttonSize, height: buttonSize)
+    }
 
     // MARK: - Caret geometry
 
@@ -1179,6 +1302,24 @@ final class StyledUITextView: MarkdownEditingTextView {
         return top
     }
 
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became {
+            coordinator?.cancelInsertAffordanceTimer()
+            coordinator?.scheduleInsertAffordanceTimer(in: self)
+        }
+        return became
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned {
+            coordinator?.cancelInsertAffordanceTimer()
+            hideInsertAffordance(animated: false)
+        }
+        return resigned
+    }
+
     // MARK: Task checkboxes
 
     @objc private func handleTaskTap(_ recognizer: UITapGestureRecognizer) {
@@ -1364,6 +1505,73 @@ private final class BlockMenuBar: GlassAccessoryBar {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+}
+
+/// A subtle, circular '+' insert button overlay displayed when the caret rests idle on an empty line.
+final class InsertAffordanceButton: UIButton {
+    private let action: () -> Void
+
+    init(action: @escaping () -> Void) {
+        self.action = action
+        super.init(frame: .zero)
+
+        var config = UIButton.Configuration.plain()
+        let symbolConfig = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        config.image = UIImage(systemName: "plus", withConfiguration: symbolConfig)
+        config.baseForegroundColor = .secondaryLabel
+        config.contentInsets = .zero
+        configuration = config
+
+        backgroundColor = .quaternarySystemFill
+        layer.cornerRadius = 12
+        layer.masksToBounds = true
+
+        isPointerInteractionEnabled = true
+        accessibilityLabel = "Insert"
+        accessibilityHint = "Double-tap to insert a block or media"
+        alpha = 0
+        isHidden = true
+
+        addAction(UIAction { [weak self] _ in self?.action() }, for: .touchUpInside)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    /// Expands the hit target from the 24×24 visual frame to the standard Apple HIG minimum 44×44 pt.
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        let minSize: CGFloat = 44
+        let dx = max(0, (minSize - bounds.width) / 2)
+        let dy = max(0, (minSize - bounds.height) / 2)
+        let expanded = bounds.insetBy(dx: -dx, dy: -dy)
+        return expanded.contains(point)
+    }
+
+    func fadeIn() {
+        layer.removeAllAnimations()
+        isHidden = false
+        UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .curveEaseOut]) {
+            self.alpha = 1
+        }
+    }
+
+    func fadeOut() {
+        layer.removeAllAnimations()
+        UIView.animate(withDuration: 0.2, delay: 0, options: [.beginFromCurrentState, .curveEaseIn], animations: {
+            self.alpha = 0
+        }, completion: { finished in
+            if finished && self.alpha == 0 {
+                self.isHidden = true
+            }
+        })
+    }
+
+    func hideImmediate() {
+        layer.removeAllAnimations()
+        alpha = 0
+        isHidden = true
     }
 }
 #endif
