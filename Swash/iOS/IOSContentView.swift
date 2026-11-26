@@ -43,6 +43,7 @@ struct IOSContentView: View {
     @ObservedObject private var folderAccessManager = FolderAccessManager.shared
     private var typography = IOSTypographySettings()
     @State private var features = IOSDocumentFeaturesModel()
+    @State private var sceneActions = SceneActions()
 
     // Explicit, because `typography` is a private stored property, which would
     // otherwise make the memberwise initializer private.
@@ -123,18 +124,23 @@ struct IOSContentView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .focusedSceneValue(\.formatCommandHandler, { handleFormatCommand($0) })
-        .focusedSceneValue(\.distractionFreeToggle, DistractionFreeToggle(isOn: distractionFree, toggle: {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                distractionFree.toggle()
-            }
-        }))
+        // The same closures on every pass: a new one each body re-ran the scene's commands,
+        // and so DocumentGroup's content, in a loop that left the screen blank (GOTCHAS #114)
+        .focusedSceneValue(\.formatCommandHandler, sceneActions.formatCommand)
+        .focusedSceneValue(\.distractionFreeToggle, DistractionFreeToggle(isOn: distractionFree,
+                                                                           toggle: sceneActions.toggleDistractionFree))
         .onChange(of: partnerPaused) { _, paused in
             editor.setPartnerPaused(paused)
         }
         .onAppear {
             editor.onPartnerPauseChange = { partnerPaused = $0 }
             editor.onFormatCommand = { handleFormatCommand($0) }
+            sceneActions.onFormatCommand = { handleFormatCommand($0) }
+            sceneActions.onToggleDistractionFree = {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    distractionFree.toggle()
+                }
+            }
             editor.flavor = document.flavor
             refreshConflicts()
         }
@@ -566,6 +572,23 @@ struct IOSContentView: View {
             editor.focus()
         } else {
             document.text = edit.text
+        }
+    }
+
+    /// The closures the scene's menu commands call, made once per view. Focused values aren't
+    /// Equatable, so SwiftUI compares them by their bits: a closure created in `body` differs every
+    /// time, re-running the commands that read it, then DocumentGroup's content closure, which hands
+    /// this view a new `document` binding and runs `body` again (GOTCHAS #114).
+    @MainActor
+    private final class SceneActions {
+        var onFormatCommand: (FormatCommand) -> Void = { _ in }
+        var onToggleDistractionFree: () -> Void = {}
+
+        private(set) lazy var formatCommand: (FormatCommand) -> Void = { [unowned self] in
+            onFormatCommand($0)
+        }
+        private(set) lazy var toggleDistractionFree: () -> Void = { [unowned self] in
+            onToggleDistractionFree()
         }
     }
 
