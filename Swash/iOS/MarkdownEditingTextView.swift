@@ -137,9 +137,17 @@ final class EditorViewRetainer<TextView: MarkdownEditingTextView> {
             || dismantledWhileFocused.map { Date().timeIntervalSince($0) < 1 } ?? false
         dismantledWhileFocused = nil
         guard hadFocus else { return }
-        DispatchQueue.main.async { [weak textView] in
-            guard let textView, textView.window != nil, !textView.isFirstResponder else { return }
-            textView.becomeFirstResponder()
+        Self.restoreFocus(of: textView, until: Date().addingTimeInterval(0.5))
+    }
+
+    /// Keeps giving the keyboard back for a moment: the old host can take it away after the new
+    /// one is built, and the text view may not be in the new window yet on the first try (a slow
+    /// device or CI runner).
+    private static func restoreFocus(of textView: TextView, until deadline: Date) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak textView] in
+            guard let textView else { return }
+            if textView.window != nil, !textView.isFirstResponder { textView.becomeFirstResponder() }
+            if Date() < deadline { restoreFocus(of: textView, until: deadline) }
         }
     }
 
