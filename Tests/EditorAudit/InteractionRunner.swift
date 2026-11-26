@@ -730,7 +730,7 @@ struct InteractionRunner {
                  typeEach("so i dont know ", into: tvOff)
                  log("writing-partner-off-\(mode)", "", off.text, expect: "so i dont know ")
 
-                 defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+                 defaults.set(WritingPartnerMode.copyedit.rawValue, forKey: WritingPartnerDefaults.mode)
                  let b = TextBox(""); let tv = makeEditor(b, styled: styled)
                  typeEach("so i dont know. it works ", into: tv)
                  log("writing-partner-types-\(mode)", "", b.text, expect: "So I don't know. It works ")
@@ -836,14 +836,14 @@ struct InteractionRunner {
                  defaults.set(WritingPartnerMode.off.rawValue, forKey: WritingPartnerDefaults.mode)
                  typeEach("a", into: tvSp)
                  log("writing-partner-autocorrect-restored-\(mode)", "", "\(tvSp.isAutomaticSpellingCorrectionEnabled)", expect: "true")
-                 defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+                 defaults.set(WritingPartnerMode.copyedit.rawValue, forKey: WritingPartnerDefaults.mode)
                  defaults.set(false, forKey: WritingPartnerDefaults.spelling)
              }
              // Two undos in a row stop a rule. These cases repeat "dont" on purpose, so Doubled
              // words (#111) is off until the cleanup below.
              defaults.set(false, forKey: WritingPartnerDefaults.doubledWords)
              defaults.removeObject(forKey: WritingPartnerDefaults.stats)
-             defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+             defaults.set(WritingPartnerMode.copyedit.rawValue, forKey: WritingPartnerDefaults.mode)
              defaults.set(false, forKey: WritingPartnerDefaults.spelling)
              let learn = TextBox(""); let tvLearn = makeEditor(learn, styled: false)
              typeEach("I dont ", into: tvLearn); tvLearn.undoManager?.undo(); pump()
@@ -854,26 +854,20 @@ struct InteractionRunner {
                  expect: "I dont dont dont  contraction=false")
 
              // Formatting voice (#113): a block is tidied once the caret has left it, each fix its own
-             // undo step, and in Source view only when that's turned on
+             // undo step, in the Formatted and (since #229) the Source view
              defaults.removeObject(forKey: WritingPartnerDefaults.stats)
-             defaults.removeObject(forKey: WritingPartnerDefaults.formattingInSource)
-             for (styled, inSource) in [(true, false), (false, false), (false, true)] {
-                 let mode = styled ? "styled" : (inSource ? "source-on" : "source")
-                 defaults.set(inSource, forKey: WritingPartnerDefaults.formattingInSource)
+             for styled in [true, false] {
+                 let mode = styled ? "styled" : "source"
                  let fmt = TextBox("1. Alpha\n3. Beta\n\nThe end"); let tvFmt = makeEditor(fmt, styled: styled)
                  caretAfter("Beta", in: tvFmt)
                  typeEach("s", into: tvFmt)
                  log("writing-partner-format-waits-\(mode)", "type in the list", fmt.text, expect: "1. Alpha\n3. Betas\n\nThe end")
                  tvFmt.setSelectedRange(NSRange(location: (tvFmt.string as NSString).length, length: 0)); waitForPartner(tvFmt)
-                 let tidiedList = styled || inSource ? "1. Alpha\n2. Betas\n\nThe end" : "1. Alpha\n3. Betas\n\nThe end"
-                 log("writing-partner-format-leaves-\(mode)", "caret to the end", fmt.text, expect: tidiedList)
-                 if styled || inSource {
-                     log("writing-partner-format-undo-name-\(mode)", "", tvFmt.undoManager?.undoActionName ?? "", expect: "Formatting")
-                     tvFmt.undoManager?.undo(); pump(0.3)
-                     log("writing-partner-format-undo-\(mode)", "⌘Z", fmt.text, expect: "1. Alpha\n3. Betas\n\nThe end")
-                 }
+                 log("writing-partner-format-leaves-\(mode)", "caret to the end", fmt.text, expect: "1. Alpha\n2. Betas\n\nThe end")
+                 log("writing-partner-format-undo-name-\(mode)", "", tvFmt.undoManager?.undoActionName ?? "", expect: "Formatting")
+                 tvFmt.undoManager?.undo(); pump(0.3)
+                 log("writing-partner-format-undo-\(mode)", "⌘Z", fmt.text, expect: "1. Alpha\n3. Betas\n\nThe end")
              }
-             defaults.removeObject(forKey: WritingPartnerDefaults.formattingInSource)
              // Two fixes in one block are two undo steps
              defaults.removeObject(forKey: WritingPartnerDefaults.stats)
              let two = TextBox("Say `hell`o and hello  world\n\nThe end"); let tvTwo = makeEditor(two)
@@ -886,127 +880,34 @@ struct InteractionRunner {
              let learnedFormatting = WritingPartnerStats.load().weight(.formatSpacing) < 1
              log("writing-partner-format-learns", "", "spacing weight lowered=\(learnedFormatting)", expect: "spacing weight lowered=true")
 
-             // Suggest mode (#103): offers fixes without changing the text; accepted by keyboard,
-             // pointer, VoiceOver rotor or Edit menu, and dismissed by Esc or typing past
-             defaults.set(WritingPartnerMode.suggest.rawValue, forKey: WritingPartnerDefaults.mode)
+             // Edit layers (#229): the partner's fixes are kept apart from the person's typing this
+             // session, and reverting the Copyedit layer leaves what was typed since alone
              defaults.set(false, forKey: WritingPartnerDefaults.spelling)
              for styled in [true, false] {
                  let mode = styled ? "styled" : "source"
-
-                 // 1. Drawn without changing the text; accepted with Tab (or ⌥⏎); undone as its own step
                  defaults.removeObject(forKey: WritingPartnerDefaults.stats)
-                 let b = TextBox(""); let tv = makeEditor(b, styled: styled)
-                 let coordinator = tv.delegate as! SwashTextView.Coordinator
-                 typeEach("I dont ", into: tv)
-                 let overlay = tv.subviews.compactMap { $0 as? WritingPartnerOverlay }.first
-                 let offered = coordinator.writingPartner.suggestions.map { "\($0.edit.original)->\($0.edit.replacement)" }.joined(separator: ",")
-                 log("writing-partner-suggest-drawn-\(mode)", "I dont ",
-                     "text=\(b.text) layers=\(overlay?.suggestionLayers.count ?? 0) offered=\(offered)",
-                     expect: "text=I dont  layers=1 offered=dont->don't")
-
-                 tv.doCommand(by: #selector(NSResponder.insertTab(_:)))
-                 waitForPartner(tv)
-                 log("writing-partner-suggest-accept-key-\(mode)", "Tab after 'I dont '",
-                     "text=\(b.text) layers=\(overlay?.suggestionLayers.count ?? 0)",
-                     expect: "text=I don't  layers=0")
-
-                 tv.undoManager?.undo(); pump(0.3)
-                 typeEach("x", into: tv)
-                 log("writing-partner-suggest-undo-\(mode)", "⌘Z then type 'x'", b.text, expect: "I dont x")
-
-                 // Option-Return (⌥⏎) also accepts a suggestion
-                 let optB = TextBox(""); let tvOpt = makeEditor(optB, styled: styled)
-                 typeEach("so ", into: tvOpt)
-                 tvOpt.doCommand(by: #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)))
-                 waitForPartner(tvOpt)
-                 log("writing-partner-suggest-accept-option-return-\(mode)", "⌥⏎ after 'so '", optB.text, expect: "So ")
-
-                 // 2. Clicking the suggested word accepts it (and shows the pointing hand cursor)
-                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
-                 let clickB = TextBox(""); let tvClick = makeEditor(clickB, styled: styled)
-                 let clickCoord = tvClick.delegate as! SwashTextView.Coordinator
-                 typeEach("I dont ", into: tvClick)
-                 let storageRange = clickCoord.storageRange(forRaw: clickCoord.writingPartner.suggestions[0].edit.range, in: tvClick)
-                 let rect = WritingPartnerOverlay.rects(for: storageRange, in: tvClick)[0]
-                 let viewPoint = NSPoint(x: rect.midX, y: rect.midY)
-                 let hand = (tvClick as? SwashNSTextView)?.overrideCursor(at: viewPoint) == .pointingHand
-                 let clickEvent = NSEvent.mouseEvent(with: .leftMouseDown, location: tvClick.convert(viewPoint, to: nil),
-                                                     modifierFlags: [], timestamp: 0, windowNumber: tvClick.window?.windowNumber ?? 0,
-                                                     context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
-                 tvClick.mouseDown(with: clickEvent)
-                 waitForPartner(tvClick)
-                 let clickOverlay = tvClick.subviews.compactMap { $0 as? WritingPartnerOverlay }.first
-                 log("writing-partner-suggest-accept-pointer-\(mode)", "click 'dont'",
-                     "hand=\(hand) text=\(clickB.text) layers=\(clickOverlay?.suggestionLayers.count ?? 0)",
-                     expect: "hand=true text=I don't  layers=0")
-
-                 // 3. Dismissing with Esc removes the suggestion and counts against its rule
-                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
-                 let escB = TextBox(""); let tvEsc = makeEditor(escB, styled: styled)
-                 typeEach("I dont ", into: tvEsc)
-                 tvEsc.doCommand(by: #selector(NSResponder.cancelOperation(_:))); pump(0.05)
-                 let escOverlay = tvEsc.subviews.compactMap { $0 as? WritingPartnerOverlay }.first
-                 let layersAfterFirstEsc = escOverlay?.suggestionLayers.count ?? 0
-                 typeEach("dont ", into: tvEsc)
-                 tvEsc.doCommand(by: #selector(NSResponder.cancelOperation(_:))); pump(0.05)
-                 typeEach("dont ", into: tvEsc)
-                 let escCoord = tvEsc.delegate as! SwashTextView.Coordinator
-                 let escStats = WritingPartnerStats.load()
-                 log("writing-partner-suggest-dismiss-esc-\(mode)", "Esc twice on 'dont'",
-                     "afterFirst=\(layersAfterFirstEsc) text=\(escB.text) active=\(escStats.isActive(.contraction)) thirdOffered=\(!escCoord.writingPartner.suggestions.isEmpty)",
-                     expect: "afterFirst=0 text=I dont dont dont  active=false thirdOffered=false")
-
-                 // 4. Typing on keeps a suggestion on offer; typing well past it (more than
-                 //    `suggestionReach` characters) dismisses it and counts against its rule
-                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
-                 let pastB = TextBox(""); let tvPast = makeEditor(pastB, styled: styled)
-                 let filler = "know what to do about this whole thing now "
-                 typeEach("I dont ", into: tvPast)
-                 typeEach("know ", into: tvPast)
-                 let pastCoord = tvPast.delegate as! SwashTextView.Coordinator
-                 let stillOffered = !pastCoord.writingPartner.suggestions.isEmpty
-                 typeEach(String(filler.dropFirst(5)), into: tvPast)
-                 typeEach("dont ", into: tvPast)
-                 typeEach(filler, into: tvPast)
-                 typeEach("dont ", into: tvPast)
-                 let pastStats = WritingPartnerStats.load()
-                 log("writing-partner-suggest-dismiss-typing-past-\(mode)", "keep typing well past 'dont' twice",
-                     "stillOfferedAfterAWord=\(stillOffered) text=\(pastB.text) active=\(pastStats.isActive(.contraction)) thirdOffered=\(!pastCoord.writingPartner.suggestions.isEmpty)",
-                     expect: "stillOfferedAfterAWord=true text=I dont \(filler)dont \(filler)dont  active=false thirdOffered=false")
-
-                 // 5. Editing the suggested word makes the suggestion disappear without penalising the rule
-                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
-                 let editB = TextBox(""); let tvEdit = makeEditor(editB, styled: styled)
-                 typeEach("I dont ", into: tvEdit)
-                 tvEdit.doCommand(by: #selector(NSResponder.deleteBackward(_:))); pump(0.05)
-                 tvEdit.doCommand(by: #selector(NSResponder.deleteBackward(_:))); pump(0.05)
-                 let editOverlay = tvEdit.subviews.compactMap { $0 as? WritingPartnerOverlay }.first
-                 let editStats = WritingPartnerStats.load()
-                 log("writing-partner-suggest-edit-disappears-\(mode)", "backspace into 'dont'",
-                     "text=\(editB.text) layers=\(editOverlay?.suggestionLayers.count ?? 0) weight=\(editStats.weight(.contraction))",
-                     expect: "text=I don layers=0 weight=1.0")
-
-                 // 6. VoiceOver announcement, Suggestions rotor and Edit menu acceptance
-                 defaults.removeObject(forKey: WritingPartnerDefaults.stats)
-                 let voB = TextBox(""); let tvVO = makeEditor(voB, styled: styled)
-                 let voCoord = tvVO.delegate as! SwashTextView.Coordinator
-                 typeEach("I dont ", into: tvVO)
-                 let announced = voCoord.writingPartner.lastAnnouncement ?? ""
-                 let rotor = tvVO.accessibilityCustomRotors().first { $0.label == "Suggestions" }
-                 let item = rotor.flatMap { $0.itemSearchDelegate?.rotor($0, resultFor: NSAccessibilityCustomRotor.SearchParameters()) }
-                 if let range = item?.targetRange { tvVO.setSelectedRange(range) }
-                 (tvVO as? SwashNSTextView)?.acceptSuggestion(nil)
-                 waitForPartner(tvVO)
-                 log("writing-partner-suggest-voiceover-\(mode)", "rotor + Edit › Accept Suggestion",
-                     "announced=\(announced) rotor=\(item?.customLabel ?? "nil") text=\(voB.text)",
-                     expect: "announced=Suggestion: don't for dont rotor=dont → don't text=I don't ")
+                 let layerB = TextBox(""); let tvLayer = makeEditor(layerB, styled: styled)
+                 let layerCoord = tvLayer.delegate as! SwashTextView.Coordinator
+                 typeEach("I dont ", into: tvLayer)
+                 waitForPartner(tvLayer)
+                 typeEach("know", into: tvLayer)
+                 let layerEdits = layerCoord.writingPartner.layerEdits(in: tvLayer, coordinator: layerCoord)
+                 log("writing-partner-layers-recorded-\(mode)", "I dont know",
+                     "text=\(layerB.text) edits=\(layerEdits.map { "\($0.layer.rawValue):\($0.original)->\($0.replacement)" }.joined(separator: ","))",
+                     expect: "text=I don't know edits=copyedit:dont->don't")
+                 let reverted = layerCoord.writingPartner.revertEdits(Set(layerEdits.map(\.id)), in: tvLayer, coordinator: layerCoord)
+                 pump(0.1)
+                 log("writing-partner-layers-revert-\(mode)", "revert the Copyedit layer",
+                     "reverted=\(reverted) text=\(layerB.text) undo=\(tvLayer.undoManager?.undoActionName ?? "")",
+                     expect: "reverted=1 text=I dont know undo=Revert Copyedit")
+                 tvLayer.undoManager?.undo(); pump(0.3)
+                 log("writing-partner-layers-revert-undo-\(mode)", "⌘Z the revert", layerB.text, expect: "I don't know")
              }
              // Slack flavour (#105): the Chat voice fixes apostrophes and capital I, leaves lowercase
              // starts, message ends, ok, lol, :emoji: and Slack syntax alone, and learns separately
              defaults.removeObject(forKey: WritingPartnerDefaults.stats)
              defaults.removeObject(forKey: WritingPartnerDefaults.chatStats)
-             // The Suggest-mode cases above leave the mode on Suggest
-             defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+             defaults.set(WritingPartnerMode.copyedit.rawValue, forKey: WritingPartnerDefaults.mode)
              for styled in [true, false] {
                  let mode = styled ? "styled" : "source"
                  let slack = TextBox(""); let tvSlack = makeEditor(slack, styled: styled, flavor: .slack)
@@ -1034,7 +935,7 @@ struct InteractionRunner {
              // and reports accepted/undone/dismissed feedback.
              do {
                  defaults.removeObject(forKey: WritingPartnerDefaults.stats)
-                 defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+                 defaults.set(WritingPartnerMode.copyedit.rawValue, forKey: WritingPartnerDefaults.mode)
                  defaults.set(true, forKey: WritingPartnerDefaults.spelling)
 
                  let initial = "We use pixerate form their on Uchiage."
@@ -1136,7 +1037,7 @@ struct InteractionRunner {
              // offered; a misspelling that recurs in the document is left alone
              do {
                  defaults.removeObject(forKey: WritingPartnerDefaults.stats)
-                 defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+                 defaults.set(WritingPartnerMode.copyedit.rawValue, forKey: WritingPartnerDefaults.mode)
                  defaults.set(true, forKey: WritingPartnerDefaults.spelling)
                  let initial = "Send it form home so we dont loose the colur, and the colur."
                  let box = TextBox(initial)
@@ -1182,8 +1083,8 @@ struct InteractionRunner {
              // or with the caret in it. Nothing is written into the Markdown.
              do {
                  defaults.removeObject(forKey: WritingPartnerDefaults.stats)
-                 defaults.removeObject(forKey: WritingPartnerDefaults.markUncertain)
-                 defaults.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
+                 defaults.removeObject(forKey: WritingPartnerDefaults.suggestions)
+                 defaults.set(WritingPartnerMode.copyedit.rawValue, forKey: WritingPartnerDefaults.mode)
                  defaults.set(true, forKey: WritingPartnerDefaults.spelling)
                  let unsure: @Sendable (JazzTextLeadRequest) -> JazzTextLeadResponse = { req in
                      JazzTextLeadResponse(
@@ -1256,16 +1157,16 @@ struct InteractionRunner {
                  log("writing-partner-marks-edited", "type inside 'their'", "text=\(box2.text) marks=\(coord2.writingPartner.marks.map(\.original).joined(separator: ","))",
                      expect: "text=I came form the shop and theixr it was. marks=form")
 
-                 // Switched off, uncertain fixes are offered as before
-                 defaults.set(false, forKey: WritingPartnerDefaults.markUncertain)
+                 // With Suggestions off (#229), uncertain fixes are left alone: neither marked nor offered
+                 defaults.set(false, forKey: WritingPartnerDefaults.suggestions)
                  let box3 = TextBox(initial); let tv3 = makeEditor(box3, styled: false)
                  let coord3 = tv3.delegate as! SwashTextView.Coordinator
                  caretAfter(initial, in: tv3)
                  coord3.writingPartner.setBandleaderForTesting(StubWritingBandleader { unsure($0) })
                  pause(coord3, tv3, initial)
                  log("writing-partner-marks-off", "switch off", "marks=\(coord3.writingPartner.marks.count) offered=\(coord3.writingPartner.suggestions.count)",
-                     expect: "marks=0 offered=2")
-                 defaults.removeObject(forKey: WritingPartnerDefaults.markUncertain)
+                     expect: "marks=0 offered=0")
+                 defaults.removeObject(forKey: WritingPartnerDefaults.suggestions)
                  coord.writingPartner.setBandleaderForTesting(nil)
                  coord2.writingPartner.setBandleaderForTesting(nil)
                  coord3.writingPartner.setBandleaderForTesting(nil)

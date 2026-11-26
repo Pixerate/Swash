@@ -278,22 +278,19 @@ private struct UpdatesSettingsView: View {
 
 // MARK: - Writing partner
 
-/// Punctuation and capitals as you type (#61, #105).
+/// The writing partner (#61, #105), in the five sections shared with iOS (#229): the level and
+/// Suggestions, Partner style, the pause tier, Typography, and What It Has Learned. Grammar,
+/// Formatting and Spelling have no switches: every rule is on and learns from ⌘Z.
 private struct WritingPartnerSettingsView: View {
-    @AppStorage(WritingPartnerDefaults.mode) private var mode: WritingPartnerMode = .automatic
+    @AppStorage(WritingPartnerDefaults.mode) private var mode: WritingPartnerMode = .copyedit
     @AppStorage("markdownFlavor") private var defaultFlavor: MarkdownFlavor = .github
     private let activeVoice = WritingPartnerActiveVoice.shared
     @State private var proseStats = WritingPartnerStats.load(voice: .punctuate)
     @State private var chatStats = WritingPartnerStats.load(voice: .chat)
-    @State private var spellingOn = WritingPartnerDefaults.spelling()
     var access: PixerateAccess = .shared
     @AppStorage(WritingPartnerDefaults.curlyQuotes) private var curlyQuotes = false
-    @AppStorage(WritingPartnerDefaults.doubledWords) private var doubledWords = true
-    @AppStorage(WritingPartnerDefaults.aAndAn) private var aAndAn = true
-    @AppStorage(WritingPartnerDefaults.agreementAndTense) private var agreementAndTense = true
-    @AppStorage(WritingPartnerDefaults.missingWords) private var missingWords = true
     @AppStorage(WritingPartnerDefaults.quickNoteTidy) private var quickNoteTidy = true
-    @AppStorage(WritingPartnerDefaults.markUncertain) private var markUncertain = true
+    @AppStorage(WritingPartnerDefaults.suggestions) private var suggestions = true
     @AppStorage(WritingPartnerDefaults.announceMarks) private var announceMarks = false
     @State private var showLearnedRules = false
 
@@ -303,10 +300,6 @@ private struct WritingPartnerSettingsView: View {
 
     private var unsupportedLanguageReason: String? {
         activeVoice.unsupportedLanguageReason(for: provider)
-    }
-
-    private var isPauseGrammarAvailable: Bool {
-        provider != .none && unsupportedLanguageReason == nil
     }
 
     private var flavor: MarkdownFlavor {
@@ -338,22 +331,19 @@ private struct WritingPartnerSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Fix punctuation as I type", selection: $mode) {
+                Picker("Writing partner", selection: $mode) {
                     ForEach(WritingPartnerMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
                 }
-                Toggle("Correct spelling", isOn: Binding(
-                    get: { spellingOn },
-                    set: { UserDefaults.standard.set($0, forKey: WritingPartnerDefaults.spelling); spellingOn = $0 }
-                ))
+                .pickerStyle(.segmented)
+                Toggle(isOn: $suggestions) {
+                    Text("Suggestions")
+                    Text("Underlines fixes it isn't sure of instead of making them. Review with ⌥⌘' or the count in the status bar.")
+                }
                 .disabled(mode == .off)
-                // In Suggest mode everything is already offered, so the switch does nothing there (#128)
-                Toggle("Mark what it isn't sure about", isOn: $markUncertain)
-                    .disabled(mode != .automatic)
-                    .help("Leaves a faint dotted underline instead of guessing. Review them with ⌥⌘' or the count in the status bar.")
-                Toggle("Announce marks with VoiceOver", isOn: $announceMarks)
-                    .disabled(mode != .automatic || !markUncertain)
+                Toggle("Announce suggestions with VoiceOver", isOn: $announceMarks)
+                    .disabled(mode == .off || !suggestions)
                 LabeledContent("Voice") {
                     Text(WritingPartnerVoice.summary(for: flavor))
                         .foregroundStyle(.secondary)
@@ -361,13 +351,13 @@ private struct WritingPartnerSettingsView: View {
             } header: {
                 Text("Writing Partner")
             } footer: {
-                Text("Fixes punctuation, capitals, and spelling as you type on this Mac. In Suggest mode, press Tab or ⌥⏎ to accept, Esc to dismiss, or ⌘Z to undo.")
+                Text("\(mode.summary) Every fix is its own undo step. Edit › Writing Partner Edits shows what it changed this session, to revert one edit or a whole layer.")
                     .settingsFooterStyle()
                 Link("What the writing partner sends", destination: URL(string: "https://github.com/Pixerate/Swash/blob/main/docs/writing-partner-privacy.md")!)
                     .font(.footnote)
             }
 
-            WritingPartnerStyleSection()
+            WritingPartnerStyleSection(level: mode)
 
             Section {
                 LabeledContent("When you pause") {
@@ -384,6 +374,12 @@ private struct WritingPartnerSettingsView: View {
                     }
                 }
                 .disabled(mode == .off)
+                if let languageReason = unsupportedLanguageReason {
+                    LabeledContent("Language") {
+                        Text(languageReason)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Toggle("Tidy Quick Notes on pause or save", isOn: $quickNoteTidy)
                     .disabled(!access.isSubscribed && WritingPartnerDefaults.provider() != .pixerate)
                 if !access.isSubscribed {
@@ -391,7 +387,8 @@ private struct WritingPartnerSettingsView: View {
                         store: access.store,
                         title: "Swash Pro",
                         features: [
-                            "Paragraph structure and grammar suggestions when you pause",
+                            "Ghostwrite: prose rewritten and filled out in place when you pause",
+                            "Grammar, structure and house style suggestions when you pause",
                             "Quick Note tidy-up on pause or save"
                         ],
                         termsURL: PixerateAccess.termsURL,
@@ -401,42 +398,13 @@ private struct WritingPartnerSettingsView: View {
                 }
             } footer: {
                 if !access.isSubscribed {
-                    Text("On-device fixes work without Swash Pro.")
+                    Text("Copyedit works on this Mac without Swash Pro. Without it, or offline, Ghostwrite uses Copyedit and Apple Intelligence on this Mac.")
                         .settingsFooterStyle()
                 } else {
-                    Text("Sends the paragraph you just wrote to Pixerate on pause for structure suggestions. Code, math, and tables are never sent.")
+                    Text("Sends the paragraph you just wrote to Pixerate on pause: for corrections in Copyedit, and to rewrite it in Ghostwrite. Code, math, and tables are never sent.")
                         .settingsFooterStyle()
                 }
             }
-
-            Section {
-                Toggle("Doubled words", isOn: $doubledWords)
-                Toggle("A and an", isOn: $aAndAn)
-                Toggle("Agreement and tense", isOn: $agreementAndTense)
-                    .disabled(!isPauseGrammarAvailable)
-                Toggle("Missing words", isOn: $missingWords)
-                    .disabled(!isPauseGrammarAvailable)
-                if let languageReason = unsupportedLanguageReason {
-                    LabeledContent("Language") {
-                        Text(languageReason)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } header: {
-                Text("Grammar")
-            } footer: {
-                if let languageReason = unsupportedLanguageReason {
-                    Text("\(languageReason). Doubled words and A and an run on this Mac as you type; Agreement and tense and Missing words run when you pause. Each rule learns from ⌘Z.")
-                        .settingsFooterStyle()
-                } else {
-                    Text("Doubled words (the the → the, keeping had had and that that) and A and an (a apple → an apple, an user → a user) run on this Mac as you type. Agreement and tense (the results shows, tense slips, should of) and Missing words (went the shop → went to the shop) run when you pause. Each rule learns from ⌘Z, and is off in code, math, tables, verse, dialogue and quotations.")
-                        .settingsFooterStyle()
-                }
-            }
-            .disabled(mode == .off)
-
-            FormattingSettingsSection()
-                .disabled(mode == .off)
 
             Section {
                 Toggle("Curly quotes", isOn: $curlyQuotes)
@@ -451,7 +419,7 @@ private struct WritingPartnerSettingsView: View {
             Section {
                 DisclosureGroup(isExpanded: $showLearnedRules) {
                     ForEach(learnedRules, id: \.self) { rule in
-                        LabeledContent(rule.title) {
+                        LabeledContent {
                             if !voice.rules.contains(rule) {
                                 Text("Off in Chat")
                                     .foregroundStyle(.tertiary)
@@ -468,6 +436,11 @@ private struct WritingPartnerSettingsView: View {
                                 Text("Stopped after you undid it")
                                     .foregroundStyle(.orange)
                             }
+                        } label: {
+                            Text(rule.title)
+                            if let example = rule.example {
+                                Text(example)
+                            }
                         }
                     }
                 } label: {
@@ -480,7 +453,7 @@ private struct WritingPartnerSettingsView: View {
                 Text("What It Has Learned")
             } footer: {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Undoing a fix with ⌘Z makes it less likely in this voice; two undos in a row stop it.")
+                    Text("Spelling, grammar, and formatting (in both views, never in code, math, HTML or front matter) are all on. Undoing or reverting a fix makes it less likely in this voice; two in a row stop it.")
                         .settingsFooterStyle()
                     Button("Reset") {
                         UserDefaults.standard.removeObject(forKey: WritingPartnerDefaults.statsKey(for: voice))
@@ -489,6 +462,7 @@ private struct WritingPartnerSettingsView: View {
                     .disabled(stats.rules.isEmpty)
                 }
             }
+            .disabled(mode == .off)
         }
         .formStyle(.grouped)
         .frame(height: 520)
@@ -502,45 +476,6 @@ private struct WritingPartnerSettingsView: View {
 // MARK: - Agents
 
 /// Hosts a local Streamable HTTP MCP server so AI agents can read and edit open documents.
-/// Settings › Writing › Formatting (#113): a switch for each of the Formatting voice's rules, and
-/// whether it also tidies in Source view.
-struct FormattingSettingsSection: View {
-    @AppStorage(WritingPartnerDefaults.formattingInSource) private var inSource = false
-
-    var body: some View {
-        Section {
-            ForEach(FormattingVoice.rules, id: \.self) { rule in
-                FormattingRuleToggle(rule: rule)
-            }
-            Toggle("Also in Source view", isOn: $inSource)
-        } header: {
-            Text("Formatting")
-        } footer: {
-            Text("Tidies Markdown in blocks you've edited once the caret leaves them, without changing how the document reads. Never in code, math, HTML or front matter. Each fix is its own undo step and learns from ⌘Z.")
-                .settingsFooterStyle()
-        }
-    }
-}
-
-private struct FormattingRuleToggle: View {
-    let rule: PunctuationRule
-    @AppStorage private var isOn: Bool
-
-    init(rule: PunctuationRule) {
-        self.rule = rule
-        _isOn = AppStorage(wrappedValue: true, WritingPartnerDefaults.formattingKey(rule))
-    }
-
-    var body: some View {
-        Toggle(isOn: $isOn) {
-            Text(rule.title)
-            if let example = rule.example {
-                Text(example)
-            }
-        }
-    }
-}
-
 private struct AgentSettingsView: View {
     @AppStorage(AgentBridgeDefaults.enabled) private var enabled = false
     @AppStorage(AgentBridgeDefaults.port) private var port = Int(AgentBridgeDefaults.defaultPort)
@@ -717,13 +652,6 @@ private extension View {
             entitlements: PixerateEntitlements()
         )
     )
-}
-
-#Preview("Formatting Settings", traits: .sectionContainer) {
-    Form {
-        FormattingSettingsSection()
-    }
-    .formStyle(.grouped)
 }
 
 #Preview("Agent Settings", traits: .sectionContainer) {

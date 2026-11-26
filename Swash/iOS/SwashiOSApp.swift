@@ -46,6 +46,12 @@ final class SwashAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         PixerateAccess.startAtLaunch()
+        // Levels stored before #229 become Copyedit; the switches Settings no longer shows are cleared once
+        WritingPartnerDefaults.adoptLearnedDefaults()
+        if let raw = UserDefaults.standard.string(forKey: WritingPartnerDefaults.mode),
+           let level = WritingPartnerMode(rawValue: raw), level.rawValue != raw {
+            UserDefaults.standard.set(level.rawValue, forKey: WritingPartnerDefaults.mode)
+        }
         // The writing partner's pause tier: Pixerate with Swash Pro, else Apple Intelligence (#109)
         WritingBandleaderFactory.installPixerateBandleader()
         WritingBandleaderFactory.installOnDeviceBandleader()

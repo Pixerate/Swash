@@ -73,7 +73,7 @@ struct StyledTextView: UIViewRepresentable {
         defer { coordinator.isUpdatingFromSwiftUI = false }
 
         if coordinator.lastBaseURL != nil, coordinator.lastBaseURL != baseURL {
-            coordinator.writingPartner.resetBandleaderSession()
+            coordinator.writingPartner.documentDidChange()
         }
         let current = swashRawMarkdown(from: textView.textStorage)
         if coordinator.lastStyledText != text, current != text {

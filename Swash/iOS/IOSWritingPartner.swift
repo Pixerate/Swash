@@ -538,9 +538,9 @@ struct PartnerIntroductionCard: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
-                Button("Automatically") { onChooseMode(.automatic) }
+                Button(WritingPartnerMode.copyedit.title) { onChooseMode(.copyedit) }
                     .buttonStyle(.glassProminent)
-                Button("Suggest") { onChooseMode(.suggest) }
+                Button(WritingPartnerMode.ghostwrite.title) { onChooseMode(.ghostwrite) }
                     .buttonStyle(.glass)
                 Spacer(minLength: 0)
                 Button("Not now", action: onDismiss)

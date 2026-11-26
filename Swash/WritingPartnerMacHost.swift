@@ -250,6 +250,16 @@ extension WritingPartnerSession {
         host(textView, coordinator).flatMap { mark(at: point, in: $0) }
     }
 
+    /// The partner's edits this session, on their layers (#229).
+    func layerEdits(in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> [LayeredEdit] {
+        host(textView, coordinator).map { currentLayers(in: $0).edits } ?? []
+    }
+
+    @discardableResult
+    func revertEdits(_ ids: Set<Int>, in textView: NSTextView, coordinator: SwashTextView.Coordinator) -> Int {
+        host(textView, coordinator).map { revertEdits(ids, in: $0) } ?? 0
+    }
+
     @MainActor
     func triggerPauseCheckForTesting(in textView: NSTextView, coordinator: SwashTextView.Coordinator) {
         if let host = host(textView, coordinator) { triggerPauseCheckForTesting(in: host) }

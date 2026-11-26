@@ -16,19 +16,90 @@ import Foundation
 import NaturalLanguage
 import PixerateMarkdown
 
+/// How much the writing partner does (#229): nothing, tidy up, or write with you.
 nonisolated enum WritingPartnerMode: String, CaseIterable, Identifiable, Sendable {
+    /// The partner is switched off altogether.
     case off
-    case suggest
-    case automatic
+    /// Tidies up as you type: punctuation, spelling, grammar, and Markdown formatting. The default.
+    case copyedit
+    /// Copyedit, plus the bandleader synthesizes and rewrites prose in place when you pause.
+    case ghostwrite
 
     var id: String { rawValue }
+
+    /// Reads a stored mode, including the levels before #229: `automatic` and `suggest` were both
+    /// the partner fixing as you type, so both become Copyedit (Suggest's offers now come from the
+    /// separate Suggestions switch).
+    init?(rawValue: String) {
+        switch rawValue {
+        case "off": self = .off
+        case "copyedit", "automatic", "suggest": self = .copyedit
+        case "ghostwrite": self = .ghostwrite
+        default: return nil
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case .off: return "off"
+        case .copyedit: return "copyedit"
+        case .ghostwrite: return "ghostwrite"
+        }
+    }
 
     var title: String {
         switch self {
         case .off: return "Off"
-        case .suggest: return "Suggest"
-        case .automatic: return "Automatically"
+        case .copyedit: return "Copyedit"
+        case .ghostwrite: return "Ghostwrite"
         }
+    }
+
+    /// One line on what the level does, for Settings and the first-run introduction.
+    var summary: String {
+        switch self {
+        case .off: return "The writing partner is switched off."
+        case .copyedit: return "Tidies up as you type: punctuation, spelling, grammar, and Markdown formatting."
+        case .ghostwrite: return "Copyedits, and when you pause, rewrites and fills out what you've written in place."
+        }
+    }
+
+    /// Whether the partner is on at all.
+    var isOn: Bool { self != .off }
+
+    /// What the bandleader is asked to do on a pause (#229, Pixerate/schemas#87).
+    var engagementMode: JazzTextEngagementMode? {
+        switch self {
+        case .off: return nil
+        case .copyedit: return .copyedit
+        case .ghostwrite: return .ghostwrite
+        }
+    }
+}
+
+/// What the Partner style preview plays for each level (#229), on macOS and iOS: Off shows the
+/// sentence as typed, Copyedit fixes a misspelt word, Ghostwrite rewrites rough notes as prose.
+nonisolated struct WritingPartnerPreviewScript: Equatable, Sendable {
+    var before: String
+    var wrong: String
+    var right: String
+    var after: String
+    /// Whether the partner plays at all (Off doesn't).
+    var plays: Bool
+
+    static func script(for level: WritingPartnerMode) -> WritingPartnerPreviewScript {
+        switch level {
+        case .off: return WritingPartnerPreviewScript(before: "It leaves the odd ", wrong: "wrod", right: "wrod", after: " as you wrote it.", plays: false)
+        case .copyedit: return WritingPartnerPreviewScript(before: "It fixes the odd ", wrong: "wrod", right: "word", after: " as you write.", plays: true)
+        case .ghostwrite: return WritingPartnerPreviewScript(before: "", wrong: "met sam, budget ok", right: "We met Sam and agreed the budget.", after: "", plays: true)
+        }
+    }
+
+    var original: String { before + wrong + after }
+    var fixed: String { before + right + after }
+
+    var accessibilityLabel: String {
+        plays ? "Sample: \(original) becomes \(fixed)" : "Sample: \(original), left as written"
     }
 }
 
@@ -69,15 +140,16 @@ nonisolated enum WritingPartnerDefaults {
     static let mode = "writingPartnerMode"
     static let stats = "writingPartnerStats"
     static let chatStats = "writingPartnerChatStats"
-    /// Whether the partner corrects spelling. Unset, it's on: the partner's fixes are its own undo
-    /// steps and learn from undo, so it doesn't follow macOS's "Correct spelling automatically",
-    /// which people often turn off for being hard to undo (#98).
+    /// The switch Spelling had before #229. Spelling is now always on while the partner is, and
+    /// learns from undo (it doesn't follow macOS's "Correct spelling automatically", #98); the key
+    /// is a hidden override for tests, see `spelling(_:)`.
     static let spelling = "writingPartnerSpelling"
     /// Curly quotes (#104): a switch, off unless turned on, because whether people like curly
     /// quotes at all is a matter of taste. Dashes and ellipses have no switch: like the other
     /// rules they're on, and learn from undo.
     static let curlyQuotes = "writingPartnerCurlyQuotes"
-    /// Grammar rules (#111): each has its own switch in Settings › Writing (on by default) and learns from ⌘Z.
+    /// The grammar switches before #229 (#111). The rules are now always on and learn from ⌘Z; the
+    /// keys are hidden overrides for tests, see `isRuleEnabled`.
     static let doubledWords = "writingPartnerDoubledWords"
     static let aAndAn = "writingPartnerAAndAn"
     static let agreementAndTense = "writingPartnerAgreementAndTense"
@@ -95,12 +167,14 @@ nonisolated enum WritingPartnerDefaults {
         defaults.string(forKey: style) ?? defaultStyle
     }
 
-    /// Whether, in Automatically, the partner marks what it isn't sure about instead of offering it
-    /// (#128). Unset, it's on.
-    static let markUncertain = "writingPartnerMarkUncertain"
+    /// Suggestions (#229, from #128's marks): whether fixes the partner isn't sure of (confidence
+    /// between `offerThreshold` and `applyThreshold`, or with more than one candidate) are shown as
+    /// faint dotted underlines to settle, rather than left alone. Independent of the level; unset,
+    /// it's on. The key is #128's, so an existing choice carries over.
+    static let suggestions = "writingPartnerMarkUncertain"
 
-    static func markUncertain(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: markUncertain) == nil ? true : defaults.bool(forKey: markUncertain)
+    static func suggestions(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: suggestions) == nil ? true : defaults.bool(forKey: suggestions)
     }
 
     /// Whether VoiceOver hears how many marks a finished paragraph left (#128). Off unless asked for.
@@ -123,59 +197,57 @@ nonisolated enum WritingPartnerDefaults {
         statsKey(for: WritingPartnerVoice(flavor: flavor))
     }
 
-    /// Whether the partner corrects spelling: the stored choice, else on.
-    static func spelling(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: spelling) == nil ? true : defaults.bool(forKey: spelling)
-    }
-
     static func curlyQuotes(_ defaults: UserDefaults = .standard) -> Bool {
         defaults.bool(forKey: curlyQuotes)
     }
 
-    static func doubledWords(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: doubledWords) == nil ? true : defaults.bool(forKey: doubledWords)
+    /// Whether spelling runs. Settings has no switch since #229, so this is on unless a test or
+    /// automation turns it off (what the system spell checker corrects depends on the Mac);
+    /// `adoptLearnedDefaults` clears a person's old choice once.
+    static func spelling(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: spelling) == nil ? true : defaults.bool(forKey: spelling)
     }
 
-    static func aAndAn(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: aAndAn) == nil ? true : defaults.bool(forKey: aAndAn)
+    /// The old per-rule keys, honoured like `spelling` for tests and cleared once on upgrade.
+    private static func hiddenSwitch(_ key: String, _ defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: key) == nil ? true : defaults.bool(forKey: key)
     }
 
-    static func agreementAndTense(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: agreementAndTense) == nil ? true : defaults.bool(forKey: agreementAndTense)
-    }
-
-    static func missingWords(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: missingWords) == nil ? true : defaults.bool(forKey: missingWords)
-    }
-
+    /// Whether `rule` runs at all (#229). Everything is on and learns from ⌘Z ("What It Has
+    /// Learned"), except curly quotes, a matter of taste with its own switch under Typography.
     static func isRuleEnabled(_ rule: PunctuationRule, _ defaults: UserDefaults = .standard) -> Bool {
         switch rule {
-        case .spelling: return spelling(defaults)
         case .curlyQuotes: return curlyQuotes(defaults)
-        case .doubledWords: return doubledWords(defaults)
-        case .aAndAn: return aAndAn(defaults)
-        case .agreementAndTense: return agreementAndTense(defaults)
-        case .missingWords: return missingWords(defaults)
+        case .spelling: return spelling(defaults)
+        case .doubledWords: return hiddenSwitch(doubledWords, defaults)
+        case .aAndAn: return hiddenSwitch(aAndAn, defaults)
+        case .agreementAndTense: return hiddenSwitch(agreementAndTense, defaults)
+        case .missingWords: return hiddenSwitch(missingWords, defaults)
         default:
-            if rule.isFormatting { return formattingRule(rule, defaults) }
-            return true
+            return rule.isFormatting ? hiddenSwitch(formattingKey(rule), defaults) : true
         }
     }
 
-    /// The Formatting voice's rule switches (#113): each on unless turned off.
+    /// Marker recorded once the switches removed in #229 have been cleared.
+    static let learnedDefaultsAdopted = "writingPartnerLearnedDefaultsAdopted"
+
+    /// Clears, once, the Spelling, Grammar, Formatting and "Also in Source view" switches that
+    /// Settings no longer shows (#229), so a rule someone once turned off isn't left off with no
+    /// way to see it. From then on every rule is on and learns from ⌘Z.
+    static func adoptLearnedDefaults(_ defaults: UserDefaults = .standard) {
+        guard !defaults.bool(forKey: learnedDefaultsAdopted) else { return }
+        let keys = [spelling, doubledWords, aAndAn, agreementAndTense, missingWords, formattingInSource]
+            + FormattingVoice.rules.map(formattingKey)
+        keys.forEach(defaults.removeObject(forKey:))
+        defaults.set(true, forKey: learnedDefaultsAdopted)
+    }
+
+    /// The Formatting voice's switches before #229 (#113): hidden overrides, see `isRuleEnabled`.
     static func formattingKey(_ rule: PunctuationRule) -> String { "writingPartnerFormat-\(rule.rawValue)" }
 
-    static func formattingRule(_ rule: PunctuationRule, _ defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: formattingKey(rule)) == nil ? true : defaults.bool(forKey: formattingKey(rule))
-    }
-
-    /// Whether the Formatting voice also tidies in Source view, where the Markdown is what's shown.
-    /// Off unless turned on (#113).
+    /// The "Also in Source view" switch before #229. The Formatting voice now tidies in Source view
+    /// too whenever the partner is on; the key is kept only so `adoptLearnedDefaults` can clear it.
     static let formattingInSource = "writingPartnerFormattingInSource"
-
-    static func formattingInSource(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: formattingInSource)
-    }
 
     /// Whether Quick Note offers a tidy-up on pause or save (#108), with Pixerate. Unset, it's on.
     static let quickNoteTidy = "writingPartnerQuickNoteTidy"
@@ -241,27 +313,35 @@ nonisolated enum WritingPartnerDefaults {
 
     /// Preserves an existing install's setting on upgrade (#112). Before #112, an untouched
     /// install had no `writingPartnerMode` key and defaulted to `.off`; a new install has no
-    /// prior Swash keys and defaults to `.automatic`.
+    /// prior Swash keys and defaults to Copyedit. A level stored before #229 (`automatic`,
+    /// `suggest`) is rewritten as Copyedit.
     @discardableResult
     static func migrateExistingInstall(_ defaults: UserDefaults = .standard) -> WritingPartnerMode {
+        let resolved = migrateMode(defaults)
+        adoptLearnedDefaults(defaults)
+        return resolved
+    }
+
+    private static func migrateMode(_ defaults: UserDefaults) -> WritingPartnerMode {
         if let raw = defaults.string(forKey: mode), let stored = WritingPartnerMode(rawValue: raw) {
+            if raw != stored.rawValue { defaults.set(stored.rawValue, forKey: mode) }
             defaults.set(true, forKey: installMigrated)
             return stored
         }
         if defaults.bool(forKey: installMigrated) {
-            return .automatic
+            return .copyedit
         }
         let isUpgrade = existingInstallKeys.contains { defaults.object(forKey: $0) != nil }
-        let resolved: WritingPartnerMode = isUpgrade ? .off : .automatic
+        let resolved: WritingPartnerMode = isUpgrade ? .off : .copyedit
         defaults.set(resolved.rawValue, forKey: mode)
         defaults.set(true, forKey: installMigrated)
         return resolved
     }
 
-    /// A new install has the partner on in Automatically (#112); an explicit choice or migrated
+    /// A new install has the partner on in Copyedit (#112, #229); an explicit choice or migrated
     /// upgrade setting takes precedence.
     static func mode(_ defaults: UserDefaults = .standard) -> WritingPartnerMode {
-        defaults.string(forKey: mode).flatMap(WritingPartnerMode.init(rawValue:)) ?? .automatic
+        defaults.string(forKey: mode).flatMap(WritingPartnerMode.init(rawValue:)) ?? .copyedit
     }
 
     /// Who answers when the person pauses (#101). Not a choice: Pixerate when signed in (signing in
@@ -320,6 +400,9 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
     case formatTables
     /// Formatting voice: a bare URL on its own becomes an autolink.
     case formatLinks
+    /// Formatting voice, Copyedit's auto-formatting (#229): a short title line on its own, followed
+    /// by the text it introduces, becomes a heading.
+    case formatTitleLines
 
     /// Curly quotes, dashes and ellipses: style, not correction. The strip-and-restore eval and the
     /// voice tests leave them out; in the app, curly quotes has a switch and the others are learned.
@@ -329,7 +412,7 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
     /// tests and the strip-and-restore eval leave them out.
     var isFormatting: Bool { FormattingVoice.rules.contains(self) }
 
-    /// The four grammar rules (#111): each has its own switch in Settings › Writing and learns from ⌘Z.
+    /// The four grammar rules (#111): always on (#229) and learn from ⌘Z.
     var isGrammar: Bool {
         self == .doubledWords || self == .aAndAn || self == .agreementAndTense || self == .missingWords
     }
@@ -363,6 +446,7 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
         case .formatTasks: return "Task boxes"
         case .formatTables: return "Table columns"
         case .formatLinks: return "Bare links"
+        case .formatTitleLines: return "Title lines as headings"
         }
     }
 
@@ -377,6 +461,7 @@ nonisolated enum PunctuationRule: String, CaseIterable, Codable, Sendable {
         case .formatTasks: return "- [] → - [ ]"
         case .formatTables: return "Columns lined up"
         case .formatLinks: return "https://… → <https://…>"
+        case .formatTitleLines: return "Next steps → ## Next steps"
         default: return nil
         }
     }
@@ -479,6 +564,7 @@ nonisolated struct WritingPartnerStats: Codable, Equatable, Sendable {
         case .formatTasks: return "format-tasks"
         case .formatTables: return "format-tables"
         case .formatLinks: return "format-links"
+        case .formatTitleLines: return "format-title-lines"
         }
     }
     func save(_ defaults: UserDefaults = .standard, voice: WritingPartnerVoice = .punctuate) {
@@ -646,6 +732,9 @@ nonisolated struct PartnerEdit: Equatable, Sendable {
     var alternatives: [String] = []
     /// How sure the partner is, when it said (the pause tier's corrections).
     var confidence: Double? = nil
+    /// Which of the session's edit layers it belongs to once made (#229): Ghostwrite for prose the
+    /// bandleader rewrote in place, Copyedit for everything else.
+    var layer: PartnerEditLayer = .copyedit
 }
 
 /// Where one of the voice's edits landed in the fixed text, and what it did.
