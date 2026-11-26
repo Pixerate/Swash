@@ -1,5 +1,11 @@
 # swash
 
+## 1.46.0
+
+### Minor Changes
+
+- bc87432: The "Swash" title on the iPhone and iPad document manager is now the website's hero wordmark: New York Bold with tight tracking in the site's ink colours, with Flair's swash-text ribbon looping through the letters. It follows light and dark mode and Dynamic Type, and shows still under Reduce Motion.
+
 ## 1.45.0
 
 ### Minor Changes
