@@ -139,6 +139,9 @@ final class WritingPartnerTests: XCTestCase {
     }
 
     func testOverlayDrawsGhostAndCaretDuringPreview() throws {
+        let savedStyle = UserDefaults.standard.object(forKey: WritingPartnerDefaults.style)
+        UserDefaults.standard.set("soft-sweep", forKey: WritingPartnerDefaults.style)
+        defer { UserDefaults.standard.set(savedStyle, forKey: WritingPartnerDefaults.style) }
         let harness = try editor("dont know")
         let host = try XCTUnwrap(harness.coordinator.partnerHost)
         let overlay = try XCTUnwrap(host.partnerCanvas as? IOSWritingPartnerOverlay)
@@ -154,6 +157,9 @@ final class WritingPartnerTests: XCTestCase {
         XCTAssertTrue(overlay.isShowingGhost)
         XCTAssertEqual(overlay.ghostText, "don't")
         XCTAssertTrue(overlay.isShowingCaret)
+        // Drawn as the chosen Partner style, as on the Mac
+        XCTAssertTrue(overlay.isDrawingTreatment)
+        XCTAssertEqual(overlay.treatmentID, "soft-sweep")
 
         target.clearGhost()
         store.clear(WritingPartnerSession.agent.id)
