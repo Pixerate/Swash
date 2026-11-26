@@ -137,7 +137,7 @@ final class EditorViewRetainer<TextView: MarkdownEditingTextView> {
             || dismantledWhileFocused.map { Date().timeIntervalSince($0) < 1 } ?? false
         dismantledWhileFocused = nil
         guard hadFocus else { return }
-        Self.restoreFocus(of: textView, until: Date().addingTimeInterval(0.5))
+        Self.restoreFocus(of: textView, until: Date().addingTimeInterval(1))
     }
 
     /// Keeps giving the keyboard back for a moment: the old host can take it away after the new
