@@ -353,7 +353,7 @@ final class SwashLayoutManager: NSLayoutManager {
         if let error = info.error {
             let message = "⚠︎ " + error
             (message as NSString).draw(with: NSRect(x: origin.x + lineRect.minX + 4, y: y, width: max(0, lineRect.width - 8), height: RichPreviewInfo.errorHeight),
-                                      options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: RichPreviewInfo.errorAttributes)
+                                       options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: RichPreviewInfo.errorAttributes)
             y += RichPreviewInfo.errorHeight
         }
         guard info.size.width > 0, info.size.height > 0 else { return }
@@ -365,27 +365,6 @@ final class SwashLayoutManager: NSLayoutManager {
         }
         let rect = NSRect(x: origin.x + lineRect.minX + (lineRect.width - size.width) / 2, y: y, width: size.width, height: size.height)
         info.image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: info.alpha, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high.rawValue])
-    }
-    
-    /// One checkbox cell, reconfigured for each task marker it draws.
-    private lazy var checkboxCell: NSButtonCell = {
-        let cell = NSButtonCell()
-        cell.setButtonType(.switch)
-        cell.title = ""
-        cell.controlSize = .small
-        cell.isEnabled = true
-        return cell
-    }()
-    
-    /// Draws a native checkbox ending just left of `contentX`, centred on the line.
-    private func drawCheckbox(checked: Bool, contentX: CGFloat, lineMidY: CGFloat) {
-        let cell = checkboxCell
-        cell.state = checked ? .on : .off
-        let size = cell.cellSize
-        let rect = NSRect(x: contentX - size.width - 6, y: lineMidY - size.height / 2, width: size.width, height: size.height)
-        if let view = firstTextView {
-            cell.draw(withFrame: rect, in: view)
-        }
     }
     
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
@@ -429,38 +408,45 @@ final class SwashLayoutManager: NSLayoutManager {
         }
         
         textStorage.enumerateAttribute(.listMarker, in: charRange, options: []) { value, range, _ in
-            if let markerInfo = value as? ListMarkerInfo {
-                let glyphRange = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-                let lineRect = lineFragmentRect(forGlyphAt: glyphRange.location, effectiveRange: nil)
-                let contentGlyph = min(glyphRange.location + glyphRange.length, max(0, numberOfGlyphs - 1))
-                let contentChar = characterIndexForGlyph(at: contentGlyph)
-                let textFont = (contentChar < textStorage.length ? textStorage.attribute(.font, at: contentChar, effectiveRange: nil) as? NSFont : nil) ?? NSFont.systemFont(ofSize: 14)
-                let glyphLoc = location(forGlyphAt: contentGlyph)
-                let baselineY = origin.y + lineRect.origin.y + glyphLoc.y
-                let contentX = lineRect.origin.x + glyphLoc.x
-                
-                if markerInfo.isTask {
-                    let lineMidY = baselineY - textFont.capHeight / 2
-                    drawCheckbox(checked: markerInfo.isChecked, contentX: origin.x + (contentX > 0 ? contentX : markerInfo.indent),
-                                 lineMidY: lineMidY)
-                    return
+            guard let markerInfo = value as? ListMarkerInfo,
+                  let cgContext = NSGraphicsContext.current?.cgContext else { return }
+            let glyphRange = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let lineRect = lineFragmentRect(forGlyphAt: glyphRange.location, effectiveRange: nil)
+            let contentGlyph = min(glyphRange.location + glyphRange.length, max(0, numberOfGlyphs - 1))
+            let contentChar = characterIndexForGlyph(at: contentGlyph)
+            let glyphLoc = location(forGlyphAt: contentGlyph)
+            let contentX = lineRect.origin.x + glyphLoc.x
+
+            var resolvedFont: NSFont?
+            if contentChar < textStorage.length,
+               let f = textStorage.attribute(.font, at: contentChar, effectiveRange: nil) as? NSFont,
+               f.pointSize >= 1 {
+                resolvedFont = f
+            } else {
+                let lineRange = (textStorage.string as NSString).lineRange(for: range)
+                var idx = min(NSMaxRange(range), lineRange.location + lineRange.length)
+                while idx < NSMaxRange(lineRange) {
+                    if let f = textStorage.attribute(.font, at: idx, effectiveRange: nil) as? NSFont, f.pointSize >= 1 {
+                        resolvedFont = f
+                        break
+                    }
+                    idx += 1
                 }
-                
-                let font = NSFont.systemFont(ofSize: max(11, textFont.pointSize - 1), weight: .regular)
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: font,
-                    .foregroundColor: markerInfo.color ?? NSColor.secondaryLabelColor
-                ]
-                
-                let markerSize = (markerInfo.text as NSString).size(withAttributes: attrs)
-                // Position the marker just left of where the item's text actually starts, so it also
-                // lines up inside quotes, alerts and other text blocks with their own padding
-                let x = origin.x + (contentX > 0 ? contentX : markerInfo.indent) - markerSize.width - 10
-                let y = baselineY - font.ascender
-                
-                let drawRect = CGRect(x: x, y: y, width: markerSize.width + 4, height: markerSize.height)
-                (markerInfo.text as NSString).draw(in: drawRect, withAttributes: attrs)
             }
+            let textFont = resolvedFont ?? NSFont.systemFont(ofSize: 14)
+            let baselineOffset = (resolvedFont != nil && glyphLoc.y > 1) ? glyphLoc.y : textFont.ascender
+            let baselineY = origin.y + lineRect.origin.y + baselineOffset
+            let highContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+            let dimmed = temporaryAttribute(.foregroundColor, atCharacterIndex: range.location, effectiveRange: nil) != nil
+            let alpha: CGFloat = dimmed ? 0.3 : 1
+            markerInfo.draw(
+                in: cgContext,
+                contentX: origin.x + (contentX > 0 ? contentX : markerInfo.indent),
+                baselineY: baselineY,
+                font: textFont,
+                alpha: alpha,
+                highContrast: highContrast
+            )
         }
     }
 }

@@ -40,6 +40,7 @@ struct StyledTextView: UIViewRepresentable {
         textView.backgroundColor = typography.theme.background ?? .systemBackground
         textView.textContainerInset = UIEdgeInsets(top: 20, left: 14, bottom: 20, right: 14)
         context.coordinator.lastTypography = typography
+        layoutManager.defaultBodyFont = context.coordinator.baseFont
         textView.alwaysBounceVertical = true
         textView.keyboardDismissMode = .interactive
         textView.smartQuotesType = .no
@@ -749,6 +750,7 @@ struct StyledTextView: UIViewRepresentable {
         /// Typography changed in Settings (or Dynamic Type): new page colour, column and a full restyle.
         func applyTypography(in textView: StyledUITextView) {
             textView.backgroundColor = parent.typography.theme.background ?? .systemBackground
+            (textView.layoutManager as? StyledLayoutManager)?.defaultBodyFont = baseFont
             updateColumnInsets(in: textView)
             textView.typingAttributes = baseAttributes
             scheduleFullRestyle()
@@ -1187,21 +1189,43 @@ final class StyledUITextView: MarkdownEditingTextView {
     }
 
     /// Storage range of the task checkbox marker under `point` (view coordinates), if any.
+    /// Keeps at least a 44×44 pt tap target centred on the first line's checkbox (`docs/BRAND.md`).
     func taskMarkerRange(at point: CGPoint) -> NSRange? {
         guard layoutManager.numberOfGlyphs > 0 else { return nil }
         let containerPoint = CGPoint(x: point.x - textContainerInset.left, y: point.y - textContainerInset.top)
         let glyphIndex = layoutManager.glyphIndex(for: containerPoint, in: textContainer)
         var lineGlyphs = NSRange()
         let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &lineGlyphs)
-        guard containerPoint.y >= lineRect.minY, containerPoint.y <= lineRect.maxY else { return nil }
+        guard containerPoint.y >= lineRect.minY - 12, containerPoint.y <= lineRect.maxY + 12 else { return nil }
         let lineCharacters = layoutManager.characterRange(forGlyphRange: lineGlyphs, actualGlyphRange: nil)
+        let styledLayout = layoutManager as? StyledLayoutManager
         var hit: NSRange?
         textStorage.enumerateAttribute(.listMarker, in: lineCharacters, options: []) { value, range, stop in
-            guard let info = value as? ListMarkerInfo, info.text == "☐" || info.text == "☑" else { return }
+            guard let info = value as? ListMarkerInfo, info.isTask else { return }
+            let boxRect: CGRect
+            if let styledLayout {
+                let metrics = styledLayout.listMarkerMetrics(for: range, marker: info, in: textStorage)
+                boxRect = info.markerRect(contentX: metrics.contentX, baselineY: metrics.baselineY, font: metrics.font)
+            } else {
+                let contentGlyph = layoutManager.glyphIndexForCharacter(at: min(NSMaxRange(range), max(0, textStorage.length - 1)))
+                let contentX = lineRect.minX + layoutManager.location(forGlyphAt: contentGlyph).x
+                let font = coordinator?.baseFont ?? UIFont.preferredFont(forTextStyle: .body)
+                boxRect = info.markerRect(contentX: contentX, baselineY: lineRect.minY + font.ascender, font: font)
+            }
+            let minTap: CGFloat = 44
+            let dx = max(0, (minTap - boxRect.width) / 2)
+            let dy = max(0, (minTap - boxRect.height) / 2)
+            var hitRect = boxRect.insetBy(dx: -dx, dy: -dy)
+            // Keep taps on the item's visible text from toggling the checkbox while keeping a >= 44 pt target
             let contentGlyph = layoutManager.glyphIndexForCharacter(at: min(NSMaxRange(range), max(0, textStorage.length - 1)))
             let contentX = lineRect.minX + layoutManager.location(forGlyphAt: contentGlyph).x
-            // The checkbox is drawn just left of the item's text; a finger needs a generous target
-            if containerPoint.x >= contentX - 40 && containerPoint.x <= contentX + 4 {
+            if contentX > 0 {
+                let maxRight = contentX + 4
+                if hitRect.maxX > maxRight {
+                    hitRect.origin.x -= (hitRect.maxX - maxRight)
+                }
+            }
+            if hitRect.contains(containerPoint) {
                 hit = range
                 stop.pointee = true
             }
@@ -1365,5 +1389,49 @@ private final class BlockMenuBar: GlassAccessoryBar {
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
+}
+#Preview("Styled Editor - Tasks & Nested Bullets") {
+    @Previewable @State var text = """
+        # Tasks & Lists
+
+        - [ ] Unticked task item
+        - [x] Ticked task item with brand accent gradient
+        - [ ] Wrapped task item that spans across multiple lines to verify first-line cap-height alignment
+
+        ## Nested Bullets
+
+        - Level 1 filled accent pixel square
+          - Level 2 pixel-square outline
+            - Level 3 filled circle
+              - Level 4 filled circle
+
+        1. First numbered item
+        2. Second numbered item
+        """
+    StyledTextView(
+        text: $text,
+        controller: IOSEditorController(),
+        flavor: .github,
+        baseURL: nil
+    )
+}
+
+#Preview("Styled Editor - Tasks & Nested Bullets (Dark)") {
+    @Previewable @State var text = """
+        # Tasks & Lists
+
+        - [ ] Unticked task item
+        - [x] Ticked task item with brand accent gradient
+        - Level 1 filled accent pixel square
+          - Level 2 pixel-square outline
+            - Level 3 filled circle
+        """
+    StyledTextView(
+        text: $text,
+        controller: IOSEditorController(),
+        flavor: .github,
+        baseURL: nil
+    )
+    .preferredColorScheme(.dark)
 }
 #endif

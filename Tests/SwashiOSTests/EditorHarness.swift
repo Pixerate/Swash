@@ -104,6 +104,20 @@ final class EditorHarness {
         textView.selectedRange = coordinator.storageRange(forRaw: range, in: textView)
     }
 
+    /// Updates the hosted editor's typography.
+    func setTypography(_ typography: EditorTypography) {
+        let box = self.box
+        let binding = Binding(get: { box.text }, set: { box.text = $0 })
+        host.rootView = StyledTextView(
+            text: binding,
+            controller: controller,
+            flavor: flavor,
+            baseURL: nil,
+            typography: typography
+        )
+        pump(0.1)
+    }
+
     /// Updates the hosted editor's writing options and formatting-bar visibility.
     func setWritingOptions(_ options: WritingOptions, formattingEnabled: Bool = true, baseURL: URL? = nil) {
         let box = self.box

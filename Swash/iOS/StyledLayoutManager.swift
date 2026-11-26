@@ -14,6 +14,8 @@ import UIKit
 final class StyledLayoutManager: NSLayoutManager {
     /// The storage character range kept at full strength in Focus Mode (nil when Focus Mode is off).
     var focusedCharacterRange: NSRange?
+    /// Fallback body font used when an empty list item has only hidden syntax characters on its line.
+    var defaultBodyFont: UIFont = UIFont.systemFont(ofSize: EditorTypography.defaultTextSize * MarkdownEditorStyler.fontScale)
     static let unfocusedAlpha: CGFloat = 0.3
 
     /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
@@ -22,6 +24,40 @@ final class StyledLayoutManager: NSLayoutManager {
     func focusAlpha(for characterIndex: Int) -> CGFloat {
         guard let focused = focusedCharacterRange else { return 1 }
         return NSLocationInRange(characterIndex, focused) ? 1 : Self.unfocusedAlpha
+    }
+
+    /// Resolves the first line's visible font, baseline Y (in text-container coordinates) and
+    /// content X for the list marker at `range`.
+    func listMarkerMetrics(for range: NSRange, marker: ListMarkerInfo, in storage: NSTextStorage) -> (font: UIFont, baselineY: CGFloat, contentX: CGFloat) {
+        let markerGlyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        let lineRect = lineFragmentRect(forGlyphAt: markerGlyphs.location, effectiveRange: nil)
+        let contentGlyph = min(NSMaxRange(markerGlyphs), max(0, numberOfGlyphs - 1))
+        let contentLoc = location(forGlyphAt: contentGlyph)
+        let contentX = lineRect.origin.x + contentLoc.x
+        let contentChar = characterIndexForGlyph(at: contentGlyph)
+
+        var resolvedFont: UIFont?
+        if contentChar < storage.length,
+           let f = storage.attribute(.font, at: contentChar, effectiveRange: nil) as? UIFont,
+           f.pointSize >= 1 {
+            resolvedFont = f
+        } else {
+            let lineRange = (storage.string as NSString).lineRange(for: range)
+            var idx = min(NSMaxRange(range), lineRange.location + lineRange.length)
+            while idx < NSMaxRange(lineRange) {
+                if let f = storage.attribute(.font, at: idx, effectiveRange: nil) as? UIFont, f.pointSize >= 1 {
+                    resolvedFont = f
+                    break
+                }
+                idx += 1
+            }
+        }
+        let font = resolvedFont ?? defaultBodyFont
+        // An empty list item has only hidden 0.01 pt syntax glyphs on its line, so `contentLoc.y`
+        // is near 0 instead of the visible text's baseline offset; use `font.ascender` then.
+        let baselineOffset = (resolvedFont != nil && contentLoc.y > 1) ? contentLoc.y : font.ascender
+        let baselineY = lineRect.origin.y + baselineOffset
+        return (font, baselineY, contentX)
     }
 
     override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
@@ -84,27 +120,18 @@ final class StyledLayoutManager: NSLayoutManager {
             drawRichPreview(info, atCharacter: range.location, origin: origin)
         }
 
-        textStorage.enumerateAttribute(.listMarker, in: charRange, options: []) { value, range, _ in
-            guard let marker = value as? ListMarkerInfo else { return }
-            let markerGlyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-            let used = lineFragmentUsedRect(forGlyphAt: markerGlyphs.location, effectiveRange: nil)
-            let lineRect = lineFragmentRect(forGlyphAt: markerGlyphs.location, effectiveRange: nil)
-            let baseColor = marker.color ?? UIColor.secondaryLabel
-            let alpha = self.focusAlpha(for: range.location)
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 13 * MarkdownEditorStyler.fontScale, weight: .regular),
-                .foregroundColor: alpha < 1 ? baseColor.withAlphaComponent(alpha) : baseColor,
-            ]
-            let size = (marker.text as NSString).size(withAttributes: attributes)
-            // Just left of where the item's text starts, so it lines up inside boxes too
-            let contentGlyph = min(NSMaxRange(markerGlyphs), max(0, numberOfGlyphs - 1))
-            let contentX = lineRect.origin.x + location(forGlyphAt: contentGlyph).x
-            let x = origin.x + (contentX > 0 ? contentX : marker.indent) - size.width - 10
-            // An empty item has only the hidden 0.01 pt marker on its line, so `used.height` is ~0
-            // and `used.midY` sits at the top of the line instead of its vertical centre.
-            let verticalMidY = used.height >= size.height * 0.5 ? used.midY : lineRect.midY
-            let y = origin.y + verticalMidY - size.height / 2
-            (marker.text as NSString).draw(in: CGRect(x: x, y: y, width: size.width + 4, height: size.height), withAttributes: attributes)
+        if let cgContext = UIGraphicsGetCurrentContext() {
+            let highContrast = UIAccessibility.isDarkerSystemColorsEnabled
+                || UITraitCollection.current.accessibilityContrast == .high
+            textStorage.enumerateAttribute(.listMarker, in: charRange, options: []) { value, range, _ in
+                guard let marker = value as? ListMarkerInfo else { return }
+                let metrics = self.listMarkerMetrics(for: range, marker: marker, in: textStorage)
+                let alpha = self.focusAlpha(for: range.location)
+                let contentX = (metrics.contentX > 0 ? metrics.contentX : marker.indent) + origin.x
+                let baselineY = origin.y + metrics.baselineY
+                marker.draw(in: cgContext, contentX: contentX, baselineY: baselineY,
+                            font: metrics.font, alpha: alpha, highContrast: highContrast)
+            }
         }
     }
 
