@@ -1,6 +1,7 @@
 ---
 import { Image } from 'astro:assets';
 import Base from '../layouts/Base.astro';
+import HeroSpeckles from '../components/HeroSpeckles.svelte';
 import HeroVideo from '../components/HeroVideo.svelte';
 import PartnerDemo from '../components/PartnerDemo.svelte';
 import FlairStage from '../components/FlairStage.svelte';
@@ -58,7 +59,7 @@ const showcase = [
 
 <Base {title} {description}>
   <header class="absolute inset-x-0 top-0 z-20">
-    <nav class="mx-auto flex max-w-6xl items-center gap-6 px-5 py-4 sm:px-8" aria-label="Main">
+    <nav data-speckles-clear="nav" class="mx-auto flex max-w-6xl items-center gap-6 px-5 py-4 sm:px-8" aria-label="Main">
       <a href="/" class="flex items-center gap-2.5 font-serif text-xl font-bold italic text-ink no-underline">
         <Image src={icon} alt="" width={32} height={32} loading="eager" />
         Swash
@@ -77,27 +78,30 @@ const showcase = [
     <!-- Hero -->
     <section class="relative overflow-hidden px-5 pb-16 pt-32 sm:px-8 sm:pt-40">
       <HeroVideo client:load />
+      <HeroSpeckles client:load />
       <div class="relative z-10 mx-auto max-w-4xl text-center">
-        <p class="eyebrow">Markdown editor for Mac <span class="text-muted">· iPhone and iPad coming soon</span></p>
+        <p data-speckles-clear="copy" class="eyebrow mx-auto w-fit">Markdown editor for Mac <span class="text-muted">· iPhone and iPad coming soon</span></p>
         <h1 class="mt-8 font-serif text-[clamp(3.25rem,10vw,7rem)] font-bold leading-[0.95] tracking-tight">
           <SwashHeadline client:load text="Just write." />
         </h1>
-        <p class="mx-auto mt-5 max-w-2xl font-serif text-[clamp(1.4rem,3.4vw,2.1rem)] italic leading-snug text-ink">
-          Swash dots the i’s and crosses the t’s.
-        </p>
-        <p class="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-muted">
-          An agent-native Markdown editor with a writing partner that follows a few words behind you, quietly fixing
-          spelling, capitals, punctuation and formatting. You stay in the sentence you’re writing. It takes care of the ones you’ve
-          finished.
-        </p>
-        <div class="mt-9 flex flex-wrap items-center justify-center gap-3">
-          <a href={DOWNLOAD} class="btn btn-primary">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v13m0 0l-5-5m5 5l5-5M4 21h16"></path></svg>
-            Download for Mac
-          </a>
-          <a href={REPO} class="btn btn-ghost">View on GitHub</a>
+        <div data-speckles-clear="copy" class="mx-auto max-w-2xl">
+          <p class="mx-auto mt-5 max-w-2xl font-serif text-[clamp(1.4rem,3.4vw,2.1rem)] italic leading-snug text-ink">
+            Swash dots the i’s and crosses the t’s.
+          </p>
+          <p class="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-muted">
+            An agent-native Markdown editor with a writing partner that follows a few words behind you, quietly fixing
+            spelling, capitals, punctuation and formatting. You stay in the sentence you’re writing. It takes care of the ones you’ve
+            finished.
+          </p>
+          <div class="mt-9 flex flex-wrap items-center justify-center gap-3">
+            <a href={DOWNLOAD} class="btn btn-primary">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v13m0 0l-5-5m5 5l5-5M4 21h16"></path></svg>
+              Download for Mac
+            </a>
+            <a href={REPO} class="btn btn-ghost">View on GitHub</a>
+          </div>
+          <p class="mt-4 text-sm text-muted">Free and open source · macOS {MIN_MACOS} or later</p>
         </div>
-        <p class="mt-4 text-sm text-muted">Free and open source · macOS {MIN_MACOS} or later</p>
       </div>
 
       <div class="relative z-10 mt-14 px-0 sm:px-4">

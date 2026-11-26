@@ -37,6 +37,9 @@ class FlairCanvasView: MTKView {
     }
 
     let renderer: FlairRenderer?
+    /// Makes the effect again for every frame, for effects whose settings change over time (the
+    /// fold transition's progress) rather than through the shader's own clock.
+    var remakesEffectEveryFrame = false
     private var effect: AnyFlairEffect?
     private var link: CADisplayLink?
     private let start = CACurrentMediaTime()
@@ -114,7 +117,7 @@ class FlairCanvasView: MTKView {
 
     fileprivate func drawFrame() {
         guard let renderer, window != nil, bounds.width > 0, bounds.height > 0 else { return }
-        if effect == nil { effect = makeEffect(renderer: renderer) }
+        if effect == nil || remakesEffectEveryFrame { effect = makeEffect(renderer: renderer) }
         // A fresh drawable from the layer each frame: MTKView's `currentDrawable` is only released
         // by its own `draw()`, which never runs here, so it would keep the first one, at the size
         // of the view's first layout, and the frames would be squashed into the final size
