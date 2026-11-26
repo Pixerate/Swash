@@ -309,7 +309,7 @@ struct IOSContentView: View {
         StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL,
                        formattingEnabled: !distractionFree, topInset: topInset,
                        writingOptions: typography.writingOptions(distractionFree: distractionFree),
-                       typography: typography.scaled)
+                       typography: typography.scaled, reuseKey: folderAccessManager.accessGrantedTrigger)
             .id(folderAccessManager.accessGrantedTrigger)
     }
 

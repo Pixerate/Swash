@@ -80,6 +80,69 @@ final class IOSEditorController {
         textView?.becomeFirstResponder()
     }
 
+    /// Editor coordinators (with their text views), one per editor kind, kept for as long as the
+    /// document is open. SwiftUI rebuilds an editor whenever its container changes (the outline
+    /// split view coming and going with the size class when an iPhone Duo opens or closes); the
+    /// rebuilt editor takes the same text view back, with its caret, scroll offset, focus and
+    /// undo stack (#65). The controller owns the coordinators, they own the text views, and the
+    /// text views refer back weakly, so everything goes with the document.
+    private var retainedEditors: [ObjectIdentifier: AnyObject] = [:]
+
+    func retainedEditor<Coordinator: AnyObject>(_ type: Coordinator.Type) -> Coordinator? {
+        retainedEditors[ObjectIdentifier(type)] as? Coordinator
+    }
+
+    func retainEditor<Coordinator: AnyObject>(_ coordinator: Coordinator) {
+        retainedEditors[ObjectIdentifier(Coordinator.self)] = coordinator
+    }
+
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+    nonisolated deinit {}
+}
+
+/// Holds an editor's text view across SwiftUI rebuilding the editor (see
+/// `IOSEditorController.retainedEditor`).
+@MainActor
+final class EditorViewRetainer<TextView: MarkdownEditingTextView> {
+    private var textView: TextView?
+    private var key: AnyHashable?
+    /// When the text view was taken down while it had the keyboard.
+    private var dismantledWhileFocused: Date?
+
+    func keep(_ textView: TextView, key: AnyHashable?) {
+        self.textView = textView
+        self.key = key
+        dismantledWhileFocused = nil
+    }
+
+    /// The kept text view, once it has one.
+    var keptTextView: TextView? { textView }
+
+    /// Whether the kept text view still shows `text` under the same `key`, so its editor can be
+    /// taken back whole. One that has fallen behind the document (edited in the other editor
+    /// meanwhile) isn't: replacing its text would leave undo actions pointing at text that's gone.
+    func canReuse(showing text: String, key: AnyHashable?, current: (TextView) -> String) -> Bool {
+        guard let textView else { return false }
+        return self.key == key && current(textView) == text
+    }
+
+    func dismantled(_ textView: TextView) {
+        if textView.isFirstResponder { dismantledWhileFocused = Date() }
+    }
+
+    /// Gives the keyboard back to a reused text view that had it when its old host went away (or
+    /// still has it, if the new host was made first).
+    func reattached(_ textView: TextView) {
+        let hadFocus = textView.isFirstResponder
+            || dismantledWhileFocused.map { Date().timeIntervalSince($0) < 1 } ?? false
+        dismantledWhileFocused = nil
+        guard hadFocus else { return }
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView, textView.window != nil, !textView.isFirstResponder else { return }
+            textView.becomeFirstResponder()
+        }
+    }
+
     /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
     nonisolated deinit {}
 }

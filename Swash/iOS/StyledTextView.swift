@@ -25,8 +25,18 @@ struct StyledTextView: UIViewRepresentable {
     var writingOptions = WritingOptions()
     /// Font, size (already adjusted for Dynamic Type), line width and theme (GOTCHAS #43).
     var typography = EditorTypography()
+    /// A change makes the next rebuild start a new text view instead of taking the kept one back
+    /// (folder access granted: images need loading afresh).
+    var reuseKey: AnyHashable? = nil
 
     func makeUIView(context: Context) -> StyledUITextView {
+        let retainer = context.coordinator.retainer
+        if let textView = retainer.keptTextView {
+            // The same editor in a new container (#65)
+            updateUIView(textView, context: context)
+            retainer.reattached(textView)
+            return textView
+        }
         let storage = NSTextStorage()
         let layoutManager = StyledLayoutManager()
         storage.addLayoutManager(layoutManager)
@@ -35,6 +45,7 @@ struct StyledTextView: UIViewRepresentable {
         layoutManager.addTextContainer(container)
 
         let textView = StyledUITextView(frame: .zero, textContainer: container)
+        retainer.keep(textView, key: reuseKey)
         textView.coordinator = context.coordinator
         textView.delegate = context.coordinator
         textView.backgroundColor = typography.theme.background ?? .systemBackground
@@ -100,13 +111,29 @@ struct StyledTextView: UIViewRepresentable {
         return CGSize(width: width, height: height)
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    /// The document's Edit Text editor comes back to the same coordinator and text view when
+    /// SwiftUI rebuilds it (see `IOSEditorController.retainedEditor`).
+    func makeCoordinator() -> Coordinator {
+        if let coordinator = controller.retainedEditor(Coordinator.self),
+           coordinator.retainer.canReuse(showing: text, key: reuseKey, current: { swashRawMarkdown(from: $0.textStorage) }) {
+            coordinator.parent = self
+            return coordinator
+        }
+        let coordinator = Coordinator(self)
+        controller.retainEditor(coordinator)
+        return coordinator
+    }
+
+    static func dismantleUIView(_ textView: StyledUITextView, coordinator: Coordinator) {
+        coordinator.retainer.dismantled(textView)
+    }
 
     // MARK: - Coordinator
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: StyledTextView
         weak var textView: StyledUITextView?
+        let retainer = EditorViewRetainer<StyledUITextView>()
         var isUpdatingFromSwiftUI = false
         private var isHighlighting = false
 
