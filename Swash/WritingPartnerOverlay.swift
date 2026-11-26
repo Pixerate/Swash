@@ -36,6 +36,7 @@ final class WritingPartnerOverlay: NSView {
 
     private(set) var suggestionPrompt: SuggestionPromptView?
     private(set) var introductionView: PartnerIntroductionView?
+    private(set) var introductionSheetWindow: NSWindow?
     private(set) var undoReminderView: PartnerUndoReminderView?
 
     var hasActiveSuggestion: Bool {
@@ -47,7 +48,7 @@ final class WritingPartnerOverlay: NSView {
     }
 
     var hasActiveIntroduction: Bool {
-        introductionView != nil && introductionView?.isHidden == false
+        introductionSheetWindow != nil || (introductionView != nil && introductionView?.isHidden == false)
     }
 
     var hasActiveUndoReminder: Bool {
@@ -55,22 +56,20 @@ final class WritingPartnerOverlay: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if let intro = introductionView, !intro.isHidden {
-            let pointInIntro = convert(point, to: intro)
-            if intro.bounds.contains(pointInIntro) {
-                return intro.hitTest(pointInIntro)
+        let localPoint = convert(point, from: superview)
+        if let intro = introductionView, !intro.isHidden, intro.window == nil || intro.window === window {
+            if intro.frame.contains(localPoint) {
+                return intro.hitTest(localPoint)
             }
         }
         if let reminder = undoReminderView, !reminder.isHidden {
-            let pointInReminder = convert(point, to: reminder)
-            if reminder.bounds.contains(pointInReminder) {
-                return reminder.hitTest(pointInReminder)
+            if reminder.frame.contains(localPoint) {
+                return reminder.hitTest(localPoint)
             }
         }
         if let prompt = suggestionPrompt, !prompt.isHidden {
-            let pointInPrompt = convert(point, to: prompt)
-            if prompt.bounds.contains(pointInPrompt) {
-                return prompt.hitTest(pointInPrompt)
+            if prompt.frame.contains(localPoint) {
+                return prompt.hitTest(localPoint)
             }
         }
         return nil
@@ -150,7 +149,8 @@ final class WritingPartnerOverlay: NSView {
 
     // MARK: First-Run Introduction & First-Undo Reminder (#112)
 
-    /// Shows the in-place first-run introduction note near `rect`.
+    /// Shows the first-run introduction prompt. When a document window is available, presents it
+    /// as a native macOS sheet attached to the window; otherwise falls back to an in-place overlay.
     func showIntroduction(
         at rect: NSRect,
         onChooseMode: @escaping (WritingPartnerMode) -> Void,
@@ -160,28 +160,71 @@ final class WritingPartnerOverlay: NSView {
         if let existing = introductionView {
             intro = existing
         } else {
-            intro = PartnerIntroductionView(frame: .zero)
-            addSubview(intro)
+            intro = PartnerIntroductionView(frame: NSRect(origin: .zero, size: PartnerIntroductionView.preferredSize))
             introductionView = intro
         }
 
-        intro.configure(onChooseMode: onChooseMode, onDismiss: onDismiss)
-        let size = PartnerIntroductionView.preferredSize
-        let margin: CGFloat = 12
-        let originX = max(margin, min(rect.minX, max(margin, bounds.width - size.width - margin)))
-        var originY = rect.maxY + 8
-        if originY + size.height > bounds.height - margin {
-            originY = max(margin, rect.minY - size.height - 8)
+        let targetWindow = window ?? enclosingScrollView?.window
+        if let targetWindow {
+            intro.isPresentedAsSheet = true
+            intro.configure(
+                onChooseMode: { [weak self] mode in
+                    self?.hideIntroduction()
+                    onChooseMode(mode)
+                },
+                onDismiss: { [weak self] in
+                    self?.hideIntroduction()
+                    onDismiss()
+                }
+            )
+
+            if introductionSheetWindow == nil {
+                let sheet = NSWindow(
+                    contentRect: NSRect(origin: .zero, size: PartnerIntroductionView.preferredSize),
+                    styleMask: [.titled],
+                    backing: .buffered,
+                    defer: false
+                )
+                sheet.contentView = intro
+                sheet.titleVisibility = .hidden
+                sheet.titlebarAppearsTransparent = true
+                sheet.isMovable = false
+                sheet.defaultButtonCell = intro.automaticallyButton.cell as? NSButtonCell
+                introductionSheetWindow = sheet
+                targetWindow.beginSheet(sheet, completionHandler: nil)
+                intro.automaticallyButton.keyEquivalent = "\r"
+            }
+        } else {
+            intro.isPresentedAsSheet = false
+            if intro.superview !== self {
+                intro.removeFromSuperview()
+                addSubview(intro)
+            }
+            intro.configure(onChooseMode: onChooseMode, onDismiss: onDismiss)
+            let size = PartnerIntroductionView.preferredSize
+            let margin: CGFloat = 12
+            let originX = max(margin, min(rect.minX, max(margin, bounds.width - size.width - margin)))
+            var originY = rect.maxY + 8
+            if originY + size.height > bounds.height - margin {
+                originY = max(margin, rect.minY - size.height - 8)
+            }
+            intro.frame = NSRect(origin: NSPoint(x: originX, y: originY), size: size)
+            intro.layoutSubtreeIfNeeded()
+            intro.isHidden = false
+            intro.alphaValue = 1.0
         }
-        intro.frame = NSRect(origin: NSPoint(x: originX, y: originY), size: size)
-        intro.layoutSubtreeIfNeeded()
-        intro.isHidden = false
-        intro.alphaValue = 1.0
         intro.startSamplePreview()
     }
 
-    /// Hides and removes the first-run introduction note.
+    /// Hides and dismisses the first-run introduction note or sheet.
     func hideIntroduction() {
+        if let sheet = introductionSheetWindow {
+            if let parent = sheet.sheetParent ?? window ?? enclosingScrollView?.window {
+                parent.endSheet(sheet)
+            }
+            sheet.orderOut(nil)
+            introductionSheetWindow = nil
+        }
         guard let intro = introductionView else { return }
         intro.isHidden = true
         intro.removeFromSuperview()
@@ -1175,9 +1218,36 @@ final class PartnerIntroductionView: NSView {
         onDismiss?()
     }
 
+    var isPresentedAsSheet: Bool = false {
+        didSet {
+            updateSheetStyling()
+        }
+    }
+
+    private func updateSheetStyling() {
+        if isPresentedAsSheet {
+            layer?.borderWidth = 0
+            layer?.borderColor = nil
+            shadow = nil
+            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            automaticallyButton.keyEquivalent = "\r"
+            automaticallyButton.toolTip = "Turn on the writing partner in Automatically mode (Return)"
+        } else {
+            layer?.borderWidth = 1
+            layer?.borderColor = WritingPartnerOverlay.tint.withAlphaComponent(0.45).cgColor
+            layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.97).cgColor
+            shadow = NSShadow()
+            shadow?.shadowColor = NSColor.black.withAlphaComponent(0.18)
+            shadow?.shadowOffset = NSSize(width: 0, height: -2)
+            shadow?.shadowBlurRadius = 10
+            automaticallyButton.keyEquivalent = ""
+            automaticallyButton.toolTip = "Turn on the writing partner in Automatically mode (⌥Return)"
+        }
+    }
+
     override func layout() {
         super.layout()
-        let padX: CGFloat = 12
+        let padX: CGFloat = isPresentedAsSheet ? 16 : 12
         let padY: CGFloat = 10
         let iconSize: CGFloat = 16
 
@@ -1196,9 +1266,16 @@ final class PartnerIntroductionView: NSView {
         let suggestW: CGFloat = 76
         let autoW: CGFloat = 108
 
-        notNowButton.frame = NSRect(x: bounds.width - padX - notNowW, y: buttonY, width: notNowW, height: buttonH)
-        suggestButton.frame = NSRect(x: notNowButton.frame.minX - 6 - suggestW, y: buttonY, width: suggestW, height: buttonH)
-        automaticallyButton.frame = NSRect(x: suggestButton.frame.minX - 6 - autoW, y: buttonY, width: autoW, height: buttonH)
+        if isPresentedAsSheet {
+            // macOS HIG sheet button arrangement: Dismissal / Cancel on left, Affirmative on right
+            notNowButton.frame = NSRect(x: padX, y: buttonY, width: notNowW, height: buttonH)
+            automaticallyButton.frame = NSRect(x: bounds.width - padX - autoW, y: buttonY, width: autoW, height: buttonH)
+            suggestButton.frame = NSRect(x: automaticallyButton.frame.minX - 8 - suggestW, y: buttonY, width: suggestW, height: buttonH)
+        } else {
+            notNowButton.frame = NSRect(x: bounds.width - padX - notNowW, y: buttonY, width: notNowW, height: buttonH)
+            suggestButton.frame = NSRect(x: notNowButton.frame.minX - 6 - suggestW, y: buttonY, width: suggestW, height: buttonH)
+            automaticallyButton.frame = NSRect(x: suggestButton.frame.minX - 6 - autoW, y: buttonY, width: autoW, height: buttonH)
+        }
     }
 }
 
@@ -1208,8 +1285,8 @@ final class PartnerIntroductionView: NSView {
 /// explaining where to pause the partner for this document or turn it off in Settings › Writing.
 @MainActor
 final class PartnerUndoReminderView: NSView {
-    static let messageText = "Pause for this document in Edit › Pause Writing Partner (⌥⌘P), or turn it off in Settings › Writing."
-    static let preferredSize = NSSize(width: 460, height: 42)
+    nonisolated static let messageText = "Pause for this document in Edit › Pause Writing Partner (⌥⌘P), or turn it off in Settings › Writing."
+    nonisolated static let preferredSize = NSSize(width: 460, height: 42)
 
     let messageLabel = NSTextField(wrappingLabelWithString: PartnerUndoReminderView.messageText)
     let pauseButton = NSButton(title: "Pause Here", target: nil, action: nil)
