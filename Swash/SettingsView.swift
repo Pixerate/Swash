@@ -351,7 +351,7 @@ private struct WritingPartnerSettingsView: View {
             } header: {
                 Text("Writing Partner")
             } footer: {
-                Text("\(mode.summary) Every fix is its own undo step. Edit › Writing Partner Edits shows what it changed this session, to revert one edit or a whole layer.")
+                Text(mode.isOn ? "\(mode.summary) Every fix is its own undo step. Edit › Writing Partner Edits shows what it changed this session, to revert one edit or a whole layer." : mode.summary)
                     .settingsFooterStyle()
                 Link("What the writing partner sends", destination: URL(string: "https://github.com/Pixerate/Swash/blob/main/docs/writing-partner-privacy.md")!)
                     .font(.footnote)

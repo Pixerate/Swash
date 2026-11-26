@@ -57,7 +57,7 @@ struct IOSWritingPartnerSettings: View {
                     .disabled(mode == .off || !suggestions)
                 LabeledContent("Voice", value: WritingPartnerVoice.summary(for: flavor))
             } footer: {
-                Text("\(mode.summary) Each fix is its own undo step. Writing Partner Edits in the editor's menu shows what it changed, to revert one edit or a whole layer.")
+                Text(mode.isOn ? "\(mode.summary) Each fix is its own undo step. Writing Partner Edits in the editor's menu shows what it changed, to revert one edit or a whole layer." : mode.summary)
             }
 
             IOSWritingPartnerStyleSection(level: mode)

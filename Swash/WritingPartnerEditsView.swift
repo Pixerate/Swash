@@ -58,6 +58,7 @@ struct WritingPartnerEditsView: View {
             }
             .navigationTitle("Writing Partner Edits")
             #if os(iOS)
+            .sheetRootNavigation()
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
