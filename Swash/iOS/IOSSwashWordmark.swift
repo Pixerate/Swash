@@ -114,21 +114,21 @@ struct SwashWordmark: View {
     }
 }
 
-/// The wordmark where the document manager's title was. `DocumentGroupLaunchScene` lays a blank
-/// title out above Create Document; its `titleViewFrame` is the whole area above the browser, in
-/// window coordinates, so this ignores the safe area. The system title's baseline sits a little
-/// above the area's middle, in line with the button's leading edge.
+/// The wordmark where the document manager's title was, centred as the site's hero is.
+/// `DocumentGroupLaunchScene` lays a blank title out above Create Document; its `titleViewFrame`
+/// is the whole area above the browser, in window coordinates, so this ignores the safe area. The
+/// system title's baseline sits a little above the area's middle.
 struct SwashLaunchWordmark: View {
     let titleViewFrame: CGRect
 
     @ScaledMetric(relativeTo: .largeTitle) private var baselineLift: CGFloat = 10
     @ScaledMetric(relativeTo: .largeTitle) private var size = SwashWordmarkStyle.baseSize
-    private let leadingMargin: CGFloat = 20
 
     var body: some View {
         let ascender = SwashWordmarkStyle.font(size: size).ascender
         SwashWordmark()
-            .offset(x: titleViewFrame.minX + leadingMargin, y: titleViewFrame.midY - baselineLift - ascender)
+            .frame(width: titleViewFrame.width)
+            .offset(x: titleViewFrame.minX, y: titleViewFrame.midY - baselineLift - ascender)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .ignoresSafeArea()
             .allowsHitTesting(false)
