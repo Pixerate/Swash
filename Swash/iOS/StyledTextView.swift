@@ -1576,7 +1576,7 @@ final class InsertAffordanceButton: UIButton {
         alpha = 0
         isHidden = true
 
-        addAction(UIAction { [weak self] _ in self?.action() }, for: .touchUpInside)
+        addAction(UIAction { [weak self] _ in self?.action() }, for: [.touchUpInside, .primaryActionTriggered])
     }
 
     required init?(coder: NSCoder) {
