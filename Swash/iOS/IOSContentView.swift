@@ -293,7 +293,7 @@ struct IOSContentView: View {
         let source = mode != .preview ? sourceEditor(topInset: topInset) : nil
         let styled = mode == .preview ? styledEditor(topInset: topInset) : nil
         let previewPane = mode == .split ? preview(topInset: topInset) : nil
-        // An HStack rather than a split `ArrangementView` (iOS 27.1); see GOTCHAS #114
+        // An HStack rather than a split `ArrangementView` (iOS 27.1); see GOTCHAS #116
         HStack(spacing: 0) {
             // In Split on an iPhone Duo's inner display the divider sits on the fold, so neither
             // pane's text runs across the hinge; elsewhere the panes share the width equally

@@ -151,6 +151,9 @@ struct StyledTextView: UIViewRepresentable {
         private var pendingRawSelection: NSRange?
         private var editGeneration = 0
         private var highlightedGeneration = -1
+        /// An edit is waiting for its styling pass, which runs on a later main-queue turn (read by the
+        /// iOS editor tests, which wait for it rather than for a fixed time).
+        var isRestylePending: Bool { highlightedGeneration < editGeneration }
         /// Caret position before the latest selection change, to tell arrow steps from jumps.
         private var lastSelection = NSRange(location: 0, length: 0)
 

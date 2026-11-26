@@ -102,7 +102,7 @@
 </script>
 
 <span bind:this={host} class="swash-headline">
-  <span bind:this={plain} class="plain" class:hidden={shown}>{text}</span>
+  <span bind:this={plain} class="plain" data-speckles-clear="copy" data-speckles-ribbon class:hidden={shown}>{text}</span>
   <span bind:this={live} class="live" class:shown aria-hidden="true"></span>
 </span>
 
