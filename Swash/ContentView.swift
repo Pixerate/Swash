@@ -85,6 +85,14 @@ struct ContentView: View {
 
     @ObservedObject private var folderAccessManager = FolderAccessManager.shared
     @State private var editor = SwashEditorController()
+    /// The document's agent tools, shared by MCP agents (`AgentToolsHookup`) and Pixie.
+    @State private var agentSession = AgentDocumentSession()
+    /// Whether the Pixie inspector is open (View › Show Pixie, ⌥⌘I).
+    @State private var showPixie = false
+
+    /// Pixie's chat for a document window, set by the app at launch. Nil where Pixie isn't built in
+    /// (the Quick Look extension compiles this view too), which hides her toggle and menu item.
+    nonisolated(unsafe) static var pixieInspector: (@MainActor (AgentDocumentSession, String, @escaping () -> Void) -> AnyView)?
     @State private var focusedActions = FocusedActions()
     @State private var dismissedFolderBanner: URL? = nil
     @AppStorage("showOutline") private var showOutline = false
@@ -168,7 +176,15 @@ struct ContentView: View {
         withLifecycle
         .modifier(AgentToolsHookup(text: $document.text, editor: editor, name: documentTitle,
                                    readOnlyReason: isEditable ? nil : "the file is locked or can't be saved",
-                                   flavor: document.flavor, documentID: documentID))
+                                   flavor: document.flavor, documentID: documentID, session: agentSession))
+        .inspector(isPresented: $showPixie) {
+            Group {
+                if let make = Self.pixieInspector {
+                    make(agentSession, documentTitle) { showPixie = false }
+                }
+            }
+            .inspectorColumnWidth(min: 280, ideal: 340, max: 460)
+        }
         .onChange(of: window) { _, window in
             if window?.isKeyWindow == true { documentWindowBecameKey() }
         }
@@ -225,6 +241,16 @@ struct ContentView: View {
             
             ToolbarItem(id: "flexibleSpace", placement: .automatic) {
                 Spacer()
+            }
+
+            ToolbarItem(id: "pixie", placement: .primaryAction) {
+                if Self.pixieInspector != nil {
+                Toggle(isOn: $showPixie) {
+                    Label("Pixie", systemImage: "sparkles")
+                }
+                .help(showPixie ? "Hide Pixie" : "Ask Pixie to write or edit with you")
+                .disabled(distractionFree)
+                }
             }
             
             ToolbarItem(id: "viewMode", placement: .primaryAction) {
@@ -306,6 +332,7 @@ struct ContentView: View {
         .focusedSceneValue(\.documentCommandHandler, actions.documentCommand)
         .focusedSceneValue(\.documentFileURL, effectiveBaseURL)
         .focusedSceneValue(\.outlineVisibility, hostedOutline == nil ? $showOutline : nil)
+        .focusedSceneValue(\.pixieVisibility, Self.pixieInspector == nil ? nil : $showPixie)
         .focusedSceneValue(\.viewModeSelection, ViewModeSelection(current: viewMode, select: actions.selectViewMode))
         .focusedSceneValue(\.markdownFlavorSelection, MarkdownFlavorSelection(current: document.flavor, select: actions.selectFlavor))
     }
