@@ -51,7 +51,9 @@ Swash supports Universal Purchase on the App Store under bundle identifier `com.
 - **Mac App Store** (`Release-AppStore` configuration, scheme `Swash (App Store)`): Updates are delivered through the Mac App Store. The configuration leaves out `SparkleUpdater.swift` and the Sparkle package (not linked or embedded), the Updates settings tab and the Check for Updates… menu item, and Sparkle's Mach lookup exception entitlements. A build phase deletes Sparkle's Info.plist keys.
 
 ### Archiving and Uploading
-To archive the macOS app for Mac App Store distribution:
+Releases do this automatically after the direct download is published: "Inject Pixie (Mac App Store)" swaps in Pixie (below), "Archive Mac App Store App" archives the `Swash (App Store)` scheme and checks it (`scripts/verify_app_store_build.sh`, and that Pixie is in when she was injected), and "Upload Mac App to App Store Connect" uploads it with the App Store Connect secrets. Without those secrets the archive is unsigned and nothing is uploaded. The app record needs the macOS platform added in App Store Connect (Universal Purchase) before the first upload.
+
+To archive the macOS app for Mac App Store distribution by hand:
 ```bash
 xcodebuild archive \
   -scheme "Swash (App Store)" \
@@ -88,4 +90,4 @@ Testing Swash Pro purchases and entitlement verification requires an App Store e
 
 `Packages/SwashPixie` is an open-source stub: Pixie isn't in it (`SwashPixie.isAvailable` is false), so anyone can build Swash and her toggle and View › Show Pixie stay hidden. `Packages/SwashPixieFull` is the same package with her chat, on the private [Pixerate/pixie](https://github.com/Pixerate/pixie) package; Swash only ever references `Packages/SwashPixie`, so builds without access never try to fetch it.
 
-To build with Pixie (you need read access to Pixerate/pixie), run `./scripts/use-full-pixie.sh`, which copies the full package over the stub (resolving its link to the shared `SwashPixieDocument.swift`). Don't commit the result: `git checkout -- Packages/SwashPixie Swash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved` puts the stub back. A release that ships her runs the script and lets git fetch Pixerate/pixie with `PIXERATE_PACKAGES_TOKEN` (which then needs read-only Contents access to it as well).
+Pixie ships in the **Mac App Store** build only: the direct download (DMG and Sparkle) is built and published from the open-source stub first, as the stickers rule requires. To build with Pixie yourself (you need read access to Pixerate/pixie), run `./scripts/use-full-pixie.sh`, which copies the full package over the stub (resolving its link to the shared `SwashPixieDocument.swift`). Don't commit the result: `git checkout -- Packages/SwashPixie Swash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved` puts the stub back. The release runs the script before the Mac App Store archive and lets git fetch Pixerate/pixie with `PIXERATE_PACKAGES_TOKEN`, so that token needs read-only Contents access to Pixerate/pixie as well as Pixerate/stickers. Without the token the Mac App Store build keeps the stub.

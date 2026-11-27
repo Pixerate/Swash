@@ -48,7 +48,7 @@ Quick Note tidy-up uses the Pixerate tier above, with the same rules. It sends t
 
 ## When you ask Pixie (Swash Pro, on the Mac)
 
-Pixie is in official builds only (builds from source have no Pixie). Her chat (View › Show Pixie, ⌥⌘I) is separate from the writing partner: she reads and edits the document only when you ask her something, with the same tools agents use, and each of her edits is one undo step. Nothing is sent until you send her a message.
+Pixie is in the Mac App Store version only (the direct download and builds from source have no Pixie). Her chat (View › Show Pixie, ⌥⌘I) is separate from the writing partner: she reads and edits the document only when you ask her something, with the same tools agents use, and each of her edits is one undo step. Nothing is sent until you send her a message.
 
 **What's sent when you ask her:**
 
