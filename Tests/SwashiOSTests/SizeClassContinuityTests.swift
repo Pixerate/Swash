@@ -139,23 +139,20 @@ final class SizeClassContinuityTests: XCTestCase {
         for width in [CGFloat(420), 800, 360] {
             window.frame.size.width = width
             settle(editor)
-            let top = topCharacter(of: editor)
-            let glyph = editor.layoutManager.glyphIndexForCharacter(at: anchor)
-            let line = editor.layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-            let visibleTop = editor.contentOffset.y + editor.adjustedContentInset.top - editor.textContainerInset.top
-            XCTAssertEqual(line.minY, visibleTop, accuracy: line.height + 1,
-                           "at width \(width) the top shows character \(top), not \(anchor)'s line")
+            assertTopShows(anchor, in: editor, "at width \(width)")
         }
     }
 
-    /// Reading (keyboard down): the same text view keeps its scroll position.
+    /// Reading (keyboard down): the same text view keeps the same text at the top. Not the same
+    /// pixel offset: moving the view into the new host sets its width to 0 and back, and the
+    /// content height it reports (estimated, with non-contiguous layout) differs every time.
     func testReadingPositionSurvivesSizeClassChanges() throws {
         let (host, original) = try hostDocument()
         settle(original)
         original.setContentOffset(CGPoint(x: 0, y: 400), animated: false)
         settle(original)
-        let offset = original.contentOffset.y
-        XCTAssertGreaterThan(offset, 100, "the document didn't scroll")
+        let anchor = topCharacter(of: original)
+        XCTAssertGreaterThan(anchor, 100, "the document didn't scroll")
 
         for sizeClass in sizeClasses {
             host.traitOverrides.horizontalSizeClass = sizeClass
@@ -164,7 +161,19 @@ final class SizeClassContinuityTests: XCTestCase {
             let current = try XCTUnwrap(EditorHarness.find(MarkdownEditingTextView.self, in: host.view), "no editor \(label)")
             XCTAssertTrue(current === original, "the editor's text view was rebuilt \(label)")
             XCTAssertFalse(current.isFirstResponder, "the keyboard came up \(label)")
-            XCTAssertEqual(current.contentOffset.y, offset, accuracy: 1, "scroll position lost \(label)")
+            settle(current)
+            assertTopShows(anchor, in: current, label)
         }
+    }
+
+    /// The line holding `anchor` is the one at the top of the visible text.
+    private func assertTopShows(_ anchor: Int, in textView: UITextView, _ label: String,
+                                file: StaticString = #filePath, line sourceLine: UInt = #line) {
+        let glyph = textView.layoutManager.glyphIndexForCharacter(at: anchor)
+        let line = textView.layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let visibleTop = textView.contentOffset.y + textView.adjustedContentInset.top - textView.textContainerInset.top
+        XCTAssertEqual(line.minY, visibleTop, accuracy: line.height + 1,
+                       "\(label) the top shows character \(topCharacter(of: textView)), not \(anchor)'s line",
+                       file: file, line: sourceLine)
     }
 }
