@@ -39,6 +39,12 @@ final class SizeClassContinuityTests: XCTestCase {
         window?.layoutIfNeeded()
     }
 
+    /// Pumps the run loop until `condition` holds or `timeout` passes.
+    private func wait(until condition: () -> Bool, timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline { pump(0.1) }
+    }
+
     /// Waits until the editor's styling passes have stopped changing its content height.
     private func settle(_ textView: UIScrollView) {
         let deadline = Date().addingTimeInterval(10)
@@ -96,7 +102,11 @@ final class SizeClassContinuityTests: XCTestCase {
             let current = try XCTUnwrap(EditorHarness.find(MarkdownEditingTextView.self, in: host.view), "no editor \(label)")
             XCTAssertTrue(current === original, "the editor's text view was rebuilt \(label)")
             XCTAssertEqual(current.selectedRange, selection, "caret moved \(label)")
-            XCTAssertTrue(current.isFirstResponder, "focus lost \(label)")
+            // The editor takes the keyboard back asynchronously, which can take longer than the
+            // pump on a slow CI runner
+            wait(until: { current.isFirstResponder }, timeout: 3)
+            XCTAssertTrue(current.isFirstResponder,
+                          "focus lost \(label) (in a window: \(current.window != nil), key: \(current.window?.isKeyWindow ?? false))")
             XCTAssertTrue(current.undoManager === undoManager, "undo manager replaced \(label)")
             XCTAssertEqual(current.undoManager?.canUndo ?? false, couldUndo, "undo history lost \(label)")
             if let caret = current.selectedTextRange?.end {

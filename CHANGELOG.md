@@ -1,5 +1,25 @@
 # swash
 
+## 1.48.1
+
+### Patch Changes
+
+- 242f1dd: iOS: the editor keeps the keyboard more reliably when an iPhone Duo opens or closes (or the window changes size class), retrying for up to a second if the text view isn't in its new window yet.
+
+## 1.48.0
+
+### Minor Changes
+
+- edd6b2b: Swash is ready for iPhone Duo (#65). Opening or closing the phone (or rotating a Pro Max, or resizing an iPad window) now keeps the editor's caret, scroll position, keyboard and undo history in every mode, and closing it in Split mode falls back to the last single-pane mode (Source or Formatted) instead of always Source. The view-mode control is the last toolbar item to overflow, and Flavor, Settings, Document Info and Writing the first. The Share popover points at the Share button wherever the bar is, and Settings keeps a horizontal bar. Builds now ship from Xcode 27.1 or later. Opening or closing the phone now keeps the same text at the top of the editor when the lines rewrap, the old page folds into the new layout with a Flair mirror fold (a fade with Reduce Motion), and the "/" menu closes and edits are saved as the hinge starts to move. In Split on the inner display, the divider sits on the fold.
+
+### Patch Changes
+
+- 339ffd0: iOS: the document manager's Flair wordmark and pixel speckles now draw on a render thread of their own, so they keep animating while the main thread is busy, such as while a document opens.
+- fb07aed: Internal: the iOS editor tests wait for the editor's styling pass after each simulated keystroke instead of a fixed 0.15s, so they no longer fail on a slow CI simulator.
+- bbb24cc: Give the Mac document window's menu commands (Format, View mode, Markdown flavour, Export and Copy As, Distraction-Free Writing) closures made once per window instead of on every redraw, so they no longer make the document scene re-evaluate each time the window updates.
+- 4147e10: Website: the hero has the same faint pixel speckles as the iPhone and iPad document manager, using Flair's `pixel-speckles` (Flair 0.145.0). They twinkle in the margins around the headline, copy and demo, keep clear of the nav and text, follow light and dark mode, and hold still under Reduce Motion.
+- 508b617: Fix the iOS document screen sometimes staying blank, with the app stuck at high CPU, after creating or opening a document (most often on iPhone Duo). The Format and Distraction-Free menu commands were given a new closure on every redraw, which made `DocumentGroup` rebuild the document view in an endless loop. They now get closures made once per document view.
+
 ## 1.47.0
 
 ### Minor Changes
