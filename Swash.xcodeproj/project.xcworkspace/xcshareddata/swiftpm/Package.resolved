@@ -33,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Pixerate/pixie.git",
       "state" : {
-        "revision" : "41ff00a76a51437161bbdbd92c090f9e24fca383",
-        "version" : "0.6.1"
+        "revision" : "f835e3432cf6a6c3e25941c9686dfcf8e94cab95",
+        "version" : "0.8.0"
       }
     },
     {
