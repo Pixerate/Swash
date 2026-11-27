@@ -1005,7 +1005,7 @@ struct InteractionRunner {
                  coord.writingPartner.triggerPauseCheckForTesting(in: tv, coordinator: coord)
                  waitForPartner(tv)
 
-                 // In Automatically an unsure fix is marked (#128) rather than offered: count both
+                 // In Copyedit an unsure fix is marked (#128) rather than offered: count both
                  let offeredAfterPause = (coord.writingPartner.suggestions.map { "\($0.edit.original)->\($0.edit.replacement)" }
                      + coord.writingPartner.marks.map { "\($0.original)->\($0.candidates[0])" }).joined(separator: ",")
                  let vocabKnown = coord.writingPartner.sessionMemoryForTesting.isKnownWord("Uchiage")
@@ -1065,7 +1065,7 @@ struct InteractionRunner {
                  coord.writingPartner.setPauseDetectorForTesting(detector)
                  coord.writingPartner.triggerPauseCheckForTesting(in: tv, coordinator: coord)
                  waitForPartner(tv)
-                 // In Automatically an unsure fix is marked (#128) rather than offered: count both
+                 // In Copyedit an unsure fix is marked (#128) rather than offered: count both
                  let offered = (coord.writingPartner.suggestions.map { "\($0.edit.original)->\($0.edit.replacement)" }
                      + coord.writingPartner.marks.map { "\($0.original)->\($0.candidates[0])" }).joined(separator: ",")
                  let caretAfterFix = tv.selectedRange().location - caretBefore
@@ -1078,7 +1078,7 @@ struct InteractionRunner {
                  coord.writingPartner.setBandleaderForTesting(nil)
              }
 
-             // Marks (#128): in Automatically, what the partner isn't sure about changes nothing and
+             // Marks (#128): in Copyedit, what the partner isn't sure about changes nothing and
              // leaves a mark that survives typing, settled by review (keep or accept), by editing it,
              // or with the caret in it. Nothing is written into the Markdown.
              do {
@@ -1346,6 +1346,70 @@ struct InteractionRunner {
                 "active=\(coord5.isWritingToolsActive) text=\(b5.text)",
                 "AppKit inactive state clears isWritingToolsActive and flushes",
                 expect: "active=false text=AppKit safety net updated")
+        }
+
+        // Writing Partner Introduction Sheet & Overlay Hit-Testing Regression Tests (SWA-81)
+        do {
+            let box = TextBox("Introduction Sheet Test")
+            let tv = makeEditor(box, styled: true)
+            let overlay = WritingPartnerOverlay.overlay(for: tv)
+            guard let win = tv.window else {
+                fatalError("Expected window for editor in SWA-81 test")
+            }
+
+            // 1. Overlay hit-testing on subviews (e.g. undoReminderView & suggestionPrompt)
+            overlay.showUndoReminder(at: NSRect(x: 50, y: 50, width: 460, height: 42),
+                                     onPause: {},
+                                     onDismiss: {})
+            pump(0.1)
+            guard let reminder = overlay.undoReminderView else {
+                fatalError("Expected undoReminderView to be present")
+            }
+            let pauseButton = reminder.pauseButton
+            let pauseCenterInOverlay = NSPoint(x: reminder.frame.minX + pauseButton.frame.midX,
+                                               y: reminder.frame.minY + pauseButton.frame.midY)
+            // Hit test in superview coordinates (which is tv coordinates)
+            let hitPause = overlay.hitTest(pauseCenterInOverlay)
+            log("partner-overlay-hittest-reminder", "nil", "\(hitPause === pauseButton)",
+                "hitTest returns reminder button instead of falling through",
+                expect: "true")
+            overlay.hideUndoReminder()
+
+            // 2. Native macOS Sheet presentation attached to document window
+            var chosenMode: WritingPartnerMode?
+            overlay.showIntroduction(at: NSRect(x: 100, y: 100, width: 420, height: 146),
+                                     onChooseMode: { mode in chosenMode = mode },
+                                     onDismiss: {})
+            pump(0.1)
+            let sheetWindow = overlay.introductionSheetWindow
+            let isSheetAttached = win.attachedSheet === sheetWindow
+            log("partner-intro-sheet-attached", "false", "\(isSheetAttached)",
+                "introduction appears as native attached sheet on document window",
+                expect: "true")
+
+            guard let introView = overlay.introductionView else {
+                fatalError("Expected introductionView to be present")
+            }
+
+            // Verify HIG layout: Not now on left, Copyedit on right, Ghostwrite next to it
+            let notNowOnLeft = introView.notNowButton.frame.minX < introView.ghostwriteButton.frame.minX
+            let autoOnRight = introView.ghostwriteButton.frame.maxX < introView.copyeditButton.frame.minX
+            let returnKey = introView.copyeditButton.keyEquivalent == "\r"
+            let escapeKey = introView.notNowButton.keyEquivalent == "\u{1b}"
+            log("partner-intro-sheet-hig-layout", "false",
+                "left=\(notNowOnLeft) right=\(autoOnRight) return=\(returnKey) escape=\(escapeKey)",
+                "sheet buttons follow macOS HIG layout and key equivalents",
+                expect: "left=true right=true return=true escape=true")
+
+            // Verify sheet button interaction (clicking dismisses sheet and invokes callbacks)
+            introView.copyeditButton.performClick(nil)
+            pump(0.1)
+            let sheetDismissedAfterClick = (win.attachedSheet == nil && overlay.introductionSheetWindow == nil)
+            let modeMatched = (chosenMode == .copyedit)
+            log("partner-intro-sheet-button-click", "false",
+                "dismissed=\(sheetDismissedAfterClick) mode=\(modeMatched)",
+                "clicking sheet button dismisses sheet and chooses mode",
+                expect: "dismissed=true mode=true")
         }
 
         try? out.write(toFile: CommandLine.arguments[1], atomically: true, encoding: .utf8)
