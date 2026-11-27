@@ -1,5 +1,5 @@
 {
-  "originHash" : "2cfdbeca99b65fd359685e084cc42e06dde4f26752baa7c01db0d67f6d9dde27",
+  "originHash" : "ced4c8cfc0a63322e76c1d1f38e47abab4bf7bab99d08d6697c7a108f5c9194c",
   "pins" : [
     {
       "identity" : "editor",
@@ -26,15 +26,6 @@
       "state" : {
         "revision" : "4b2cc613ae708c15987092289bae126dda063cb5",
         "version" : "0.3.0"
-      }
-    },
-    {
-      "identity" : "pixie",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Pixerate/pixie.git",
-      "state" : {
-        "revision" : "f835e3432cf6a6c3e25941c9686dfcf8e94cab95",
-        "version" : "0.8.0"
       }
     },
     {

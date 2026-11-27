@@ -83,3 +83,9 @@ Testing Swash Pro purchases and entitlement verification requires an App Store e
 ## Stickers (official builds)
 
 `Packages/PixerateStickers` is an open-source stub with no artwork, so anyone can build Swash. Official builds swap in the private [Pixerate/stickers](https://github.com/Pixerate/stickers) package (#62), which adds the sticker sets and the iMessage sticker pack. To turn this on, add a `PIXERATE_PACKAGES_TOKEN` repository secret: a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) (or a GitHub App token) with **read-only Contents** access to `Pixerate/stickers` only. Without it, releases keep the stub. The workflow pins the stickers release in the "Inject Proprietary Stickers" step.
+
+## Pixie (official builds, Mac)
+
+`Packages/SwashPixie` is an open-source stub: Pixie isn't in it (`SwashPixie.isAvailable` is false), so anyone can build Swash and her toggle and View › Show Pixie stay hidden. `Packages/SwashPixieFull` is the same package with her chat, on the private [Pixerate/pixie](https://github.com/Pixerate/pixie) package; Swash only ever references `Packages/SwashPixie`, so builds without access never try to fetch it.
+
+To build with Pixie (you need read access to Pixerate/pixie), run `./scripts/use-full-pixie.sh`, which copies the full package over the stub (resolving its link to the shared `SwashPixieDocument.swift`). Don't commit the result: `git checkout -- Packages/SwashPixie Swash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved` puts the stub back. A release that ships her runs the script and lets git fetch Pixerate/pixie with `PIXERATE_PACKAGES_TOKEN` (which then needs read-only Contents access to it as well).

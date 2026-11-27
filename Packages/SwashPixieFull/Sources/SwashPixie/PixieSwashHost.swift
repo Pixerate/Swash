@@ -1,30 +1,24 @@
-//
-//  PixieSwashHost.swift
-//  Swash
-//
-//  Pixie's hands in a Swash document: the document's own agent tools (its
-//  `AgentDocumentSession.registry`, the same tools MCP agents use) as a `PixieToolHost`. Every tool
-//  reaches her as it is, with no list kept here, and her calls run as her own agent, so her caret
-//  and name tag show where she reads and writes and each edit is one undo step.
-//
+// Pixie's hands in a Swash document: the document's own agent tools (the registry MCP agents
+// use) as a `PixieToolHost`. Every tool reaches her as it is, with no list kept here, and her calls
+// run as her own agent, so her caret and name tag show where she reads and writes and each edit is
+// one undo step.
 
-#if os(macOS)
 import Foundation
 import PixerateCore
 import PixieKit
 
 @MainActor
 final class PixieSwashHost: PixieToolHost {
-    let session: AgentDocumentSession
+    let document: SwashPixieDocument
 
     private static let actor = ToolActor(id: Pixie.id, name: Pixie.name)
 
-    init(session: AgentDocumentSession) {
-        self.session = session
+    init(document: SwashPixieDocument) {
+        self.document = document
     }
 
     func listTools() -> [PixieToolDefinition] {
-        session.registry.listTools().map { tool in
+        document.registry.listTools().map { tool in
             PixieToolDefinition(
                 name: tool.name,
                 title: tool.title ?? tool.annotations?.title,
@@ -39,7 +33,7 @@ final class PixieSwashHost: PixieToolHost {
     func callTool(_ name: String, arguments: [String: PixieJSON]) async throws -> PixieToolResult {
         var args = JSONObject()
         for key in arguments.keys.sorted() { args[key] = JSONValue(arguments[key]!) }
-        let result = await session.registry.callTool(name, args, actor: Self.actor)
+        let result = await document.registry.callTool(name, args, actor: Self.actor)
         return PixieToolResult(
             content: result.content.map { part in
                 switch part {
@@ -54,7 +48,7 @@ final class PixieSwashHost: PixieToolHost {
     }
 
     func toolsets() -> [PixieToolset] {
-        session.registry.toolsets().map { PixieToolset(name: $0.name, title: $0.title, description: $0.description) }
+        document.registry.toolsets().map { PixieToolset(name: $0.name, title: $0.title, description: $0.description) }
     }
 
     /**
@@ -62,17 +56,17 @@ final class PixieSwashHost: PixieToolHost {
      * the person's selection (where it is, and up to `selectionExcerpt` characters of it). She reads
      * the rest with the document's tools when she needs it.
      */
-    func brief(name: String) -> PixieJSON {
-        let text = session.readMarkdown() as NSString
+    func brief() -> PixieJSON {
+        let text = document.markdown() as NSString
         var brief: [String: PixieJSON] = [
             "app": "Swash",
-            "name": .string(name),
-            "flavor": .string(session.flavor == .slack ? "slack" : "github"),
+            "name": .string(document.name()),
+            "flavor": .string(document.flavor()),
             "characters": .number(Double(text.length)),
             "words": .number(Double((text as String).split(whereSeparator: \.isWhitespace).count)),
-            "readOnly": .bool(session.readOnlyReason != nil),
+            "readOnly": .bool(document.readOnlyReason() != nil),
         ]
-        if let selection = session.readSelection(), selection.location != NSNotFound,
+        if let selection = document.selection(), selection.location != NSNotFound,
             NSMaxRange(selection) <= text.length
         {
             var selected: [String: PixieJSON] = [
@@ -125,4 +119,3 @@ extension JSONValue {
         }
     }
 }
-#endif

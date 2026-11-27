@@ -1,14 +1,8 @@
-//
-//  PixieSwashPanel.swift
-//  Swash
-//
-//  The Pixie inspector (View › Show Pixie, ⌥⌘I): `PixieUI`'s chat on the document, with her
-//  avatar and her skills and memory in a sheet. The whole document is what the chat is about; the
-//  selection reaches her in the brief. Without Swash Pro it says what unlocks her instead of
-//  letting a request fail.
-//
+// The Pixie inspector (View › Show Pixie, ⌥⌘I): `PixieUI`'s chat on the document, with her
+// avatar and her skills and memory in a sheet. The whole document is what the chat is about; the
+// selection reaches her in the brief. Without Swash Pro it says what unlocks her instead of
+// letting a request fail.
 
-#if os(macOS)
 import PixerateStore
 import PixieKit
 import PixieUI
@@ -16,8 +10,8 @@ import SwiftUI
 
 struct PixieSwashPanel: View {
     let pixie: PixieSwashModel
+    let store: PixerateStore
     var onClose: () -> Void
-    private var store: PixerateStore { PixerateAccess.shared.store }
 
     @State private var memoryPresented = false
     @Environment(\.openSettings) private var openSettings
@@ -59,4 +53,3 @@ struct PixieSwashPanel: View {
         .background(Color.primary.opacity(0.04))
     }
 }
-#endif
