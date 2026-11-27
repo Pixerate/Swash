@@ -2,6 +2,7 @@
 // and checks the fixes it makes. Run with scripts/run_writing_partner_tests.sh.
 
 import Foundation
+import NaturalLanguage
 import PixerateMarkdown
 
 
@@ -120,6 +121,90 @@ expect("- a list item with words\n\n", "- A list item with words\n\n")
 expect("# A heading with four words\n\n", "# A heading with four words\n\n")
 expect("Ends with a `code span`\n\n", "Ends with a `code span`\n\n")
 expect("It ends with a [link here](https://x.y)\n\n", "It ends with a [link here](https://x.y)\n\n")
+
+// Multi-sentence lines: terminal punctuation inspects only the final sentence
+expect("How does this work? It watches for word boundaries\n", "How does this work? It watches for word boundaries.\n")
+expect("\"What happened?\" She told me everything was fine\n", "\"What happened?\" She told me everything was fine.\n")
+expect("How does this work? `foo` is the answer\n", "How does this work? `foo` is the answer.\n")
+expect("First sentence. `how` is a keyword in this grammar\n", "First sentence. `how` is a keyword in this grammar.\n")
+expect("I checked the trace. Where did the worker stall\n", "I checked the trace. Where did the worker stall?\n")
+expect("He said \"done.\" When does the next job start\n", "He said \"done.\" When does the next job start?\n")
+expect("It was i. Where did everyone go\n", "It was I. Where did everyone go?\n")
+// 4-word minimum applies to the final sentence
+expect("How does this work? Yes it does\n", "How does this work? Yes it does\n")
+expect("How does this work? Yes it really does\n", "How does this work? Yes it really does.\n")
+expect("How does this work? It watches the the\n", "How does this work? It watches the\n")
+
+// Mid-line non-terminal .?! preservation (abbreviations, decimals, ellipses, initials, code, links)
+expect("How does e.g. this option change the build\n", "How does e.g. this option change the build?\n")
+expect("Where did Dr. Smith leave the notes\n", "Where did Dr. Smith leave the notes?\n")
+expect("Why did it take 3.50 seconds to run\n", "Why did it take 3.50 seconds to run?\n")
+expect("How does this... wait and see what happens\n", "How does this... wait and see what happens?\n")
+expect("Where did J. Smith put the keys\n", "Where did J. Smith put the keys?\n")
+expect("I. Asimov wrote many classic books\n", "Intro.\n\nI. Asimov wrote many classic books.\n", after: "Intro.\n\n")
+expect("Why does `a? b` fail in the parser\n", "Why does `a? b` fail in the parser?\n")
+expect("You can [read the guide](https://example.com?x=1) to see how offsets map\n",
+       "You can [read the guide](https://example.com?x=1) to see how offsets map.\n")
+expect("Why does [the guide](https://example.com \"Wait? Here\") say that\n",
+       "Why does [the guide](https://example.com \"Wait? Here\") say that?\n")
+
+// "When" and "Where" declarative subordinate clauses (→ .)
+expect("When a sentence finishes, the editor keeps pace\n", "When a sentence finishes, the editor keeps pace.\n")
+expect("When you're documenting a system, a quote draws the eye\n", "When you're documenting a system, a quote draws the eye.\n")
+expect("> When in doubt, leave the extra chrome out of the window\n", "> When in doubt, leave the extra chrome out of the window.\n")
+expect("When editing a table, press tab to advance\n", "When editing a table, press tab to advance.\n")
+expect("Where possible, prefer composition over inheritance\n", "Where possible, prefer composition over inheritance.\n")
+expect("When to use a callout in technical docs\n", "When to use a callout in technical docs.\n")
+expect("When i tested the build everything worked\n", "When I tested the build everything worked.\n")
+expect("Where this shines is in long files\n", "Where this shines is in long files.\n")
+expect("Where there is smoke there is fire\n", "Where there is smoke there is fire.\n")
+expect("When in doubt do the simplest thing\n", "When in doubt do the simplest thing.\n")
+expect("When `foo` is nil it returns early\n", "When `foo` is nil it returns early.\n")
+
+// "When" and "Where" genuine questions (→ ?)
+expect("When does this happen in production\n", "When does this happen in production?\n")
+expect("Where are the snapshots stored now\n", "Where are the snapshots stored now?\n")
+expect("When's the next release scheduled\n", "When's the next release scheduled?\n")
+expect("wheres the config file kept\n", "Where's the config file kept?\n")
+check(type("wheres the config file kept\n", isActive: { _ in true }).text == "Where’s the config file kept?\n",
+      "curly quotes + wheres question")
+expect("Where exactly do we store the cache\n", "Where exactly do we store the cache?\n")
+expect("Where else can i find the logs\n", "Where else can I find the logs?\n")
+expect("Where in the repo does this live\n", "Where in the repo does this live?\n")
+expect("When on earth did the worker stall\n", "When on earth did the worker stall?\n")
+expect("When, if ever, does this happen\n", "When, if ever, does this happen?\n")
+expect("When youre ready, can you check this\n", "When you're ready, can you check this?\n")
+expect("When the window closes, what happens next\n", "When the window closes, what happens next?\n")
+expect("When you call `foo(a, b)`, what happens next\n", "When you call `foo(a, b)`, what happens next?\n")
+check(type("how does this work then\n", isActive: { $0 != .terminalPunctuation }).text == "How does this work then\n",
+      "terminalPunctuation can be turned off")
+
+// iOS Simulator fallback: when NLTagger returns nil tags, closed-class + structural rules preserve accuracy
+do {
+    let nilTagger: ([PunctuateVoice.ClauseToken], String) -> [NLTag?] = { tokens, _ in
+        Array(repeating: nil, count: tokens.count)
+    }
+    let declaratives = [
+        "When I tested the build everything worked",
+        "Where this shines is in long files",
+        "When a sentence finishes, the editor keeps pace",
+        "When in doubt do the simplest thing",
+    ]
+    for clause in declaratives {
+        check(!PunctuateVoice.isQuestionClause(clause, taggerOverride: nilTagger),
+              "nil-tagger fallback keeps declarative: \(clause)")
+    }
+    let questions = [
+        "When does this happen",
+        "Where exactly do we store the cache",
+        "Where in the repo does this live",
+        "When you're ready, can you check this",
+    ]
+    for clause in questions {
+        check(PunctuateVoice.isQuestionClause(clause, taggerOverride: nilTagger),
+              "nil-tagger fallback detects question: \(clause)")
+    }
+}
 
 // Slack: the Chat voice (#105) fixes apostrophes, capital I and spelling, and leaves lowercase
 // starts, message ends, ok, lol, :emoji: shortcodes and Slack syntax alone
