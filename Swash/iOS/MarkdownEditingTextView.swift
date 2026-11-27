@@ -198,18 +198,58 @@ class MarkdownEditingTextView: UITextView {
         }
     }
 
-    // MARK: Reading position across width changes (#65)
+    // MARK: Reading position across width and size-class changes (#65)
 
     /// The character at the top of the view and how far into its line the view is scrolled, so a
     /// width change (an iPhone Duo opening or closing, a window resizing) keeps the same text at
     /// the top instead of the same pixel offset, which shows other text once the lines rewrap.
     private var readingAnchor: (character: Int, intoLine: CGFloat)?
-    /// The width `readingAnchor` was measured at; scrolls at another width (mid-resize) aren't recorded.
-    private var readingAnchorWidth: CGFloat = 0
+    /// The width and top inset `readingAnchor` was measured at; scrolls at another geometry
+    /// (mid-resize, mid-move between hosts) aren't recorded.
+    private var readingAnchorGeometry = ReadingGeometry(width: 0, insetTop: 0)
     private var isRestoringReadingPosition = false
+    /// Set when the frame is about to change width, until the next layout at a real width restores
+    /// the anchor. SwiftUI moving the view into a new host after a size-class change (an iPhone
+    /// Duo opening or closing) sets its width to 0 and back, and UITextView then "restores" its
+    /// own scroll position from estimated line heights, which lands on other text; those offsets
+    /// mustn't be recorded as the anchor, and the anchor must be restored though the width ends
+    /// where it started.
+    private var isAwaitingReadingRestore = false
+
+    private struct ReadingGeometry: Equatable {
+        var width: CGFloat
+        /// `adjustedContentInset.top`: the split view's detail column and the bare document screen
+        /// have different bars, and UIKit keeps the pixel offset when the inset changes.
+        var insetTop: CGFloat
+
+        func matches(_ other: ReadingGeometry) -> Bool {
+            abs(width - other.width) < 0.5 && abs(insetTop - other.insetTop) < 0.5
+        }
+    }
+
+    private var readingGeometry: ReadingGeometry {
+        ReadingGeometry(width: bounds.width, insetTop: adjustedContentInset.top)
+    }
 
     override var contentOffset: CGPoint {
         didSet { recordReadingAnchor() }
+    }
+
+    override var frame: CGRect {
+        willSet { noteWidthChange(to: newValue.width) }
+    }
+
+    override var bounds: CGRect {
+        willSet { noteWidthChange(to: newValue.width) }
+    }
+
+    private func noteWidthChange(to width: CGFloat) {
+        if abs(width - bounds.width) >= 0.5 { isAwaitingReadingRestore = true }
+    }
+
+    override func adjustedContentInsetDidChange() {
+        super.adjustedContentInsetDidChange()
+        setNeedsLayout()
     }
 
     override func layoutSubviews() {
@@ -217,13 +257,15 @@ class MarkdownEditingTextView: UITextView {
         keepReadingPositionAcrossWidthChange()
     }
 
-    /// Restores the reading position once the width has changed. Called after layout (subclasses
-    /// that change insets after `super.layoutSubviews()` get a second pass on the next run loop).
+    /// Restores the reading position once the width or top inset has changed. Called after layout
+    /// (subclasses that change insets after `super.layoutSubviews()` get a second pass on the next
+    /// run loop).
     func keepReadingPositionAcrossWidthChange() {
-        let width = bounds.width
-        guard width > 0, abs(width - readingAnchorWidth) >= 0.5 else { return }
-        let isFirstLayout = readingAnchorWidth == 0
-        readingAnchorWidth = width
+        let geometry = readingGeometry
+        guard geometry.width > 0, isAwaitingReadingRestore || !geometry.matches(readingAnchorGeometry) else { return }
+        let isFirstLayout = readingAnchorGeometry.width == 0
+        readingAnchorGeometry = geometry
+        isAwaitingReadingRestore = false
         // While typing, UIKit scrolls the caret into view as the text reflows, which is what the
         // person wants to see
         guard !isFirstLayout, let anchor = readingAnchor, !isFirstResponder else {
@@ -235,14 +277,15 @@ class MarkdownEditingTextView: UITextView {
         // Insets, the readable column and restyling can still move the text this run loop
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if abs(self.bounds.width - width) < 0.5 { self.scrollToReadingAnchor(anchor) }
+            if self.readingGeometry.matches(geometry) { self.scrollToReadingAnchor(anchor) }
             self.isRestoringReadingPosition = false
             self.recordReadingAnchor()
         }
     }
 
     private func recordReadingAnchor() {
-        guard !isRestoringReadingPosition, bounds.width > 0, abs(bounds.width - readingAnchorWidth) < 0.5 else { return }
+        guard !isRestoringReadingPosition, !isAwaitingReadingRestore, bounds.width > 0,
+              readingGeometry.matches(readingAnchorGeometry) else { return }
         let top = contentOffset.y + adjustedContentInset.top - textContainerInset.top
         guard top > 1, layoutManager.numberOfGlyphs > 0 else {
             // At the top: a width change keeps it at the top
