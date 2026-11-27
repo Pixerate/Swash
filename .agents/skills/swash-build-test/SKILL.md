@@ -24,6 +24,12 @@ xcodebuild -scheme Swash -destination 'generic/platform=iOS Simulator' -configur
 ```
 To run on a simulator, boot one (`xcrun simctl boot "iPhone 17"`), then install `build/.../Debug-iphonesimulator/Swash.app` with `xcrun simctl install booted <path>`. Sample documents can be copied into `$(xcrun simctl get_app_container booted com.pixerate.Swash data)/Documents`, where the document browser lists them under On My iPhone › Swash.
 
+Check iOS changes on an iPhone, an iPad and an iPhone Duo (AGENTS.md). The Duo needs its own simulator runtime (iOS 27.1 or later; the iPhone Duo build is listed as `com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4`). If `xcrun simctl create "iPhone Duo" com.apple.CoreSimulator.SimDeviceType.iPhone-Duo` says no runtime is available, download one with `xcodebuild -downloadPlatform iOS` (about 8.3 GB; free the space first). Then:
+- Fold and unfold with the iOS Simulator tool's `set_posture` (`closed`, `open`, `half_open` with an `angle`), and `posture` reports which screen is lit. Taps use the lit screen's points: about 466×678 closed and 951×669 open.
+- Closed, the toolbar is a vertical bar on the trailing edge; with the keyboard up it holds only Back and the overflow menu. Open is regular width: the outline split view, with Share in the title menu.
+- `SizeClassContinuityTests` and the iPhone 18 Pro Max (which changes size class when rotated) cover most fold behaviour without the Duo; the fold position, the Flair fold transition and the vertical bars still need the Duo.
+- A blank document screen at about 75% CPU is an update loop, not a slow start: check `top -pid` and `sample` (GOTCHAS #116). Focus Mode also hides the bar, so check `focusMode` in the app's preferences plist before calling a screen broken.
+
 The iOS build also compiles the `SwashStickers` iMessage extension, but embeds it only when `Packages/PixerateStickers` is the real Pixerate/stickers package; with the committed open-source stub, `Swash.app/PlugIns` must not contain `SwashStickers.appex` (GOTCHAS #73).
 
 To compile specific app extensions (macOS only):

@@ -11,6 +11,7 @@ On completion of any work, agents must execute the following workflow:
 
 ## 1. Validation & Testing
 - **Run Tests**: Execute all relevant unit, integration, and build tests locally (e.g. `xcodebuild -scheme Swash -configuration Debug build`) to validate that changes do not break existing functionality or introduce regressions before committing.
+- **Check Every iOS Device Class**: When a change can be seen in the iOS app, check it in the simulator on an iPhone, an iPad and an **iPhone Duo**. On the Duo, check it closed (outer display, compact, with the toolbar as a vertical bar), open (inner display, regular width), half open (book pose), and across opening and closing (caret, scroll position and keyboard should survive). The `swash-build-test` skill covers setting up the Duo simulator. If the document screen is blank, see GOTCHAS #116 before assuming the change broke it.
 
 ## 2. Changeset Creation
 - **Requirement**: Every pull request, feature, bug fix, or task MUST include a changeset file generated via `npx changeset` (or by creating a markdown file in `.changeset/<unique-name>.md`).
