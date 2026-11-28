@@ -28,9 +28,19 @@ struct StyledTextView: UIViewRepresentable {
     /// Font, size (already adjusted for Dynamic Type), line width and theme (GOTCHAS #43).
     var typography = EditorTypography()
     /// Controls whether the insert affordance appears after a pause on an empty line.
-    var showEmptyLineInsertAffordance: Bool = UserDefaults.standard.object(forKey: AppSettings.showEmptyLineInsertAffordance) as? Bool ?? true
+    var showEmptyLineInsertAffordance: Bool = true
+    /// A change makes the next rebuild start a new text view instead of taking the kept one back
+    /// (folder access granted: images need loading afresh).
+    var reuseKey: AnyHashable? = nil
 
     func makeUIView(context: Context) -> StyledUITextView {
+        let retainer = context.coordinator.retainer
+        if let textView = retainer.keptTextView {
+            // The same editor in a new container (#65)
+            updateUIView(textView, context: context)
+            retainer.reattached(textView)
+            return textView
+        }
         let storage = NSTextStorage()
         let layoutManager = StyledLayoutManager()
         storage.addLayoutManager(layoutManager)
@@ -39,6 +49,7 @@ struct StyledTextView: UIViewRepresentable {
         layoutManager.addTextContainer(container)
 
         let textView = StyledUITextView(frame: .zero, textContainer: container)
+        retainer.keep(textView, key: reuseKey)
         textView.coordinator = context.coordinator
         textView.delegate = context.coordinator
         textView.backgroundColor = typography.theme.background ?? .systemBackground
@@ -78,7 +89,7 @@ struct StyledTextView: UIViewRepresentable {
         defer { coordinator.isUpdatingFromSwiftUI = false }
 
         if coordinator.lastBaseURL != nil, coordinator.lastBaseURL != baseURL {
-            coordinator.writingPartner.resetBandleaderSession()
+            coordinator.writingPartner.documentDidChange()
         }
         let current = swashRawMarkdown(from: textView.textStorage)
         if coordinator.lastStyledText != text, current != text {
@@ -108,13 +119,29 @@ struct StyledTextView: UIViewRepresentable {
         return CGSize(width: width, height: height)
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    /// The document's Edit Text editor comes back to the same coordinator and text view when
+    /// SwiftUI rebuilds it (see `IOSEditorController.retainedEditor`).
+    func makeCoordinator() -> Coordinator {
+        if let coordinator = controller.retainedEditor(Coordinator.self),
+           coordinator.retainer.canReuse(showing: text, key: reuseKey, current: { swashRawMarkdown(from: $0.textStorage) }) {
+            coordinator.parent = self
+            return coordinator
+        }
+        let coordinator = Coordinator(self)
+        controller.retainEditor(coordinator)
+        return coordinator
+    }
+
+    static func dismantleUIView(_ textView: StyledUITextView, coordinator: Coordinator) {
+        coordinator.retainer.dismantled(textView)
+    }
 
     // MARK: - Coordinator
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: StyledTextView
         weak var textView: StyledUITextView?
+        let retainer = EditorViewRetainer<StyledUITextView>()
         var isUpdatingFromSwiftUI = false
         private var isHighlighting = false
 
@@ -141,6 +168,9 @@ struct StyledTextView: UIViewRepresentable {
         private var pendingRawSelection: NSRange?
         private var editGeneration = 0
         private var highlightedGeneration = -1
+        /// An edit is waiting for its styling pass, which runs on a later main-queue turn (read by the
+        /// iOS editor tests, which wait for it rather than for a fixed time).
+        var isRestylePending: Bool { highlightedGeneration < editGeneration }
         /// Caret position before the latest selection change, to tell arrow steps from jumps.
         private var lastSelection = NSRange(location: 0, length: 0)
 
@@ -979,8 +1009,14 @@ final class StyledUITextView: MarkdownEditingTextView {
         coordinator.applyEdit(in: self, newRawText: edit.text, rawSelection: edit.selection, actionName: actionName)
     }
 
+    /// Set during `super.layoutSubviews()`, which would restore the reading position too early.
+    private var isInSuperLayout = false
+
     override func layoutSubviews() {
+        isInSuperLayout = true
         super.layoutSubviews()
+        isInSuperLayout = false
+        defer { keepReadingPositionAcrossWidthChange() }
         let widthChanged = abs(bounds.width - lastLayoutWidth) > 1
         let heightChanged = abs(bounds.height - lastLayoutHeight) > 1
         if widthChanged || heightChanged {
@@ -1002,6 +1038,13 @@ final class StyledUITextView: MarkdownEditingTextView {
             layoutInsertAffordance()
             coordinator?.refreshPartnerDrawing()
         }
+    }
+
+    /// Runs after the column insets above, not from `super.layoutSubviews()`, where the old
+    /// insets would put the text in the wrong place.
+    override func keepReadingPositionAcrossWidthChange() {
+        guard !isInSuperLayout else { return }
+        super.keepReadingPositionAcrossWidthChange()
     }
 
     /// Set when the text or its layout changed, so the next layout pass repositions the overlays.

@@ -16,7 +16,7 @@ permissions:
 jobs:
   release:
     name: Build, Package & Release
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 90
     env:
       # Secrets can't be read in a step's `if`, so expose only whether this one is set.
@@ -65,7 +65,7 @@ jobs:
         if: steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch'
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
+          xcode-version: '^27.1'
 
       - name: Import Signing Certificate
         if: steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch'
@@ -384,6 +384,102 @@ jobs:
             -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
           echo "Uploaded Swash v${{ env.VERSION }} (${{ github.run_number }}) to TestFlight."
 
+      # Mac App Store: the same app as the direct download, plus Pixie's chat (Packages/SwashPixieFull,
+      # on the private Pixerate/pixie package). Like the stickers, it runs after the open-source macOS
+      # release is published, which keeps the stub. Without the token Pixie stays a stub here too.
+      # git may fetch Pixerate/pixie with the token, and nothing else; the rule is removed at the end.
+      - name: Inject Pixie (Mac App Store)
+        if: (steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch') && env.HAS_PIXERATE_PACKAGES_TOKEN == 'true'
+        env:
+          PIXERATE_PACKAGES_TOKEN: ${{ secrets.PIXERATE_PACKAGES_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${PIXERATE_PACKAGES_TOKEN}@github.com/Pixerate/pixie".insteadOf "https://github.com/Pixerate/pixie"
+          ./scripts/use-full-pixie.sh
+
+      - name: Archive Mac App Store App
+        timeout-minutes: 30
+        if: steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch'
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          VERSION="${{ env.VERSION }}"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+          BUILD_NUMBER="${{ github.run_number }}"
+          ARCHIVE_PATH="build/Swash-macOS-AppStore.xcarchive"
+
+          # `-scmProvider system` lets SwiftPM use git, and with it the Pixerate/pixie rule above.
+          if [ "$HAS_APP_STORE_CONNECT" = "true" ]; then
+            echo "Archiving a signed Mac App Store build..."
+            xcodebuild archive -scheme "Swash (App Store)" \
+              -destination 'generic/platform=macOS' \
+              -configuration Release-AppStore \
+              -derivedDataPath build-mas \
+              -archivePath "$ARCHIVE_PATH" \
+              -scmProvider system \
+              -allowProvisioningUpdates \
+              -authenticationKeyPath "$API_KEY_PATH" \
+              -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
+              -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID" \
+              CODE_SIGN_STYLE=Automatic \
+              DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+              MARKETING_VERSION="$VERSION" \
+              CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+          else
+            echo "App Store Connect secrets omitted. Archiving an unsigned Mac App Store build as a check only."
+            xcodebuild archive -scheme "Swash (App Store)" \
+              -destination 'generic/platform=macOS' \
+              -configuration Release-AppStore \
+              -derivedDataPath build-mas \
+              -archivePath "$ARCHIVE_PATH" \
+              -scmProvider system \
+              CODE_SIGNING_ALLOWED=NO \
+              MARKETING_VERSION="$VERSION" \
+              CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+          fi
+
+          APP="$ARCHIVE_PATH/Products/Applications/Swash.app"
+          ./scripts/verify_app_store_build.sh "$APP"
+          # Pixie is in only when her package was injected just above: her host class exists only in
+          # the full package.
+          if [ "$HAS_PIXERATE_PACKAGES_TOKEN" = "true" ] && ! grep -a -q "PixieSwashHost" "$APP/Contents/MacOS/Swash"; then
+            echo "::error::Pixie was injected, but she isn't in the Mac App Store app."
+            exit 1
+          fi
+
+      - name: Upload Mac App to App Store Connect
+        if: (steps.changeset_check.outputs.count > 0 || github.event_name == 'workflow_dispatch') && env.HAS_APP_STORE_CONNECT == 'true'
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions-macOS.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath build/Swash-macOS-AppStore.xcarchive \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions-macOS.plist" \
+            -exportPath build/Swash-macOS-AppStore-export \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$API_KEY_PATH" \
+            -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
+            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
+          echo "Uploaded Swash v${{ env.VERSION }} (${{ github.run_number }}) for the Mac App Store."
+
       - name: Clean up Keychain
         if: always()
         run: |
@@ -393,3 +489,7 @@ jobs:
           if [ -n "$API_KEY_PATH" ]; then
             rm -f "$API_KEY_PATH"
           fi
+          # The rule that lets git fetch Pixerate/pixie with the token.
+          git config --global --get-regexp '^url\..*\.insteadof$' | awk '/Pixerate\/pixie/ {print $1}' | while read -r key; do
+            git config --global --unset-all "$key" || true
+          done

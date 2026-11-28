@@ -43,6 +43,19 @@ final class IOSEditorController {
         textView?.writingPartner?.setPaused(paused, in: textView?.writingPartnerHost)
     }
 
+    /// The partner's edits this session, on their Copyedit and Ghostwrite layers (#229).
+    func partnerLayerEdits() -> [LayeredEdit] {
+        guard let partner = textView?.writingPartner, let host = textView?.writingPartnerHost else { return [] }
+        return partner.currentLayers(in: host).edits
+    }
+
+    /// Reverts the partner's edits `ids` as one undo step, leaving the person's typing alone.
+    @discardableResult
+    func revertPartnerEdits(_ ids: Set<Int>) -> Int {
+        guard let partner = textView?.writingPartner, let host = textView?.writingPartnerHost else { return 0 }
+        return partner.revertEdits(ids, in: host)
+    }
+
     var selection: NSRange {
         textView?.markdownSelection ?? NSRange(location: 0, length: 0)
     }
@@ -66,6 +79,77 @@ final class IOSEditorController {
 
     func focus() {
         textView?.becomeFirstResponder()
+    }
+
+    /// Editor coordinators (with their text views), one per editor kind, kept for as long as the
+    /// document is open. SwiftUI rebuilds an editor whenever its container changes (the outline
+    /// split view coming and going with the size class when an iPhone Duo opens or closes); the
+    /// rebuilt editor takes the same text view back, with its caret, scroll offset, focus and
+    /// undo stack (#65). The controller owns the coordinators, they own the text views, and the
+    /// text views refer back weakly, so everything goes with the document.
+    private var retainedEditors: [ObjectIdentifier: AnyObject] = [:]
+
+    func retainedEditor<Coordinator: AnyObject>(_ type: Coordinator.Type) -> Coordinator? {
+        retainedEditors[ObjectIdentifier(type)] as? Coordinator
+    }
+
+    func retainEditor<Coordinator: AnyObject>(_ coordinator: Coordinator) {
+        retainedEditors[ObjectIdentifier(Coordinator.self)] = coordinator
+    }
+
+    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
+    nonisolated deinit {}
+}
+
+/// Holds an editor's text view across SwiftUI rebuilding the editor (see
+/// `IOSEditorController.retainedEditor`).
+@MainActor
+final class EditorViewRetainer<TextView: MarkdownEditingTextView> {
+    private var textView: TextView?
+    private var key: AnyHashable?
+    /// When the text view was taken down while it had the keyboard.
+    private var dismantledWhileFocused: Date?
+
+    func keep(_ textView: TextView, key: AnyHashable?) {
+        self.textView = textView
+        self.key = key
+        dismantledWhileFocused = nil
+    }
+
+    /// The kept text view, once it has one.
+    var keptTextView: TextView? { textView }
+
+    /// Whether the kept text view still shows `text` under the same `key`, so its editor can be
+    /// taken back whole. One that has fallen behind the document (edited in the other editor
+    /// meanwhile) isn't: replacing its text would leave undo actions pointing at text that's gone.
+    func canReuse(showing text: String, key: AnyHashable?, current: (TextView) -> String) -> Bool {
+        guard let textView else { return false }
+        return self.key == key && current(textView) == text
+    }
+
+    func dismantled(_ textView: TextView) {
+        if textView.isFirstResponder { dismantledWhileFocused = Date() }
+    }
+
+    /// Gives the keyboard back to a reused text view that had it when its old host went away (or
+    /// still has it, if the new host was made first).
+    func reattached(_ textView: TextView) {
+        let hadFocus = textView.isFirstResponder
+            || dismantledWhileFocused.map { Date().timeIntervalSince($0) < 1 } ?? false
+        dismantledWhileFocused = nil
+        guard hadFocus else { return }
+        Self.restoreFocus(of: textView, until: Date().addingTimeInterval(1))
+    }
+
+    /// Keeps giving the keyboard back for a moment: the old host can take it away after the new
+    /// one is built, and the text view may not be in the new window yet on the first try (a slow
+    /// device or CI runner).
+    private static func restoreFocus(of textView: TextView, until deadline: Date) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak textView] in
+            guard let textView else { return }
+            if textView.window != nil, !textView.isFirstResponder { textView.becomeFirstResponder() }
+            if Date() < deadline { restoreFocus(of: textView, until: deadline) }
+        }
     }
 
     /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
@@ -113,6 +197,117 @@ class MarkdownEditingTextView: UITextView, UIPopoverPresentationControllerDelega
         if let recentsObserver {
             NotificationCenter.default.removeObserver(recentsObserver)
         }
+    }
+
+    // MARK: Reading position across width and size-class changes (#65)
+
+    /// The character at the top of the view and how far into its line the view is scrolled, so a
+    /// width change (an iPhone Duo opening or closing, a window resizing) keeps the same text at
+    /// the top instead of the same pixel offset, which shows other text once the lines rewrap.
+    private var readingAnchor: (character: Int, intoLine: CGFloat)?
+    /// The width and top inset `readingAnchor` was measured at; scrolls at another geometry
+    /// (mid-resize, mid-move between hosts) aren't recorded.
+    private var readingAnchorGeometry = ReadingGeometry(width: 0, insetTop: 0)
+    private var isRestoringReadingPosition = false
+    /// Set when the frame is about to change width, until the next layout at a real width restores
+    /// the anchor. SwiftUI moving the view into a new host after a size-class change (an iPhone
+    /// Duo opening or closing) sets its width to 0 and back, and UITextView then "restores" its
+    /// own scroll position from estimated line heights, which lands on other text; those offsets
+    /// mustn't be recorded as the anchor, and the anchor must be restored though the width ends
+    /// where it started.
+    private var isAwaitingReadingRestore = false
+
+    private struct ReadingGeometry: Equatable {
+        var width: CGFloat
+        /// `adjustedContentInset.top`: the split view's detail column and the bare document screen
+        /// have different bars, and UIKit keeps the pixel offset when the inset changes.
+        var insetTop: CGFloat
+
+        func matches(_ other: ReadingGeometry) -> Bool {
+            abs(width - other.width) < 0.5 && abs(insetTop - other.insetTop) < 0.5
+        }
+    }
+
+    private var readingGeometry: ReadingGeometry {
+        ReadingGeometry(width: bounds.width, insetTop: adjustedContentInset.top)
+    }
+
+    override var contentOffset: CGPoint {
+        didSet { recordReadingAnchor() }
+    }
+
+    override var frame: CGRect {
+        willSet { noteWidthChange(to: newValue.width) }
+    }
+
+    override var bounds: CGRect {
+        willSet { noteWidthChange(to: newValue.width) }
+    }
+
+    private func noteWidthChange(to width: CGFloat) {
+        if abs(width - bounds.width) >= 0.5 { isAwaitingReadingRestore = true }
+    }
+
+    override func adjustedContentInsetDidChange() {
+        super.adjustedContentInsetDidChange()
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        keepReadingPositionAcrossWidthChange()
+    }
+
+    /// Restores the reading position once the width or top inset has changed. Called after layout
+    /// (subclasses that change insets after `super.layoutSubviews()` get a second pass on the next
+    /// run loop).
+    func keepReadingPositionAcrossWidthChange() {
+        let geometry = readingGeometry
+        guard geometry.width > 0, isAwaitingReadingRestore || !geometry.matches(readingAnchorGeometry) else { return }
+        let isFirstLayout = readingAnchorGeometry.width == 0
+        readingAnchorGeometry = geometry
+        isAwaitingReadingRestore = false
+        // While typing, UIKit scrolls the caret into view as the text reflows, which is what the
+        // person wants to see
+        guard !isFirstLayout, let anchor = readingAnchor, !isFirstResponder else {
+            recordReadingAnchor()
+            return
+        }
+        isRestoringReadingPosition = true
+        scrollToReadingAnchor(anchor)
+        // Insets, the readable column and restyling can still move the text this run loop
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.readingGeometry.matches(geometry) { self.scrollToReadingAnchor(anchor) }
+            self.isRestoringReadingPosition = false
+            self.recordReadingAnchor()
+        }
+    }
+
+    private func recordReadingAnchor() {
+        guard !isRestoringReadingPosition, !isAwaitingReadingRestore, bounds.width > 0,
+              readingGeometry.matches(readingAnchorGeometry) else { return }
+        let top = contentOffset.y + adjustedContentInset.top - textContainerInset.top
+        guard top > 1, layoutManager.numberOfGlyphs > 0 else {
+            // At the top: a width change keeps it at the top
+            readingAnchor = nil
+            return
+        }
+        let glyph = layoutManager.glyphIndex(for: CGPoint(x: 0, y: top), in: textContainer)
+        let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        readingAnchor = (layoutManager.characterIndexForGlyph(at: glyph), max(0, top - line.minY))
+    }
+
+    private func scrollToReadingAnchor(_ anchor: (character: Int, intoLine: CGFloat)) {
+        let length = textStorage.length
+        guard length > 0 else { return }
+        let glyph = layoutManager.glyphIndexForCharacter(at: min(anchor.character, length - 1))
+        layoutManager.ensureLayout(forGlyphRange: NSRange(location: 0, length: glyph + 1))
+        let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let target = line.minY + min(anchor.intoLine, line.height) + textContainerInset.top - adjustedContentInset.top
+        let maxY = max(-adjustedContentInset.top, contentSize.height - bounds.height + adjustedContentInset.bottom)
+        let y = min(max(target, -adjustedContentInset.top), maxY)
+        if abs(contentOffset.y - y) > 0.5 { contentOffset.y = y }
     }
 
     private func observeRecentFormats() {

@@ -3,8 +3,8 @@
 //  Swash
 //
 //  Settings › Writing: how the writing partner's fixes look (#100). The styles are Flair's text
-//  treatments, and the preview plays the chosen one on a sample sentence: the partner's cursor
-//  selects a misspelt word, types the right one over it, and the fix lands.
+//  treatments, and the preview plays the chosen one on a sample sentence as the chosen level would
+//  (#229): nothing for Off, a misspelt word fixed for Copyedit, rough notes rewritten for Ghostwrite.
 //
 
 #if os(macOS)
@@ -12,8 +12,9 @@ import AppKit
 import FlairEffects
 import SwiftUI
 
-/// The "Partner style" picker and its preview.
+/// The "Partner style" picker and its preview of `level`.
 struct WritingPartnerStyleSection: View {
+    var level: WritingPartnerMode = .copyedit
     @AppStorage(WritingPartnerDefaults.style) private var style = WritingPartnerDefaults.defaultStyle
 
     /// Every treatment, the partner's default first.
@@ -30,9 +31,9 @@ struct WritingPartnerStyleSection: View {
                     Text(treatment.name).tag(treatment.id)
                 }
             }
-            WritingPartnerStylePreview(style: style)
+            WritingPartnerStylePreview(style: style, level: level)
                 .frame(height: 64)
-                .accessibilityLabel("A preview of the partner fixing a misspelt word in this style")
+                .accessibilityLabel(WritingPartnerPreviewScript.script(for: level).accessibilityLabel)
         } footer: {
             // Other targets compile this file without SettingsView's footer style
             Text(FlairTextTreatments.treatment(id: style)?.description ?? "")
@@ -44,16 +45,27 @@ struct WritingPartnerStyleSection: View {
 
 private struct WritingPartnerStylePreview: NSViewRepresentable {
     let style: String
+    let level: WritingPartnerMode
 
     func makeNSView(context: Context) -> WritingPartnerStylePreviewView { WritingPartnerStylePreviewView() }
 
-    func updateNSView(_ view: WritingPartnerStylePreviewView, context: Context) { view.style = style }
+    func updateNSView(_ view: WritingPartnerStylePreviewView, context: Context) {
+        view.style = style
+        view.level = level
+    }
 }
 
 #Preview("Partner style") {
-    Form { WritingPartnerStyleSection() }
-        .formStyle(.grouped)
-        .frame(width: 480)
+    @Previewable @State var level = WritingPartnerMode.copyedit
+    Form {
+        Picker("Level", selection: $level) {
+            ForEach(WritingPartnerMode.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        WritingPartnerStyleSection(level: level)
+    }
+    .formStyle(.grouped)
+    .frame(width: 480)
 }
 
 #Preview("First-run introduction (#112)") {
@@ -70,7 +82,11 @@ private struct WritingPartnerStylePreview: NSViewRepresentable {
 
 // MARK: - Previews
 
-#Preview("Writing Partner Style Section", traits: .sectionContainer) {
-    WritingPartnerStyleSection()
+#Preview("Writing Partner Style Section - Ghostwrite", traits: .sectionContainer) {
+    WritingPartnerStyleSection(level: .ghostwrite)
+}
+
+#Preview("Writing Partner Style Section - Off", traits: .sectionContainer) {
+    WritingPartnerStyleSection(level: .off)
 }
 #endif

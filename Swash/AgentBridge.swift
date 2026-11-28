@@ -148,7 +148,8 @@ struct AgentToolsHookup: ViewModifier {
     let readOnlyReason: String?
     let flavor: MarkdownFlavor
     var documentID: URL? = nil
-    @State private var session = AgentDocumentSession()
+    /// The document's agent session, owned by the view so Pixie's chat uses the same tools.
+    let session: AgentDocumentSession
     @Environment(\.appearsActive) private var appearsActive
 
     func body(content: Content) -> some View {

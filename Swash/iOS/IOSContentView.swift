@@ -17,6 +17,9 @@ struct IOSContentView: View {
     let fileURL: URL?
 
     @SceneStorage("viewMode") private var viewMode: ViewMode = .preview
+    /// The last of Source and Formatted, which Split falls back to at compact width (closing an
+    /// iPhone Duo, Slide Over, a narrow Split View) instead of always Source (#65).
+    @SceneStorage("lastSingleViewMode") private var lastSingleMode: ViewMode = .preview
     /// Whether the iPad split view shows the outline sidebar; the system sidebar button sets it.
     @SceneStorage("outlineColumnVisible") private var outlineVisible = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -40,9 +43,12 @@ struct IOSContentView: View {
     /// Global y of the top safe-area edge and of the editor, which extends under the bar.
     @State private var safeAreaTop: CGFloat = 0
     @State private var editorTop: CGFloat = 0
+    /// Where an iPhone Duo's fold crosses the editors, for the Split divider (`foldX(in:)`).
+    @State private var foldX: CGFloat?
     @ObservedObject private var folderAccessManager = FolderAccessManager.shared
     private var typography = IOSTypographySettings()
     @State private var features = IOSDocumentFeaturesModel()
+    @State private var sceneActions = SceneActions()
 
     // Explicit, because `typography` is a private stored property, which would
     // otherwise make the memberwise initializer private.
@@ -51,9 +57,9 @@ struct IOSContentView: View {
         self.fileURL = fileURL
     }
 
-    /// Split needs room for two columns; in compact width it falls back to Source.
+    /// Split needs room for two columns; in compact width it falls back to the last single-pane mode.
     private var effectiveMode: ViewMode {
-        viewMode == .split && horizontalSizeClass == .compact ? .edit : viewMode
+        viewMode == .split && horizontalSizeClass == .compact ? lastSingleMode : viewMode
     }
 
     private var availableModes: [ViewMode] {
@@ -123,23 +129,31 @@ struct IOSContentView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .focusedSceneValue(\.formatCommandHandler, { handleFormatCommand($0) })
-        .focusedSceneValue(\.distractionFreeToggle, DistractionFreeToggle(isOn: distractionFree, toggle: {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                distractionFree.toggle()
-            }
-        }))
+        // The same closures on every pass: a new one each body re-ran the scene's commands,
+        // and so DocumentGroup's content, in a loop that left the screen blank (GOTCHAS #116)
+        .focusedSceneValue(\.formatCommandHandler, sceneActions.formatCommand)
+        .focusedSceneValue(\.distractionFreeToggle, DistractionFreeToggle(isOn: distractionFree,
+                                                                           toggle: sceneActions.toggleDistractionFree))
         .onChange(of: partnerPaused) { _, paused in
             editor.setPartnerPaused(paused)
         }
         .onAppear {
             editor.onPartnerPauseChange = { partnerPaused = $0 }
             editor.onFormatCommand = { handleFormatCommand($0) }
+            sceneActions.onFormatCommand = { handleFormatCommand($0) }
+            sceneActions.onToggleDistractionFree = {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    distractionFree.toggle()
+                }
+            }
             editor.flavor = document.flavor
             refreshConflicts()
         }
         .onChange(of: document.flavor) { _, flavor in
             editor.flavor = flavor
+        }
+        .onChange(of: viewMode, initial: true) { _, mode in
+            if mode != .split, mode != lastSingleMode { lastSingleMode = mode }
         }
         .onChange(of: fileURL) { _, _ in
             refreshConflicts()
@@ -228,6 +242,15 @@ struct IOSContentView: View {
         .toolbar(distractionFree || focusMode ? .hidden : .visible, for: .navigationBar)
         .toolbarRole(.editor)
         .background(DocumentShareBridge(source: exportSource, model: features))
+        // Opening or closing an iPhone Duo: tidy up, then fold the old page into the new layout
+        .background(FoldTransitionHost(onHingeMove: { prepareForDisplayChange() }))
+    }
+
+    /// Before the document moves to the other display: transient menus would come back in the
+    /// wrong place, and the move is a natural point to save.
+    private func prepareForDisplayChange() {
+        (editor.textView as? StyledUITextView)?.dismissBlockMenu()
+        Task { await DocumentOpener.saveOpenDocuments() }
     }
 
     private var focusControl: some View {
@@ -266,26 +289,53 @@ struct IOSContentView: View {
 
     /// The editors ignore the top safe area so text scrolls under the bar; `topInset` is the
     /// bar's (and banner's) height, which they apply as a content inset.
+    ///
+    /// Each pane keeps one structural position whatever the mode, so Split ⇄ Source (opening or
+    /// closing an iPhone Duo, resizing a window) only adds or removes the preview: the source
+    /// editor's text view, with its caret, scroll offset, focus and undo stack, stays (#65).
     @ViewBuilder
     private func content(topInset: CGFloat) -> some View {
-        switch effectiveMode {
-        case .edit:
-            sourceEditor(topInset: topInset)
-        case .preview:
-            // Edit Text for every flavour: Slack mrkdwn is parsed onto the same model (SlackMarkdown)
-            StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL,
-                           formattingEnabled: !distractionFree, topInset: topInset,
-                           writingOptions: typography.writingOptions(distractionFree: distractionFree),
-                           typography: typography.scaled,
-                           showEmptyLineInsertAffordance: typography.showEmptyLineInsertAffordance)
-                .id(folderAccessManager.accessGrantedTrigger)
-        case .split:
-            HStack(spacing: 0) {
-                sourceEditor(topInset: topInset)
+        let mode = effectiveMode
+        let source = mode != .preview ? sourceEditor(topInset: topInset) : nil
+        let styled = mode == .preview ? styledEditor(topInset: topInset) : nil
+        let previewPane = mode == .split ? preview(topInset: topInset) : nil
+        // An HStack rather than a split `ArrangementView` (iOS 27.1); see GOTCHAS #116
+        HStack(spacing: 0) {
+            // In Split on an iPhone Duo's inner display the divider sits on the fold, so neither
+            // pane's text runs across the hinge; elsewhere the panes share the width equally
+            source
+                .frame(width: previewPane == nil ? nil : foldX)
+            styled
+            if let previewPane {
                 Divider()
-                preview(topInset: topInset)
+                previewPane
             }
         }
+        // Measured without a GeometryReader, so the panes' layout doesn't change elsewhere
+        .onGeometryChange(for: CGFloat?.self) { Self.foldX(in: $0) } action: { foldX = $0 }
+    }
+
+    /// Where a vertical fold crosses this view (iOS 27.1's division region), if one does, with room
+    /// for a pane on each side.
+    private static func foldX(in proxy: GeometryProxy) -> CGFloat? {
+        guard #available(iOS 27.1, *) else { return nil }
+        let folds = proxy.reservedRegions(kind: .division).filter { $0.isActive && $0.frame.height > $0.frame.width }
+        guard let fold = folds.first else { return nil }
+        let x = fold.frame.midX
+        let minimumPane: CGFloat = 200
+        guard x > minimumPane, x < proxy.size.width - minimumPane else { return nil }
+        return x
+    }
+
+    /// Edit Text for every flavour: Slack mrkdwn is parsed onto the same model (SlackMarkdown).
+    private func styledEditor(topInset: CGFloat) -> some View {
+        StyledTextView(text: $document.text, controller: editor, flavor: document.flavor, baseURL: fileURL,
+                       formattingEnabled: !distractionFree, topInset: topInset,
+                       writingOptions: typography.writingOptions(distractionFree: distractionFree),
+                       typography: typography.scaled,
+                       showEmptyLineInsertAffordance: typography.showEmptyLineInsertAffordance,
+                       reuseKey: folderAccessManager.accessGrantedTrigger)
+            .id(folderAccessManager.accessGrantedTrigger)
     }
 
     private func sourceEditor(topInset: CGFloat) -> some View {
@@ -340,6 +390,8 @@ struct IOSContentView: View {
                 .accessibilityValue(effectiveMode.rawValue)
                 .accessibilityHint("Switches between Source and Formatted. Touch and hold for more modes.")
             }
+            // The last to overflow: outer-display landscape with the keyboard up has the least room (#65)
+            .overflowPriority(.high)
         }
         IOSDocumentToolbar(model: features, text: document.text, source: { exportSource },
                            editor: editor, regularWidth: horizontalSizeClass == .regular,
@@ -363,6 +415,7 @@ struct IOSContentView: View {
                     Label("Markdown Flavor", systemImage: "textformat")
                 }
             }
+            .overflowPriority(.low)
             ToolbarItem(placement: .secondaryAction) {
                 Button {
                     showingSettings = true
@@ -370,6 +423,7 @@ struct IOSContentView: View {
                     Label("Settings", systemImage: "gearshape")
                 }
             }
+            .overflowPriority(.low)
         }
     }
 
@@ -500,7 +554,9 @@ struct IOSContentView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .glassEffect(.regular, in: .rect(cornerRadius: 16))
-        .padding(.horizontal, 12)
+        // The system's margin inside the safe area, which is asymmetric on the iPhone Duo's outer
+        // display (camera on one side, the vertical bar on the other), not a fixed inset (#65)
+        .padding(.horizontal)
         .padding(.bottom, 6)
     }
 
@@ -567,6 +623,23 @@ struct IOSContentView: View {
             editor.focus()
         } else {
             document.text = edit.text
+        }
+    }
+
+    /// The closures the scene's menu commands call, made once per view. Focused values aren't
+    /// Equatable, so SwiftUI compares them by their bits: a closure created in `body` differs every
+    /// time, re-running the commands that read it, then DocumentGroup's content closure, which hands
+    /// this view a new `document` binding and runs `body` again (GOTCHAS #116).
+    @MainActor
+    private final class SceneActions {
+        var onFormatCommand: (FormatCommand) -> Void = { _ in }
+        var onToggleDistractionFree: () -> Void = {}
+
+        private(set) lazy var formatCommand: (FormatCommand) -> Void = { [unowned self] in
+            onFormatCommand($0)
+        }
+        private(set) lazy var toggleDistractionFree: () -> Void = { [unowned self] in
+            onToggleDistractionFree()
         }
     }
 

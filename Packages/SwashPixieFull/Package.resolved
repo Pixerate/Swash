@@ -1,0 +1,33 @@
+{
+  "originHash" : "11303223951fe0701321d3363902f239eb69fcb366411e8a74b47133da2b4ae2",
+  "pins" : [
+    {
+      "identity" : "editor",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Pixerate/editor",
+      "state" : {
+        "revision" : "6f54d323f93a6e09e5938733ad55833334c9eab5",
+        "version" : "0.82.0"
+      }
+    },
+    {
+      "identity" : "pixerateaccount",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Pixerate/PixerateAccount",
+      "state" : {
+        "revision" : "4b2cc613ae708c15987092289bae126dda063cb5",
+        "version" : "0.3.0"
+      }
+    },
+    {
+      "identity" : "pixie",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Pixerate/pixie.git",
+      "state" : {
+        "revision" : "f971d6ecc44605a70306f04316beb437e324af9b",
+        "version" : "0.9.0"
+      }
+    }
+  ],
+  "version" : 3
+}

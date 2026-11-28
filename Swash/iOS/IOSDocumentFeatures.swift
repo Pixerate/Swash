@@ -326,9 +326,15 @@ enum IOSPresenter {
         onPresent?(activity)
         guard let presenter = frontmost else { return }
         if let popover = activity.popoverPresentationController {
-            popover.sourceView = presenter.view
-            popover.sourceRect = CGRect(x: presenter.view.bounds.maxX - 60, y: presenter.view.safeAreaInsets.top, width: 1, height: 1)
-            popover.permittedArrowDirections = .up
+            if let item = shareBarItem(under: presenter) {
+                // Wherever the bar is: on the iPhone Duo bars can run down the trailing edge (#65)
+                popover.sourceItem = item
+                popover.permittedArrowDirections = .any
+            } else {
+                popover.sourceView = presenter.view
+                popover.sourceRect = CGRect(x: presenter.view.bounds.maxX - 60, y: presenter.view.safeAreaInsets.top, width: 1, height: 1)
+                popover.permittedArrowDirections = .up
+            }
         }
         if let dismissing = presenter.presentedViewController, dismissing.isBeingDismissed,
            let coordinator = dismissing.transitionCoordinator {
@@ -338,6 +344,20 @@ enum IOSPresenter {
         } else {
             presenter.present(activity, animated: true)
         }
+    }
+
+    /// The toolbar's Share item in the visible navigation bar under `controller`, if it shows one.
+    /// SwiftUI turns toolbar items into bar button items titled with their label.
+    private static func shareBarItem(under controller: UIViewController) -> UIBarButtonItem? {
+        if let navigation = controller as? UINavigationController, !navigation.isNavigationBarHidden,
+           navigation.viewIfLoaded?.window != nil, let item = navigation.topViewController?.navigationItem {
+            let items = item.trailingItemGroups.flatMap(\.barButtonItems) + (item.rightBarButtonItems ?? [])
+            if let share = items.first(where: { $0.title == "Share" && !$0.isHidden }) { return share }
+        }
+        for child in controller.children.reversed() {
+            if let share = shareBarItem(under: child) { return share }
+        }
+        return nil
     }
 
     /// The system share sheet for `items` (GOTCHAS #55: not ShareLink, which crashes in the overflow menu).
@@ -927,6 +947,8 @@ struct DocumentShareItem: Transferable {
 @MainActor @Observable
 final class IOSDocumentFeaturesModel {
     var showingOutlineSheet = false
+    /// Writing Partner Edits (#229): the partner's edit layers for this document.
+    var showingPartnerEdits = false
     var info: InfoSnapshot?
     var outline = MarkdownOutline(text: "")
     var currentHeading: Int?
@@ -1040,7 +1062,7 @@ struct IOSDocumentToolbar: ToolbarContent {
     var distractionFree: Binding<Bool>? = nil
     /// Pauses the writing partner for this document (#109).
     var partnerPaused: Binding<Bool>? = nil
-    @AppStorage(WritingPartnerDefaults.mode) private var partnerMode: WritingPartnerMode = .automatic
+    @AppStorage(WritingPartnerDefaults.mode) private var partnerMode: WritingPartnerMode = .copyedit
 
     @AppStorage(WritingDefaults.focusMode) private var focusMode = false
     @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
@@ -1065,6 +1087,7 @@ struct IOSDocumentToolbar: ToolbarContent {
                     Label("Document Info", systemImage: "info.circle")
                 }
             }
+            .overflowPriority(.low)
         }
         ToolbarItem(placement: .secondaryAction) {
             Menu {
@@ -1085,6 +1108,9 @@ struct IOSDocumentToolbar: ToolbarContent {
                 if let partnerPaused, partnerMode != .off {
                     Toggle("Pause Writing Partner", systemImage: "pause.circle", isOn: partnerPaused)
                 }
+                Button("Writing Partner Edits", systemImage: "square.3.layers.3d") {
+                    model.showingPartnerEdits = true
+                }
                 if let distractionFree {
                     Divider()
                     Button {
@@ -1101,6 +1127,25 @@ struct IOSDocumentToolbar: ToolbarContent {
             } label: {
                 Label("Writing", systemImage: "viewfinder")
             }
+        }
+        .overflowPriority(.low)
+    }
+}
+
+/// How readily a toolbar item gives way when the bar runs out of room (#65). Most needed on the
+/// iPhone Duo's short outer display, where bars turn vertical and the keyboard takes space.
+enum ToolbarOverflowPriority {
+    case high, low
+}
+
+extension ToolbarContent {
+    /// `visibilityPriority(_:)` where available (iOS 27); earlier systems keep the default order.
+    @ToolbarContentBuilder
+    func overflowPriority(_ priority: ToolbarOverflowPriority) -> some ToolbarContent {
+        if #available(iOS 27.0, *) {
+            visibilityPriority(priority == .high ? .high : .low)
+        } else {
+            self
         }
     }
 }
@@ -1129,6 +1174,12 @@ struct IOSDocumentFeatures: ViewModifier {
                 }
             }
             .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $model.showingPartnerEdits) {
+            WritingPartnerEditsView(load: { editor.partnerLayerEdits() },
+                                    revert: { editor.revertPartnerEdits($0) },
+                                    onDone: { model.showingPartnerEdits = false })
+                .presentationDetents([.medium, .large])
         }
         .sheet(item: $model.info) { snapshot in
             IOSDocumentInfoView(title: "Document Info", document: snapshot.document, selection: snapshot.selection, headings: snapshot.headings)
