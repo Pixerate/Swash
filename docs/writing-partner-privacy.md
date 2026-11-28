@@ -46,9 +46,27 @@ Swash sends a writing-partner request to Pixerate only when **all** of these are
 
 Quick Note tidy-up uses the Pixerate tier above, with the same rules. It sends the note you paused or saved, which is short, and nothing else.
 
+## When you ask Pixie (Swash Pro, on the Mac)
+
+Pixie is in the Mac App Store version only (the direct download and builds from source have no Pixie). Her chat (View › Show Pixie, ⌥⌘I) is separate from the writing partner: she reads and edits the document only when you ask her something, with the same tools agents use, and each of her edits is one undo step. Nothing is sent until you send her a message.
+
+**What's sent when you ask her:**
+
+- your message, and the conversation so far in that window;
+- the document's name, its Markdown flavour, its length in characters and words, and whether it can be edited;
+- where your selection is, and up to 600 characters of the selected text;
+- whatever she reads with the document's tools to answer you (a section, a search's matches, or the whole document when that's what you asked about), and the edits she makes;
+- the same customer session header or account key as the writing partner.
+
+**What Pixerate keeps:**
+
+- **Not your chat.** Pixie's conversations in Swash aren't stored on Pixerate: a chat lasts as long as the window, and the new-chat button clears it.
+- **Short notes she writes about how you like to work**, when she decides one is worth keeping (for example "prefers British spelling"), and a line about finished work. You can read them under Skills & Memory in her panel.
+
 ## Turning it off
 
-- **Settings › Writing › Writing partner › Off** stops everything above.
+- **Settings › Writing › Writing partner › Off** stops the writing partner.
+- Pixie sends nothing unless you open her panel and send her a message.
 - If you signed in to a Pixerate account, **Sign Out** in Settings › Account removes the account key from this device.
 
 ## For developers

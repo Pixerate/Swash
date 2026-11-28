@@ -36,6 +36,7 @@ final class WritingPartnerOverlay: NSView {
 
     private(set) var suggestionPrompt: SuggestionPromptView?
     private(set) var introductionView: PartnerIntroductionView?
+    private(set) var introductionSheetWindow: NSWindow?
     private(set) var undoReminderView: PartnerUndoReminderView?
 
     var hasActiveSuggestion: Bool {
@@ -47,7 +48,7 @@ final class WritingPartnerOverlay: NSView {
     }
 
     var hasActiveIntroduction: Bool {
-        introductionView != nil && introductionView?.isHidden == false
+        introductionSheetWindow != nil || (introductionView != nil && introductionView?.isHidden == false)
     }
 
     var hasActiveUndoReminder: Bool {
@@ -55,22 +56,20 @@ final class WritingPartnerOverlay: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if let intro = introductionView, !intro.isHidden {
-            let pointInIntro = convert(point, to: intro)
-            if intro.bounds.contains(pointInIntro) {
-                return intro.hitTest(pointInIntro)
+        let localPoint = convert(point, from: superview)
+        if let intro = introductionView, !intro.isHidden, intro.window == nil || intro.window === window {
+            if intro.frame.contains(localPoint) {
+                return intro.hitTest(localPoint)
             }
         }
         if let reminder = undoReminderView, !reminder.isHidden {
-            let pointInReminder = convert(point, to: reminder)
-            if reminder.bounds.contains(pointInReminder) {
-                return reminder.hitTest(pointInReminder)
+            if reminder.frame.contains(localPoint) {
+                return reminder.hitTest(localPoint)
             }
         }
         if let prompt = suggestionPrompt, !prompt.isHidden {
-            let pointInPrompt = convert(point, to: prompt)
-            if prompt.bounds.contains(pointInPrompt) {
-                return prompt.hitTest(pointInPrompt)
+            if prompt.frame.contains(localPoint) {
+                return prompt.hitTest(localPoint)
             }
         }
         return nil
@@ -150,7 +149,8 @@ final class WritingPartnerOverlay: NSView {
 
     // MARK: First-Run Introduction & First-Undo Reminder (#112)
 
-    /// Shows the in-place first-run introduction note near `rect`.
+    /// Shows the first-run introduction prompt. When a document window is available, presents it
+    /// as a native macOS sheet attached to the window; otherwise falls back to an in-place overlay.
     func showIntroduction(
         at rect: NSRect,
         onChooseMode: @escaping (WritingPartnerMode) -> Void,
@@ -160,28 +160,71 @@ final class WritingPartnerOverlay: NSView {
         if let existing = introductionView {
             intro = existing
         } else {
-            intro = PartnerIntroductionView(frame: .zero)
-            addSubview(intro)
+            intro = PartnerIntroductionView(frame: NSRect(origin: .zero, size: PartnerIntroductionView.preferredSize))
             introductionView = intro
         }
 
-        intro.configure(onChooseMode: onChooseMode, onDismiss: onDismiss)
-        let size = PartnerIntroductionView.preferredSize
-        let margin: CGFloat = 12
-        let originX = max(margin, min(rect.minX, max(margin, bounds.width - size.width - margin)))
-        var originY = rect.maxY + 8
-        if originY + size.height > bounds.height - margin {
-            originY = max(margin, rect.minY - size.height - 8)
+        let targetWindow = window ?? enclosingScrollView?.window
+        if let targetWindow {
+            intro.isPresentedAsSheet = true
+            intro.configure(
+                onChooseMode: { [weak self] mode in
+                    self?.hideIntroduction()
+                    onChooseMode(mode)
+                },
+                onDismiss: { [weak self] in
+                    self?.hideIntroduction()
+                    onDismiss()
+                }
+            )
+
+            if introductionSheetWindow == nil {
+                let sheet = NSWindow(
+                    contentRect: NSRect(origin: .zero, size: PartnerIntroductionView.preferredSize),
+                    styleMask: [.titled],
+                    backing: .buffered,
+                    defer: false
+                )
+                sheet.contentView = intro
+                sheet.titleVisibility = .hidden
+                sheet.titlebarAppearsTransparent = true
+                sheet.isMovable = false
+                sheet.defaultButtonCell = intro.copyeditButton.cell as? NSButtonCell
+                introductionSheetWindow = sheet
+                targetWindow.beginSheet(sheet, completionHandler: nil)
+                intro.copyeditButton.keyEquivalent = "\r"
+            }
+        } else {
+            intro.isPresentedAsSheet = false
+            if intro.superview !== self {
+                intro.removeFromSuperview()
+                addSubview(intro)
+            }
+            intro.configure(onChooseMode: onChooseMode, onDismiss: onDismiss)
+            let size = PartnerIntroductionView.preferredSize
+            let margin: CGFloat = 12
+            let originX = max(margin, min(rect.minX, max(margin, bounds.width - size.width - margin)))
+            var originY = rect.maxY + 8
+            if originY + size.height > bounds.height - margin {
+                originY = max(margin, rect.minY - size.height - 8)
+            }
+            intro.frame = NSRect(origin: NSPoint(x: originX, y: originY), size: size)
+            intro.layoutSubtreeIfNeeded()
+            intro.isHidden = false
+            intro.alphaValue = 1.0
         }
-        intro.frame = NSRect(origin: NSPoint(x: originX, y: originY), size: size)
-        intro.layoutSubtreeIfNeeded()
-        intro.isHidden = false
-        intro.alphaValue = 1.0
         intro.startSamplePreview()
     }
 
-    /// Hides and removes the first-run introduction note.
+    /// Hides and dismisses the first-run introduction note or sheet.
     func hideIntroduction() {
+        if let sheet = introductionSheetWindow {
+            if let parent = sheet.sheetParent ?? window ?? enclosingScrollView?.window {
+                parent.endSheet(sheet)
+            }
+            sheet.orderOut(nil)
+            introductionSheetWindow = nil
+        }
         guard let intro = introductionView else { return }
         intro.isHidden = true
         intro.removeFromSuperview()
@@ -404,7 +447,7 @@ final class WritingPartnerOverlay: NSView {
 
     // MARK: Suggestions
 
-    /// Layers drawn for active suggestions in Suggest mode (#103), without touching the text storage.
+    /// Layers drawn for active underlined suggestions (#103), without touching the text storage.
     private(set) var suggestionLayers: [CALayer] = []
 
     /// Draws a subtle tint and underline on each suggested word's rectangles, or clears them when empty.
@@ -880,13 +923,10 @@ final class SuggestionPromptView: NSView {
 
 // MARK: - Sample Sentence Preview View (#100, #112)
 
-/// A sample sentence with one wrong word, fixed by the partner's cursor in the chosen style.
-/// Used in Settings › Writing (looping) and in the first-run introduction (#112, playing one sample fix).
+/// A sample sentence the partner's cursor changes in the chosen style, as the chosen level would
+/// (#229, `WritingPartnerPreviewScript`). Used in Settings › Writing (looping) and in the first-run
+/// introduction (#112, playing one sample fix).
 final class WritingPartnerStylePreviewView: NSView {
-    static let before = "It fixes the odd "
-    static let wrong = "wrod"
-    static let right = "word"
-    static let after = " as you write."
 
     /// The script, in ms: the cursor arrives, selects the word, types the new one a letter at a
     /// time, the fix lands and stays, then (when `loops` is true) it starts again.
@@ -894,19 +934,31 @@ final class WritingPartnerStylePreviewView: NSView {
     private static let typeMs: Double = 70
     private static let hold: Double = 2600
 
-    static var sampleFixDurationMs: Double {
-        selectAt + WritingPartnerOverlay.selectMs + typeMs * Double(right.count + 1)
+    var sampleFixDurationMs: Double {
+        Self.selectAt + WritingPartnerOverlay.selectMs + Self.typeMs * Double(script.right.count + 1)
     }
 
     var style = WritingPartnerDefaults.defaultStyle {
         didSet { if style != oldValue { look = nil; start = WritingPartnerStylePreviewView.now } }
     }
 
+    /// The level the preview demonstrates (#229).
+    var level: WritingPartnerMode = .copyedit {
+        didSet {
+            guard level != oldValue else { return }
+            script = WritingPartnerPreviewScript.script(for: level)
+            setAccessibilityLabel(script.accessibilityLabel)
+            restartAnimation()
+        }
+    }
+
+    private var script = WritingPartnerPreviewScript.script(for: .copyedit)
+
     /// True in Settings › Writing (repeats forever); false in the first-run introduction (plays once and holds).
     var loops = true
 
     /// The sentence currently shown in the sample layer.
-    private(set) var currentSampleText: String = before + wrong + after
+    private(set) var currentSampleText: String = WritingPartnerPreviewScript.script(for: .copyedit).original
     /// True once the sample fix has finished typing and landed.
     private(set) var hasCompletedSampleFix = false
 
@@ -933,7 +985,7 @@ final class WritingPartnerStylePreviewView: NSView {
         layer?.addSublayer(renderer.aboveLayer)
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
-        setAccessibilityLabel("Sample fix: \(Self.before)\(Self.wrong)\(Self.after) becomes \(Self.before)\(Self.right)\(Self.after)")
+        setAccessibilityLabel(script.accessibilityLabel)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -949,7 +1001,7 @@ final class WritingPartnerStylePreviewView: NSView {
         start = Self.now
         hasCompletedSampleFix = false
         draw()
-        guard window != nil else { return }
+        guard window != nil, script.plays else { return }
         let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.draw() }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
@@ -978,11 +1030,11 @@ final class WritingPartnerStylePreviewView: NSView {
 
         let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
         let origin = NSPoint(x: 14, y: max(4, (bounds.height - lineHeight) / 2))
-        let wordX = origin.x + width(Self.before)
+        let wordX = origin.x + width(script.before)
         let line = { (word: String) in NSRect(x: wordX, y: origin.y, width: self.width(word), height: lineHeight) }
         let caret = { (x: CGFloat) in FlairTreatmentCaret(x: Double(x), y: Double(origin.y), height: Double(lineHeight)) }
 
-        let typeEnd = Self.sampleFixDurationMs
+        let typeEnd = sampleFixDurationMs
         var time = elapsedOverrideMs ?? (Self.now - start)
         if loops && time > typeEnd + Self.hold {
             start = Self.now
@@ -990,25 +1042,27 @@ final class WritingPartnerStylePreviewView: NSView {
         }
 
         var plans: [FlairTextTreatmentPlan] = []
-        var shown = Self.wrong
-        if time < Self.selectAt {
-            plans.append(look.plan(.caret, at: time, over: FlairTreatmentTarget(caret: caret(wordX + width(Self.wrong)))))
+        var shown = script.wrong
+        if !script.plays {
+            // Off: the sentence as typed, and no partner
+        } else if time < Self.selectAt {
+            plans.append(look.plan(.caret, at: time, over: FlairTreatmentTarget(caret: caret(wordX + width(script.wrong)))))
         } else if time < Self.selectAt + WritingPartnerOverlay.selectMs {
-            let target = FlairTreatmentTarget(lines: [line(Self.wrong)], caret: caret(wordX + width(Self.wrong)))
+            let target = FlairTreatmentTarget(lines: [line(script.wrong)], caret: caret(wordX + width(script.wrong)))
             plans.append(look.plan(.selecting, at: time - Self.selectAt, over: target))
             plans.append(look.plan(.caret, at: time, over: FlairTreatmentTarget(caret: target.caret)))
         } else if time < typeEnd {
             let typing = time - Self.selectAt - WritingPartnerOverlay.selectMs
-            let typed = String(Self.right.prefix(min(Self.right.count, Int(typing / Self.typeMs))))
+            let typed = String(script.right.prefix(min(script.right.count, Int(typing / Self.typeMs))))
             let head = caret(wordX + width(typed))
-            let target = FlairTreatmentTarget(lines: [line(Self.wrong)], caret: head, text: typed,
+            let target = FlairTreatmentTarget(lines: [line(script.wrong)], caret: head, text: typed,
                                               color: WritingPartnerOverlay.rgba(ink), background: WritingPartnerOverlay.rgba(background))
             plans.append(look.plan(.typing, at: typing, over: target))
             plans.append(look.plan(.caret, at: time, over: FlairTreatmentTarget(caret: head)))
         } else {
-            shown = Self.right
+            shown = script.right
             hasCompletedSampleFix = true
-            let target = FlairTreatmentTarget(lines: [line(Self.right)], caret: caret(wordX + width(Self.right)))
+            let target = FlairTreatmentTarget(lines: [line(script.right)], caret: caret(wordX + width(script.right)))
             let landed = look.plan(.landed, at: time - typeEnd, over: target)
             if !landed.done {
                 plans.append(landed)
@@ -1018,7 +1072,7 @@ final class WritingPartnerStylePreviewView: NSView {
             }
         }
 
-        let fullString = Self.before + shown + Self.after
+        let fullString = script.before + shown + script.after
         currentSampleText = fullString
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -1036,7 +1090,7 @@ final class WritingPartnerStylePreviewView: NSView {
 
 /// In-place, non-modal introduction shown once per install the first time a document is edited.
 /// Plays one sample fix on a sample sentence before the partner touches the user's words, states
-/// plainly that default rules run on the device, and offers Automatically, Suggest, and Not now.
+/// plainly that default rules run on the device, and offers Copyedit, Ghostwrite, and Not now (#229).
 @MainActor
 final class PartnerIntroductionView: NSView {
     static let noteText = WritingPartnerCopy.introduction
@@ -1052,8 +1106,8 @@ final class PartnerIntroductionView: NSView {
     let titleLabel = NSTextField(labelWithString: PartnerIntroductionView.noteText)
     let sampleView = WritingPartnerStylePreviewView(frame: .zero)
     let privacyLabel = NSTextField(wrappingLabelWithString: PartnerIntroductionView.privacyText)
-    let automaticallyButton = NSButton(title: "Automatically", target: nil, action: nil)
-    let suggestButton = NSButton(title: "Suggest", target: nil, action: nil)
+    let copyeditButton = NSButton(title: WritingPartnerMode.copyedit.title, target: nil, action: nil)
+    let ghostwriteButton = NSButton(title: WritingPartnerMode.ghostwrite.title, target: nil, action: nil)
     let notNowButton = NSButton(title: "Not now", target: nil, action: nil)
     private let iconView = NSImageView()
 
@@ -1109,27 +1163,27 @@ final class PartnerIntroductionView: NSView {
         privacyLabel.drawsBackground = false
         addSubview(privacyLabel)
 
-        automaticallyButton.bezelStyle = .rounded
-        automaticallyButton.target = self
-        automaticallyButton.action = #selector(automaticallyClicked)
+        copyeditButton.bezelStyle = .rounded
+        copyeditButton.target = self
+        copyeditButton.action = #selector(copyeditClicked)
         // No Return key equivalent: Return while writing must start a new line, never opt in
-        automaticallyButton.contentTintColor = WritingPartnerOverlay.tint
-        automaticallyButton.toolTip = "Turn on the writing partner in Automatically mode (⌥Return)"
-        automaticallyButton.setAccessibilityElement(true)
-        automaticallyButton.setAccessibilityRole(.button)
-        automaticallyButton.setAccessibilityLabel("Turn on Automatically")
-        automaticallyButton.setAccessibilityIdentifier("IntroAutomaticallyButton")
-        addSubview(automaticallyButton)
+        copyeditButton.contentTintColor = WritingPartnerOverlay.tint
+        copyeditButton.toolTip = "Tidy up as you type: punctuation, spelling, grammar and formatting (⌥Return)"
+        copyeditButton.setAccessibilityElement(true)
+        copyeditButton.setAccessibilityRole(.button)
+        copyeditButton.setAccessibilityLabel("Turn on Copyedit")
+        copyeditButton.setAccessibilityIdentifier("IntroCopyeditButton")
+        addSubview(copyeditButton)
 
-        suggestButton.bezelStyle = .rounded
-        suggestButton.target = self
-        suggestButton.action = #selector(suggestClicked)
-        suggestButton.toolTip = "Offer fixes as underlined suggestions without changing text automatically"
-        suggestButton.setAccessibilityElement(true)
-        suggestButton.setAccessibilityRole(.button)
-        suggestButton.setAccessibilityLabel("Turn on Suggest")
-        suggestButton.setAccessibilityIdentifier("IntroSuggestButton")
-        addSubview(suggestButton)
+        ghostwriteButton.bezelStyle = .rounded
+        ghostwriteButton.target = self
+        ghostwriteButton.action = #selector(ghostwriteClicked)
+        ghostwriteButton.toolTip = "Copyedit, and rewrite what you wrote in place when you pause"
+        ghostwriteButton.setAccessibilityElement(true)
+        ghostwriteButton.setAccessibilityRole(.button)
+        ghostwriteButton.setAccessibilityLabel("Turn on Ghostwrite")
+        ghostwriteButton.setAccessibilityIdentifier("IntroGhostwriteButton")
+        addSubview(ghostwriteButton)
 
         notNowButton.bezelStyle = .rounded
         notNowButton.target = self
@@ -1142,8 +1196,8 @@ final class PartnerIntroductionView: NSView {
         notNowButton.setAccessibilityIdentifier("IntroNotNowButton")
         addSubview(notNowButton)
 
-        setAccessibilityLabel("\(Self.noteText). \(Self.privacyText) Choose Automatically, Suggest, or Not now.")
-        setAccessibilityChildren([titleLabel, sampleView, privacyLabel, automaticallyButton, suggestButton, notNowButton])
+        setAccessibilityLabel("\(Self.noteText). \(Self.privacyText) Choose Copyedit, Ghostwrite, or Not now.")
+        setAccessibilityChildren([titleLabel, sampleView, privacyLabel, copyeditButton, ghostwriteButton, notNowButton])
     }
 
     func configure(
@@ -1155,7 +1209,7 @@ final class PartnerIntroductionView: NSView {
         sampleView.style = WritingPartnerDefaults.style()
         let privacy = Self.privacyText(signedIn: WritingPartnerDefaults.provider() == .pixerate)
         privacyLabel.stringValue = privacy
-        setAccessibilityLabel("\(Self.noteText). \(privacy) Choose Automatically, Suggest, or Not now.")
+        setAccessibilityLabel("\(Self.noteText). \(privacy) Choose Copyedit, Ghostwrite, or Not now.")
         needsLayout = true
     }
 
@@ -1163,21 +1217,48 @@ final class PartnerIntroductionView: NSView {
         sampleView.restartAnimation()
     }
 
-    @objc private func automaticallyClicked() {
-        onChooseMode?(.automatic)
+    @objc private func copyeditClicked() {
+        onChooseMode?(.copyedit)
     }
 
-    @objc private func suggestClicked() {
-        onChooseMode?(.suggest)
+    @objc private func ghostwriteClicked() {
+        onChooseMode?(.ghostwrite)
     }
 
     @objc private func notNowClicked() {
         onDismiss?()
     }
 
+    var isPresentedAsSheet: Bool = false {
+        didSet {
+            updateSheetStyling()
+        }
+    }
+
+    private func updateSheetStyling() {
+        if isPresentedAsSheet {
+            layer?.borderWidth = 0
+            layer?.borderColor = nil
+            shadow = nil
+            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            copyeditButton.keyEquivalent = "\r"
+            copyeditButton.toolTip = "Tidy up as you type: punctuation, spelling, grammar and formatting (Return)"
+        } else {
+            layer?.borderWidth = 1
+            layer?.borderColor = WritingPartnerOverlay.tint.withAlphaComponent(0.45).cgColor
+            layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.97).cgColor
+            shadow = NSShadow()
+            shadow?.shadowColor = NSColor.black.withAlphaComponent(0.18)
+            shadow?.shadowOffset = NSSize(width: 0, height: -2)
+            shadow?.shadowBlurRadius = 10
+            copyeditButton.keyEquivalent = ""
+            copyeditButton.toolTip = "Tidy up as you type: punctuation, spelling, grammar and formatting (⌥Return)"
+        }
+    }
+
     override func layout() {
         super.layout()
-        let padX: CGFloat = 12
+        let padX: CGFloat = isPresentedAsSheet ? 16 : 12
         let padY: CGFloat = 10
         let iconSize: CGFloat = 16
 
@@ -1193,12 +1274,19 @@ final class PartnerIntroductionView: NSView {
         let buttonH: CGFloat = 24
         let buttonY = bounds.height - padY - buttonH
         let notNowW: CGFloat = 76
-        let suggestW: CGFloat = 76
-        let autoW: CGFloat = 108
+        let ghostwriteW: CGFloat = 92
+        let copyeditW: CGFloat = 92
 
-        notNowButton.frame = NSRect(x: bounds.width - padX - notNowW, y: buttonY, width: notNowW, height: buttonH)
-        suggestButton.frame = NSRect(x: notNowButton.frame.minX - 6 - suggestW, y: buttonY, width: suggestW, height: buttonH)
-        automaticallyButton.frame = NSRect(x: suggestButton.frame.minX - 6 - autoW, y: buttonY, width: autoW, height: buttonH)
+        if isPresentedAsSheet {
+            // macOS HIG sheet button arrangement: dismissal on the left, the default (Copyedit) on the right
+            notNowButton.frame = NSRect(x: padX, y: buttonY, width: notNowW, height: buttonH)
+            copyeditButton.frame = NSRect(x: bounds.width - padX - copyeditW, y: buttonY, width: copyeditW, height: buttonH)
+            ghostwriteButton.frame = NSRect(x: copyeditButton.frame.minX - 8 - ghostwriteW, y: buttonY, width: ghostwriteW, height: buttonH)
+        } else {
+            notNowButton.frame = NSRect(x: bounds.width - padX - notNowW, y: buttonY, width: notNowW, height: buttonH)
+            ghostwriteButton.frame = NSRect(x: notNowButton.frame.minX - 6 - ghostwriteW, y: buttonY, width: ghostwriteW, height: buttonH)
+            copyeditButton.frame = NSRect(x: ghostwriteButton.frame.minX - 6 - copyeditW, y: buttonY, width: copyeditW, height: buttonH)
+        }
     }
 }
 
@@ -1208,8 +1296,8 @@ final class PartnerIntroductionView: NSView {
 /// explaining where to pause the partner for this document or turn it off in Settings › Writing.
 @MainActor
 final class PartnerUndoReminderView: NSView {
-    static let messageText = "Pause for this document in Edit › Pause Writing Partner (⌥⌘P), or turn it off in Settings › Writing."
-    static let preferredSize = NSSize(width: 460, height: 42)
+    nonisolated static let messageText = "Pause for this document in Edit › Pause Writing Partner (⌥⌘P), or turn it off in Settings › Writing."
+    nonisolated static let preferredSize = NSSize(width: 460, height: 42)
 
     let messageLabel = NSTextField(wrappingLabelWithString: PartnerUndoReminderView.messageText)
     let pauseButton = NSButton(title: "Pause Here", target: nil, action: nil)

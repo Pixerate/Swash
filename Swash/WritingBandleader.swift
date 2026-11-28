@@ -35,6 +35,14 @@ extension MarkdownFlavor {
     }
 }
 
+/// How far the bandleader may go on a pause (#229, Pixerate/schemas#87): `copyedit` keeps to
+/// corrections and house-style fixes it is sure of, with no unsolicited rewriting; `ghostwrite`
+/// also synthesizes and rewrites prose (tone, structure) in place.
+nonisolated enum JazzTextEngagementMode: String, Codable, Sendable, CaseIterable {
+    case copyedit = "copyedit"
+    case ghostwrite = "ghostwrite"
+}
+
 nonisolated enum JazzTextGenre: String, Codable, Sendable, CaseIterable {
     case prose = "prose"
     case notes = "notes"
@@ -545,6 +553,9 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
     var teamId: String?
     var language: String?
     var feedback: [JazzTextFeedbackItem]?
+    /// The partner's level (#229). Absent means `copyedit`, which is what a server that predates
+    /// the field does.
+    var engagementMode: JazzTextEngagementMode?
 
     init(
         paragraph: String,
@@ -554,7 +565,8 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         voices: [JazzTextVoiceState] = [],
         teamId: String? = nil,
         language: String? = nil,
-        feedback: [JazzTextFeedbackItem]? = nil
+        feedback: [JazzTextFeedbackItem]? = nil,
+        engagementMode: JazzTextEngagementMode? = nil
     ) {
         self.paragraph = paragraph
         self.before = before
@@ -564,6 +576,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         self.teamId = teamId
         self.language = language
         self.feedback = feedback
+        self.engagementMode = engagementMode
     }
 
     enum CodingKeys: String, CodingKey {
@@ -575,6 +588,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         case teamId
         case language
         case feedback
+        case engagementMode
     }
 
     init(from decoder: Decoder) throws {
@@ -587,6 +601,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         self.teamId = try container.decodeIfPresent(String.self, forKey: .teamId)
         self.language = try container.decodeIfPresent(String.self, forKey: .language)
         self.feedback = try container.decodeIfPresent([JazzTextFeedbackItem].self, forKey: .feedback)
+        self.engagementMode = try container.decodeIfPresent(JazzTextEngagementMode.self, forKey: .engagementMode)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -599,6 +614,7 @@ nonisolated struct JazzTextLeadRequest: Codable, Sendable, Equatable {
         try container.encodeIfPresent(teamId, forKey: .teamId)
         try container.encodeIfPresent(language, forKey: .language)
         try container.encodeIfPresent(feedback, forKey: .feedback)
+        try container.encodeIfPresent(engagementMode, forKey: .engagementMode)
     }
 }
 
@@ -1527,7 +1543,7 @@ nonisolated enum BandleaderSuggestionPlanner {
         paragraphRange: NSRange,
         documentText: String,
         flavor: MarkdownFlavor = .github,
-        mode: WritingPartnerMode = .automatic,
+        mode: WritingPartnerMode = .copyedit,
         spellingEnabled: Bool = true,
         memory: BandleaderSessionMemory
     ) -> Plan {
@@ -1629,7 +1645,7 @@ nonisolated enum BandleaderSuggestionPlanner {
                 confidence: suggestion.confidence
             )
 
-            if mode == .automatic && suggestion.shouldApplyAtOnce {
+            if mode.isOn && suggestion.shouldApplyAtOnce {
                 automaticEdits.append(edit)
             } else if mode != .off {
                 offeredEdits.append(edit)
@@ -2400,7 +2416,7 @@ nonisolated extension GrammarVoice {
         caret: Int? = nil,
         flavor: MarkdownFlavor = .github,
         provider: WritingPartnerProvider = .pixerate,
-        mode: WritingPartnerMode = .automatic,
+        mode: WritingPartnerMode = .copyedit,
         languageOverride: NLLanguage? = nil,
         isActive: (PunctuationRule) -> Bool = { _ in true }
     ) -> (automatic: [PartnerEdit], suggestions: [PartnerEdit]) {
@@ -2515,7 +2531,7 @@ nonisolated extension GrammarVoice {
             )
 
             lastEnd = end
-            if mode == .suggest || item.confidence < autoConfidenceThreshold {
+            if item.confidence < autoConfidenceThreshold {
                 suggested.append(partnerEdit)
             } else {
                 automatic.append(partnerEdit)

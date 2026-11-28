@@ -6,6 +6,7 @@
 //
 
 #if os(macOS)
+import SwashPixie
 import SwiftUI
 import MacAppKitExtras
 import AppKit
@@ -95,6 +96,16 @@ struct SwashApp: App {
     @StateObject private var sparkleUpdater = SparkleUpdater.shared
     #endif
     @AppStorage("showMenuBarExtra") private var showMenuBarExtra = false
+
+    init() {
+        // Pixie's chat in document windows (View › Show Pixie), in builds that have her: the
+        // open-source build's `SwashPixie` is a stub (docs/RELEASING.md).
+        if SwashPixie.isAvailable {
+            ContentView.pixieInspector = { session, _, close in
+                SwashPixie.inspector(for: session.pixieDocument, store: PixerateAccess.shared.store, onClose: close)
+            }
+        }
+    }
     
     var body: some Scene {
         DocumentGroup(newDocument: SwashDocument()) { file in

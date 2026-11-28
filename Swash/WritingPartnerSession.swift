@@ -187,7 +187,7 @@ final class WritingPartnerSession {
     private var fixInFlight: Fix?
     private var player: Task<Void, Never>?
 
-    /// A fix offered in Suggest mode (#103), waiting for the person to accept or dismiss it.
+    /// A fix offered as an underline (#103; since #229 only a mark being settled), waiting for the person to accept or dismiss it.
     struct Suggestion: Equatable {
         var edit: PartnerEdit
         /// Raw-Markdown offset just after the boundary that offered this fix.
@@ -199,7 +199,7 @@ final class WritingPartnerSession {
     /// How far (UTF-16 units) the person can type past a suggestion before ignoring it counts as dismissing it.
     static let suggestionReach = 40
 
-    /// Active suggestions in Suggest mode, in document order.
+    /// Active suggestions, in document order.
     private(set) var suggestions: [Suggestion] = []
     /// Most recent VoiceOver announcement for a suggestion.
     private(set) var lastAnnouncement: String?
@@ -225,6 +225,13 @@ final class WritingPartnerSession {
     private(set) var isReviewing = false
     /// Called with the number of marks, for the status bar.
     var onMarksChange: ((Int) -> Void)?
+
+    // MARK: - Edit Layers (#229)
+
+    /// The partner's edits this session, on their Copyedit and Ghostwrite layers. Never saved.
+    private(set) var layers = EditLayerStack()
+    /// Called when the layers may have changed, for the edit layers list.
+    var onLayersChange: (() -> Void)?
 
     // MARK: - Bandleader & Pause Tier (#101, #120)
     private var testingBandleader: (any WritingBandleader)?
@@ -301,7 +308,7 @@ final class WritingPartnerSession {
 
     // MARK: - First-Run Introduction, Undo Reminder & Per-Document Pause (#112)
 
-    /// Chooses a mode (`Automatically` or `Suggest`) from the first-run introduction and hides it.
+    /// Chooses a level (Copyedit or Ghostwrite) from the first-run introduction and hides it.
     func chooseIntroductionMode(_ chosenMode: WritingPartnerMode, in host: (any WritingPartnerHost)? = nil) {
         WritingPartnerDefaults.setIntroShown(true, defaults)
         defaults.set(chosenMode.rawValue, forKey: WritingPartnerDefaults.mode)
@@ -365,7 +372,7 @@ final class WritingPartnerSession {
     }
 
     /// Accepts the active structural suggestion, applying it as one undo step through the partner's cursor.
-    func acceptActiveSuggestion() {
+    func acceptActiveSuggestion(layer: PartnerEditLayer = .copyedit) {
         guard let active = activeSuggestion, let host = currentHost else { return }
         let (suggestion, _, paragraphRange) = active
         activeSuggestion = nil
@@ -388,7 +395,8 @@ final class WritingPartnerSession {
             actionName: WritingPartnerDefaults.suggestionActionName,
             bandleaderSuggestionId: suggestion.effectiveId,
             bandleaderSuggestionKind: suggestion.kind,
-            bandleaderCheckId: suggestion.checkId
+            bandleaderCheckId: suggestion.checkId,
+            layer: layer
         )
         play(Fix(remaining: [edit], boundaries: [], isRetry: false), in: host)
     }
@@ -417,6 +425,11 @@ final class WritingPartnerSession {
     /// typing: not for Swash's edits, restyling, SwiftUI updates or Writing Tools.
     func willType(_ string: String?, inRaw raw: NSRange, host: any WritingPartnerHost) {
         currentHost = host
+        // The person's typing (and undo) moves the partner's layers; what it rewrites becomes theirs (#229)
+        if !layers.isEmpty {
+            layers.move(through: raw, replacement: string ?? "")
+            onLayersChange?()
+        }
         if !marks.isEmpty {
             let isUndo = host.partnerUndoManager.map { $0.isUndoing || $0.isRedoing } ?? false
             moveMarks(through: raw, replacement: string ?? "", byPerson: !isUndo, in: host)
@@ -541,9 +554,9 @@ final class WritingPartnerSession {
         if !isOn {
             cancelFix()
             clearSuggestions(in: host)
-        } else if mode != .suggest, !suggestions.isEmpty {
-            // In Automatic mode, keep lower-confidence bandleader suggestions that were offered
-            // as underlined suggestions (#120) until accepted, edited, or dismissed.
+        } else if !suggestions.isEmpty {
+            // Keep lower-confidence bandleader suggestions that were offered as underlined
+            // suggestions (#120) until accepted, edited, or dismissed.
             suggestions.removeAll { $0.edit.bandleaderSuggestionId == nil && $0.markID == nil }
             refreshSuggestions(in: host)
         }
@@ -713,11 +726,7 @@ final class WritingPartnerSession {
             scheduleTidy(in: host)
             return
         }
-        if mode == .suggest {
-            offer(edits, triggerEnd: selection.location, in: host)
-        } else {
-            play(Fix(remaining: edits, boundaries: boundaries, isRetry: isRetry), in: host)
-        }
+        play(Fix(remaining: edits, boundaries: boundaries, isRetry: isRetry), in: host)
     }
 
     // MARK: Formatting (#113)
@@ -742,11 +751,10 @@ final class WritingPartnerSession {
         }
     }
 
-    /// Whether the Formatting voice plays in this editor: not for Slack (the Chat voice's), and in
-    /// Source view only when turned on, since there the Markdown is what the person is looking at.
+    /// Whether the Formatting voice plays in this editor: not for Slack (the Chat voice's). Since
+    /// #229 it tidies in Source view too, like the Formatted view.
     private func isFormattingOn(_ host: any WritingPartnerHost) -> Bool {
         host.partnerFlavor != .slack
-            && (host.partnerIsStyled || WritingPartnerDefaults.formattingInSource(defaults))
     }
 
     /// Tidies the blocks the person changed and has since left. The block the caret is in waits.
@@ -783,11 +791,7 @@ final class WritingPartnerSession {
                                spellingWords: [], actionName: WritingPartnerDefaults.formattingActionName,
                                playsInstantly: original.contains("\n") || fix.replacement.contains("\n") || fix.replacement.isEmpty)
         }
-        if mode == .suggest {
-            offer(edits, triggerEnd: selection.location, in: host)
-        } else {
-            play(Fix(remaining: edits, boundaries: [], isRetry: false), in: host)
-        }
+        play(Fix(remaining: edits, boundaries: [], isRetry: false), in: host)
     }
 
     // MARK: Marks (#128)
@@ -844,7 +848,7 @@ final class WritingPartnerSession {
         onMarksChange?(marks.count)
     }
 
-    /// Shows the mark at `index` with its candidate in place, in the manner of Suggest mode, and puts
+    /// Shows the mark at `index` with its candidate in place, as an underlined suggestion, and puts
     /// the caret just after it, so Tab or ⌥⏎ accepts and Esc keeps the text as written.
     private func showMark(at index: Int?, candidate: Int = 0, moveCaret: Bool = true,
                           in host: any WritingPartnerHost) {
@@ -966,24 +970,6 @@ final class WritingPartnerSession {
     }
 
     // MARK: Suggestions (#103)
-
-    private func offer(_ edits: [PartnerEdit], triggerEnd: Int, in host: any WritingPartnerHost) {
-        currentHost = host
-        for edit in edits {
-            suggestions.removeAll { NSIntersectionRange($0.edit.range, edit.range).length > 0 }
-            suggestions.append(Suggestion(edit: edit, triggerEnd: max(NSMaxRange(edit.range), triggerEnd)))
-        }
-        suggestions.sort { $0.edit.range.location < $1.edit.range.location }
-        refreshSuggestions(in: host)
-        DispatchQueue.main.async { [weak self, weak host] in
-            guard let self, let host else { return }
-            self.refreshSuggestions(in: host)
-        }
-        let summary = edits.map { "\($0.replacement) for \($0.original)" }.joined(separator: ", ")
-        let announcement = "Suggestion: \(summary)"
-        lastAnnouncement = announcement
-        host.partnerAnnounce(announcement)
-    }
 
     /// Redraws active suggestion underlines on the host's canvas.
     func refreshSuggestions(in host: any WritingPartnerHost) {
@@ -1172,6 +1158,15 @@ final class WritingPartnerSession {
         let move = { (location: Int) -> Int in location >= NSMaxRange(range) ? location + delta : location }
         pendingBoundaries = pendingBoundaries.map { (move($0.location), $0.enterEndedLine) }
         formattingDirty = Self.move(ranges: formattingDirty, through: range, replacement: text)
+        // The edit goes on its layer (#229); the others move with it
+        let layerCount = layers.edits.count
+        if let edit = pendingStep {
+            layers.recordPartnerEdit(replacing: range, original: edit.original, replacement: text,
+                                     layer: edit.layer, rules: edit.rules)
+        } else {
+            layers.move(through: range, replacement: text)
+        }
+        if layers.edits.count != layerCount || pendingStep != nil { onLayersChange?() }
         if var fix = fixInFlight {
             fix.boundaries = fix.boundaries.map { (move($0.location), $0.enterEndedLine) }
             fix.remaining = fix.remaining.map { var edit = $0; edit.range.location = move(edit.range.location); return edit }
@@ -1249,7 +1244,7 @@ final class WritingPartnerSession {
     private func retry(_ fix: Fix) {
         fixInFlight = nil
         guard !fix.isCancelled, !fix.isRetry, !fix.boundaries.isEmpty,
-              WritingPartnerDefaults.mode(defaults) == .automatic, !isPaused,
+              WritingPartnerDefaults.mode(defaults).isOn, !isPaused,
               let host = currentHost, !host.partnerHasMarkedText else {
             finish()
             return
@@ -1405,7 +1400,8 @@ final class WritingPartnerSession {
             flavor: host.partnerFlavor.jazzTextFlavor,
             voices: voices,
             language: detectedLanguage == .english ? nil : detectedLanguage.rawValue,
-            feedback: recentFeedback
+            feedback: recentFeedback,
+            engagementMode: WritingPartnerDefaults.mode(defaults).engagementMode
         )
 
         leadTask?.cancel()
@@ -1492,20 +1488,16 @@ final class WritingPartnerSession {
         let offeredEdits = (plan.offeredEdits + grammarOffered).sorted { $0.range.location < $1.range.location }
         let automaticEdits = (plan.automaticEdits + grammarAutomatic).sorted { $0.range.location < $1.range.location }
 
-        // In Automatically, what the partner isn't sure about is marked, to settle later (#128);
-        // otherwise uncertain / Suggest-mode inline suggestions are offered as underlines (#103, #120).
-        let marking = mode == .automatic && WritingPartnerDefaults.markUncertain(defaults)
+        // With Suggestions on, what the partner isn't sure about is marked, to settle later (#128,
+        // #229); with it off, it's left alone.
+        let marking = WritingPartnerDefaults.suggestions(defaults)
         if !automaticEdits.isEmpty, !marks.isEmpty {
             // The partner became sure: its fix replaces the mark
             marks.removeAll { mark in automaticEdits.contains { NSIntersectionRange($0.range, mark.range).length > 0 } }
             refreshMarks(in: host)
         }
-        if !offeredEdits.isEmpty {
-            if marking {
-                addMarks(offeredEdits, in: host)
-            } else {
-                offer(offeredEdits, triggerEnd: selection.location, in: host)
-            }
+        if !offeredEdits.isEmpty, marking {
+            addMarks(offeredEdits, in: host)
         }
 
         // Apply high-confidence inline suggestions at once through the partner's cursor (#120).
@@ -1521,8 +1513,10 @@ final class WritingPartnerSession {
         // Show a structural block suggestion prompt if present and no inline cursor edit is running.
         guard let suggestion = plan.structuralSuggestion else { return }
 
-        // A structure change it isn't sure of is marked rather than prompted for (#128)
-        if marking, let confidence = suggestion.confidence, confidence < GrammarVoice.autoConfidenceThreshold {
+        // A structure change it isn't sure of is marked rather than prompted for (#128), or left
+        // alone with Suggestions off (#229)
+        if let confidence = suggestion.confidence, confidence < GrammarVoice.autoConfidenceThreshold {
+            guard marking else { return }
             let local = NSRange(location: suggestion.range.start, length: max(0, suggestion.range.end - suggestion.range.start))
             let paragraphNS = paragraph as NSString
             if NSMaxRange(local) <= paragraphNS.length {
@@ -1538,6 +1532,17 @@ final class WritingPartnerSession {
 
         self.activeSuggestion = (suggestion: suggestion, paragraph: paragraph, paragraphRange: paragraphRange)
 
+        // Ghostwrite (#229) rewrites in place: a change it is sure of is made, on its own layer
+        if mode == .ghostwrite, suggestion.alternatives?.isEmpty ?? true {
+            acceptActiveSuggestion(layer: .ghostwrite)
+            return
+        }
+        // Copyedit makes no unsolicited rewrites: the change is only offered, with Suggestions on
+        guard marking else {
+            activeSuggestion = nil
+            return
+        }
+
         let rawStart = paragraphRange.location + suggestion.range.start
         let rawEnd = paragraphRange.location + suggestion.range.end
         let rects = host.partnerRects(forRaw: NSRange(location: rawStart, length: max(0, rawEnd - rawStart)))
@@ -1549,6 +1554,65 @@ final class WritingPartnerSession {
             onAccept: { [weak self] in self?.acceptActiveSuggestion() },
             onDismiss: { [weak self] in self?.dismissActiveSuggestion() }
         )
+    }
+
+    // MARK: - Edit Layers (#229)
+
+    /// The layers as they stand in `host`'s text now: edits whose text changed out of sight leave.
+    func currentLayers(in host: any WritingPartnerHost) -> EditLayerStack {
+        layers.validate(against: host.partnerRawText as NSString)
+        return layers
+    }
+
+    /// Reverts every intact edit on `layer`, as one undo step, leaving the person's typing alone.
+    @discardableResult
+    func revertLayer(_ layer: PartnerEditLayer, in host: any WritingPartnerHost) -> Int {
+        revertEdits(layers.ids(on: layer), in: host)
+    }
+
+    /// Reverts the partner's edits `ids` (as one undo step), putting back what was there before
+    /// each, and counts it against their rules like an undo. Returns how many were reverted.
+    @discardableResult
+    func revertEdits(_ ids: Set<Int>, in host: any WritingPartnerHost) -> Int {
+        let text = host.partnerRawText as NSString
+        layers.validate(against: text)
+        let changes = layers.reverts(for: ids, in: text)
+        guard !changes.isEmpty, host.partnerCanEdit, !host.partnerHasMarkedText else {
+            onLayersChange?()
+            return 0
+        }
+        cancelFix()
+        let reverted = layers.edits.filter { ids.contains($0.id) }
+        let selection = host.partnerRawSelection
+        let result = EditLayerStack.apply(changes, to: text, caret: selection.location)
+        layers.remove(ids)
+        for change in changes {
+            layers.move(through: change.range, replacement: change.replacement)
+            if !marks.isEmpty { moveMarks(through: change.range, replacement: change.replacement, byPerson: false, in: host) }
+            formattingDirty = Self.move(ranges: formattingDirty, through: change.range, replacement: change.replacement)
+        }
+        let rules = reverted.flatMap(\.rules)
+        if !rules.isEmpty {
+            let voice = WritingPartnerVoice(flavor: host.partnerFlavor)
+            var stats = WritingPartnerStats.load(defaults, voice: voice)
+            for rule in rules where rule != .spelling { stats.undone(rule) }
+            stats.save(defaults, voice: voice)
+        }
+        let layersReverted = Set(reverted.map(\.layer))
+        let actionName = layersReverted.count == 1 ? layersReverted.first!.revertActionName : "Revert Partner Edits"
+        host.applyPartnerEdit(newRawText: result.text, rawSelection: NSRange(location: result.caret, length: 0),
+                              actionName: actionName)
+        onLayersChange?()
+        let count = changes.count
+        host.partnerAnnounce(count == 1 ? "Reverted 1 edit" : "Reverted \(count) edits")
+        return count
+    }
+
+    /// A different document in this editor: the layers and the bandleader session belong to the old one.
+    func documentDidChange() {
+        resetBandleaderSession()
+        layers.removeAll()
+        onLayersChange?()
     }
 
     // MARK: - Testing Helpers

@@ -16,6 +16,15 @@ import PixerateMarkdown
 @MainActor
 final class StyledTextViewTests: XCTestCase {
     private var harnesses: [EditorHarness] = []
+    private var savedPartnerMode: Any?
+
+    /// The writing partner is off: these tests check the editor's own editing and styling, and the
+    /// partner's fixes would land or not depending on how long a test pumps (GOTCHAS #114)
+    override func setUp() async throws {
+        try await super.setUp()
+        savedPartnerMode = UserDefaults.standard.object(forKey: WritingPartnerDefaults.mode)
+        UserDefaults.standard.set(WritingPartnerMode.off.rawValue, forKey: WritingPartnerDefaults.mode)
+    }
 
     private func editor(_ markdown: String, file: StaticString = #filePath, line: UInt = #line) throws -> EditorHarness {
         let harness = try EditorHarness(markdown, file: file, line: line)
@@ -26,6 +35,11 @@ final class StyledTextViewTests: XCTestCase {
     override func tearDown() async throws {
         for harness in harnesses { harness.tearDown() }
         harnesses.removeAll()
+        if let savedPartnerMode {
+            UserDefaults.standard.set(savedPartnerMode, forKey: WritingPartnerDefaults.mode)
+        } else {
+            UserDefaults.standard.removeObject(forKey: WritingPartnerDefaults.mode)
+        }
         try await super.tearDown()
     }
 

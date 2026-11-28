@@ -2,25 +2,19 @@
 //  IOSWritingPartnerSettings.swift
 //  Swash
 //
-//  Settings › Writing Partner on iPhone and iPad (#109): the same switches as the Mac's Settings ›
-//  Writing, worded for touch (undo instead of ⌘Z, the edit menu instead of Tab).
+//  Settings › Writing Partner on iPhone and iPad (#109, #229): the same five sections as the Mac's
+//  Settings › Writing, worded for touch (undo instead of ⌘Z, the edit menu instead of Tab).
 //
 
 #if os(iOS)
 import SwiftUI
 
 struct IOSWritingPartnerSettings: View {
-    @AppStorage(WritingPartnerDefaults.mode) private var mode: WritingPartnerMode = .automatic
+    @AppStorage(WritingPartnerDefaults.mode) private var mode: WritingPartnerMode = .copyedit
     @AppStorage("markdownFlavor") private var defaultFlavor: MarkdownFlavor = .github
     @AppStorage(WritingPartnerDefaults.curlyQuotes) private var curlyQuotes = false
-    @AppStorage(WritingPartnerDefaults.doubledWords) private var doubledWords = true
-    @AppStorage(WritingPartnerDefaults.aAndAn) private var aAndAn = true
-    @AppStorage(WritingPartnerDefaults.agreementAndTense) private var agreementAndTense = true
-    @AppStorage(WritingPartnerDefaults.missingWords) private var missingWords = true
-    @AppStorage(WritingPartnerDefaults.markUncertain) private var markUncertain = true
+    @AppStorage(WritingPartnerDefaults.suggestions) private var suggestions = true
     @AppStorage(WritingPartnerDefaults.announceMarks) private var announceMarks = false
-    @AppStorage(WritingPartnerDefaults.formattingInSource) private var formattingInSource = false
-    @State private var spellingOn = WritingPartnerDefaults.spelling()
     @State private var proseStats = WritingPartnerStats.load(voice: .punctuate)
     @State private var chatStats = WritingPartnerStats.load(voice: .chat)
     var access: PixerateAccess = .shared
@@ -44,62 +38,41 @@ struct IOSWritingPartnerSettings: View {
         return provider == .onDevice ? "On this device (Apple Intelligence)" : "Basic fixes only"
     }
 
+    // The same five sections as the Mac's Settings › Writing (#229)
     var body: some View {
         Form {
             Section {
-                Picker("Fix as I type", selection: $mode) {
+                Picker("Writing partner", selection: $mode) {
                     ForEach(WritingPartnerMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
                 }
-                Toggle("Correct spelling", isOn: Binding(
-                    get: { spellingOn },
-                    set: { UserDefaults.standard.set($0, forKey: WritingPartnerDefaults.spelling); spellingOn = $0 }
-                ))
+                .pickerStyle(.segmented)
+                Toggle(isOn: $suggestions) {
+                    Text("Suggestions")
+                    Text("Underlines fixes it isn't sure of instead of making them.")
+                }
                 .disabled(mode == .off)
-                Toggle("Mark what it isn't sure about", isOn: $markUncertain)
-                    .disabled(mode != .automatic)
-                Toggle("Announce marks with VoiceOver", isOn: $announceMarks)
-                    .disabled(mode != .automatic || !markUncertain)
+                Toggle("Announce suggestions with VoiceOver", isOn: $announceMarks)
+                    .disabled(mode == .off || !suggestions)
                 LabeledContent("Voice", value: WritingPartnerVoice.summary(for: flavor))
             } footer: {
-                Text("Fixes punctuation, capitals and spelling as you type, on this device. Each fix is its own undo step. In Suggest mode, touch and hold a suggestion and choose it from the menu, or press Tab on a keyboard.")
+                Text(mode.isOn ? "\(mode.summary) Each fix is its own undo step. Writing Partner Edits in the editor's menu shows what it changed, to revert one edit or a whole layer." : mode.summary)
             }
+
+            IOSWritingPartnerStyleSection(level: mode)
 
             Section {
                 LabeledContent("When you pause", value: pauseTier)
+                if let languageReason {
+                    LabeledContent("Language", value: languageReason)
+                }
             } footer: {
                 if access.isSubscribed {
-                    Text("Sends the paragraph you just wrote to Pixerate when you pause, for grammar and structure suggestions. Code, math and tables are never sent. Without a connection, the partner carries on with what this device can do.")
+                    Text("Sends the paragraph you just wrote to Pixerate when you pause: for corrections in Copyedit, and to rewrite it in Ghostwrite. Code, math and tables are never sent. Without a connection, the partner carries on with what this device can do.")
                 } else {
-                    Text("Fixes as you type work without Swash Pro.")
+                    Text("Copyedit works without Swash Pro. Without it, or offline, Ghostwrite uses Copyedit and Apple Intelligence on this device.")
                 }
-            }
-            .disabled(mode == .off)
-
-            Section {
-                Toggle("Doubled words", isOn: $doubledWords)
-                Toggle("A and an", isOn: $aAndAn)
-                Toggle("Agreement and tense", isOn: $agreementAndTense)
-                    .disabled(provider == .none || languageReason != nil)
-                Toggle("Missing words", isOn: $missingWords)
-                    .disabled(provider == .none || languageReason != nil)
-            } header: {
-                Text("Grammar")
-            } footer: {
-                Text("\(languageReason.map { "\($0). " } ?? "")Doubled words and A and an run as you type; Agreement and tense and Missing words run when you pause.")
-            }
-            .disabled(mode == .off)
-
-            Section {
-                ForEach(FormattingVoice.rules, id: \.self) { rule in
-                    IOSFormattingRuleToggle(rule: rule)
-                }
-                Toggle("Also in Source view", isOn: $formattingInSource)
-            } header: {
-                Text("Formatting")
-            } footer: {
-                Text("Tidies Markdown in blocks you've edited once you leave them, without changing how the document reads.")
             }
             .disabled(mode == .off)
 
@@ -112,13 +85,18 @@ struct IOSWritingPartnerSettings: View {
 
             Section {
                 ForEach(learnedRules, id: \.self) { rule in
-                    LabeledContent(rule.title) {
+                    LabeledContent {
                         if !WritingPartnerDefaults.isRuleEnabled(rule) {
                             Text("Off").foregroundStyle(.tertiary)
                         } else if stats.isActive(rule) {
                             Text("On").foregroundStyle(.secondary)
                         } else {
                             Text("Stopped after you undid it").foregroundStyle(.orange)
+                        }
+                    } label: {
+                        Text(rule.title)
+                        if let example = rule.example {
+                            Text(example)
                         }
                     }
                 }
@@ -130,8 +108,9 @@ struct IOSWritingPartnerSettings: View {
             } header: {
                 Text("What It Has Learned")
             } footer: {
-                Text("Undoing a fix makes it less likely; two undos in a row stop it.")
+                Text("Spelling, grammar and formatting are all on. Undoing or reverting a fix makes it less likely; two in a row stop it.")
             }
+            .disabled(mode == .off)
 
             Section {
                 Link("What the writing partner sends",
@@ -149,25 +128,6 @@ struct IOSWritingPartnerSettings: View {
     private func reloadStats() {
         proseStats = WritingPartnerStats.load(voice: .punctuate)
         chatStats = WritingPartnerStats.load(voice: .chat)
-    }
-}
-
-private struct IOSFormattingRuleToggle: View {
-    let rule: PunctuationRule
-    @AppStorage private var isOn: Bool
-
-    init(rule: PunctuationRule) {
-        self.rule = rule
-        _isOn = AppStorage(wrappedValue: true, WritingPartnerDefaults.formattingKey(rule))
-    }
-
-    var body: some View {
-        Toggle(isOn: $isOn) {
-            Text(rule.title)
-            if let example = rule.example {
-                Text(example)
-            }
-        }
     }
 }
 
