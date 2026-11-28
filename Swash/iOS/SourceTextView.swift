@@ -167,6 +167,8 @@ struct SourceTextView: UIViewRepresentable {
         }
 
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
+            // UIKit's smart punctuation mustn't rewrite Swash's own edits (GOTCHAS #124)
+            if let editing = textView as? MarkdownEditingTextView, !editing.isOwnEditChange(range, replacement: replacement) { return false }
             if let textView = textView as? MarkdownEditingTextView, !textView.isApplyingEdit, textView.markedTextRange == nil,
                !textView.isWritingToolsActive, let host = partnerHost {
                 writingPartner.willType(replacement, inRaw: range, host: host)

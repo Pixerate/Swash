@@ -1443,4 +1443,163 @@ final class StyledTextViewTests: XCTestCase {
         let plainActions = listButton.menu?.children.compactMap { $0 as? UIAction } ?? []
         XCTAssertTrue(plainActions.allSatisfy { $0.state == .off })
     }
+
+    // MARK: - Find and replace (#271)
+
+    /// Default find-bar options: case-insensitive, matching anywhere in a word.
+    private static let findOptions = UITextSearchOptions()
+
+    func testFindMatchesTheStorageAndNotHiddenSources() throws {
+        let e = try editor(Self.mixed)
+        let matches = e.textView.findMatches(of: "paragraph", options: nil)
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual((e.storage.string as NSString).substring(with: matches[0]), "paragraph")
+        XCTAssertTrue(e.textView.findMatches(of: "x.png", options: nil).isEmpty, "an image's source isn't on screen")
+    }
+
+    func testReplaceGoesThroughTheEditorAndRestylesTheBlock() throws {
+        let e = try editor(Self.mixed)
+        let searcher = try XCTUnwrap(e.textView.textSearcher)
+        let match = try XCTUnwrap(e.textView.findMatches(of: "bold", options: nil).first)
+        let start = try XCTUnwrap(e.textView.position(from: e.textView.beginningOfDocument, offset: match.location))
+        let end = try XCTUnwrap(e.textView.position(from: start, offset: match.length))
+        let range = try XCTUnwrap(e.textView.textRange(from: start, to: end))
+        XCTAssertTrue(searcher.shouldReplace(foundTextRange: range, document: nil, withText: "strong"))
+        let passesBefore = e.coordinator.incrementalPassCount + e.coordinator.fullPassCount
+        searcher.replace(foundTextRange: range, document: nil, withText: "strong")
+        e.pumpUntilStyled()
+        XCTAssertTrue(e.text.contains("Intro with **strong** and"), "the binding has the replacement: \(e.text)")
+        XCTAssertEqual(swashRawMarkdown(from: e.storage), e.text)
+        XCTAssertGreaterThan(e.coordinator.incrementalPassCount + e.coordinator.fullPassCount, passesBefore, "the block was restyled")
+        let styled = e.fingerprint()
+        e.forceFullRestyle()
+        XCTAssertEqual(styled, e.fingerprint(), firstDifference(styled, e.fingerprint()))
+        XCTAssertEqual(e.attachments().count, 2, "the image and table survive")
+    }
+
+    func testReplaceAllIsOneUndoStepAndKeepsAttachments() throws {
+        let original = "One cat.\n\n![cat](cat.png)\n\nTwo cat, three Cat, four cat.\n\n| cat | B |\n|---|---|\n| 1 | 2 |\n\nLast cat."
+        let e = try editor(original)
+        let searcher = try XCTUnwrap(e.textView.textSearcher)
+        searcher.replaceAll(queryString: "cat", options: Self.findOptions, withText: "dog")
+        e.pumpUntilStyled()
+        XCTAssertEqual(e.text, "One dog.\n\n![cat](cat.png)\n\nTwo dog, three Cat, four dog.\n\n| cat | B |\n|---|---|\n| 1 | 2 |\n\nLast dog.",
+                       "every match on screen is replaced (case-sensitively, the bar's default); the image and table sources are left alone")
+        XCTAssertEqual(e.attachments().count, 2)
+        let undoManager = try XCTUnwrap(e.textView.undoManager)
+        XCTAssertEqual(undoManager.undoActionName, "Replace All")
+        undoManager.undo()
+        e.pumpUntilStyled()
+        XCTAssertEqual(e.text, original, "one undo puts every match back")
+        XCTAssertEqual(e.attachments().count, 2)
+    }
+
+    func testReplacingSkipsMatchesAcrossHiddenMarkers() throws {
+        let e = try editor("Some **bold** text and bold again.")
+        let crossing = try XCTUnwrap(e.textView.findMatches(of: "bold**", options: nil).first)
+        XCTAssertFalse(e.textView.canReplaceFoundRange(crossing), "the match takes in the hidden closing **")
+        let plain = e.textView.findMatches(of: "bold", options: nil)
+        XCTAssertEqual(plain.count, 2)
+        XCTAssertTrue(plain.allSatisfy(e.textView.canReplaceFoundRange))
+
+        var hints: [EditorFindHint?] = []
+        e.controller.onFindHintChange = { hints.append($0) }
+        let searcher = try XCTUnwrap(e.textView.textSearcher)
+        searcher.replaceAll(queryString: "bold**", options: Self.findOptions, withText: "x")
+        e.pumpUntilStyled()
+        XCTAssertEqual(e.text, "Some **bold** text and bold again.", "nothing that crosses a marker is replaced")
+        XCTAssertEqual(hints.last??.skipped, 1, "the skipped match is counted")
+    }
+
+    func testFindCountsMatchesInsideTablesAndImages() throws {
+        let e = try editor(Self.mixed)
+        var hints: [EditorFindHint?] = []
+        e.controller.onFindHintChange = { hints.append($0) }
+        XCTAssertTrue(e.textView.findMatches(of: "img", options: nil).isEmpty)
+        e.textView.noteSearch("img", options: Self.findOptions)
+        XCTAssertEqual(hints.last??.images, 1)
+        XCTAssertEqual(hints.last??.tables, 0)
+        e.textView.noteSearch("2 |", options: Self.findOptions)
+        XCTAssertEqual(hints.last??.tables, 1)
+        XCTAssertEqual(hints.last??.message, "1 more in a table")
+        e.textView.noteSearch("paragraph", options: Self.findOptions)
+        XCTAssertNil(hints.last ?? nil, "no hint when every match is on screen")
+    }
+
+    func testFindKeyCommandsLeaveCommandEToInlineCode() throws {
+        let e = try editor("Text")
+        let commands = e.textView.keyCommands ?? []
+        func has(_ input: String, _ modifiers: UIKeyModifierFlags) -> Bool {
+            commands.contains { $0.input == input && $0.modifierFlags == modifiers }
+        }
+        XCTAssertTrue(has("f", .command))
+        XCTAssertTrue(has("f", [.command, .alternate]))
+        XCTAssertTrue(has("g", .command))
+        XCTAssertTrue(has("g", [.command, .shift]))
+        XCTAssertFalse(commands.contains { $0.input == "e" && $0.modifierFlags == .command && $0.title.contains("Find") })
+    }
+
+    func testControllerPresentsTheFindBar() throws {
+        let e = try editor("Find me here.")
+        let interaction = try XCTUnwrap(e.textView.findInteraction)
+        XCTAssertTrue(e.textView.findInteraction === e.textView.editorFindInteraction, "UITextView's find actions use Swash's bar")
+        e.controller.presentFind(showingReplace: true)
+        e.pump(0.5)
+        XCTAssertTrue(interaction.isFindNavigatorVisible)
+        dismissFind(in: e)
+    }
+
+    /// Closes the find bar and gives the keyboard back to the editor: left with the bar's field,
+    /// it smart-punctuates later tests' edits (`---` became `—`).
+    private func dismissFind(in e: EditorHarness) {
+        e.textView.findInteraction?.dismissFindNavigator()
+        e.pump(0.3)
+        e.textView.becomeFirstResponder()
+        e.pump(0.1)
+        e.textView.resignFirstResponder()
+        e.pump(0.1)
+    }
+
+    /// The find bar's field has the keyboard while Replace runs; its smart punctuation mustn't
+    /// reach the Markdown (`---` is a table rule or a thematic break, not an em dash).
+    func testReplacingFromTheFindBarKeepsPunctuationAsTyped() throws {
+        let e = try editor("Before\n\nRULE\n\nAfter \"quoted\" text.")
+        e.controller.presentFind(showingReplace: true)
+        e.pump(0.5)
+        let searcher = try XCTUnwrap(e.textView.textSearcher)
+        searcher.replaceAll(queryString: "RULE", options: Self.findOptions, withText: "---")
+        e.pumpUntilStyled()
+        XCTAssertEqual(e.text, "Before\n\n---\n\nAfter \"quoted\" text.")
+        dismissFind(in: e)
+    }
+
+    /// Once the find bar's field has had the keyboard, UIKit smart-punctuates the editor's own
+    /// edits through the delegate; they must land as made (GOTCHAS #124).
+    func testEditsAfterTheFindBarKeepTheirPunctuation() throws {
+        let find = try editor("x")
+        find.controller.presentFind(showingReplace: false)
+        find.pump(0.5)
+        find.textView.findInteraction?.dismissFindNavigator()
+        find.pump(0.3)
+        let e = try editor("Intro\n\n")
+        e.textView.becomeFirstResponder()
+        e.pump(0.3)
+        e.select(raw: NSRange(location: 7, length: 0))
+        e.type("/")
+        let expected = try XCTUnwrap(MarkdownEditingCommands.insertBlock(.table, text: "Intro\n\n/", slashLocation: 7))
+        let button = try XCTUnwrap(blockMenuButtons(in: e)[MarkdownEditingCommands.BlockInsert.table.title])
+        button.sendActions(for: .primaryActionTriggered)
+        e.pump()
+        XCTAssertEqual(e.text, expected.text, "the table's --- rule isn't turned into dashes")
+        XCTAssertEqual(e.attachments().count, 1)
+    }
+
+    func testEditorFindHelpers() {
+        let text = "cat catalog Cat bobcat" as NSString
+        XCTAssertEqual(EditorFind.matches(of: "cat", in: text).count, 4)
+        XCTAssertEqual(EditorFind.matches(of: "cat", in: text, options: []).count, 3, "case-sensitive")
+        XCTAssertEqual(EditorFind.matches(of: "cat", in: text, wordMatch: .fullWord).count, 2)
+        XCTAssertEqual(EditorFind.matches(of: "cat", in: text, wordMatch: .startsWith).count, 3)
+        XCTAssertEqual(EditorFind.matches(of: "aa", in: "aaaa").count, 2, "matches don't overlap")
+    }
 }

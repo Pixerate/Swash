@@ -1085,6 +1085,21 @@ struct IOSDocumentToolbar: ToolbarContent {
             }
             .overflowPriority(.low)
         }
+        if !focusMode {
+            // The only way into find without a hardware keyboard (#271)
+            ToolbarItem(placement: .secondaryAction) {
+                Button("Find", systemImage: "magnifyingglass") {
+                    editor.presentFind(showingReplace: false)
+                }
+            }
+            .overflowPriority(.low)
+            ToolbarItem(placement: .secondaryAction) {
+                Button("Find and Replace", systemImage: "text.magnifyingglass") {
+                    editor.presentFind(showingReplace: true)
+                }
+            }
+            .overflowPriority(.low)
+        }
         ToolbarItem(placement: .secondaryAction) {
             Menu {
                 Toggle("Focus Mode", systemImage: "viewfinder", isOn: Binding(
