@@ -635,6 +635,9 @@ class MarkdownEditingTextView: UITextView {
     private var recentButtonsByCommand: [FormatCommand: UIButton] = [:]
     private var displayedCommandByButton: [ObjectIdentifier: FormatCommand] = [:]
     private var displayedSymbolByButton: [ObjectIdentifier: String] = [:]
+    /// The active list type or heading level each list/heading button's long-press menu was
+    /// built for (`.some(nil)` when none was active), so the menu is rebuilt only when it changes.
+    private var variantMenuStateByButton: [ObjectIdentifier: FormatCommand?] = [:]
 
     /// The keyboard bar button for a recent command, if it is currently in the bar.
     func recentButton(for command: FormatCommand) -> UIButton? {
@@ -782,8 +785,14 @@ class MarkdownEditingTextView: UITextView {
                 button.configuration = configuration
             }
 
-            if let menu = variantMenu(for: entry.command, active: active) {
-                button.menu = menu
+            // Rebuild the long-press menu only when the active list type or heading level changes
+            if entry.command.isListFormat || entry.command.isHeadingFormat {
+                let menuState: FormatCommand? = entry.command.isListFormat ? activeList : activeHeading
+                if variantMenuStateByButton[id] != .some(menuState),
+                   let menu = variantMenu(for: entry.command, active: active) {
+                    button.menu = menu
+                    variantMenuStateByButton[id] = .some(menuState)
+                }
             }
         }
     }
@@ -810,12 +819,14 @@ class MarkdownEditingTextView: UITextView {
         recentButtonsByCommand.removeAll()
         displayedCommandByButton.removeAll()
         displayedSymbolByButton.removeAll()
+        variantMenuStateByButton.removeAll()
         let active = activeFormats
         var formatButtons: [UIView] = []
         for entry in FormatManifestLayout.keyboardBarEntries(from: recentFormats) {
             let label = entry.label.replacingOccurrences(of: "…", with: "")
             let baseCommand = entry.command
-            var buttonRef: UIButton?
+            // Weak: the button owns this action, so a strong capture would leak every bar button
+            weak var buttonRef: UIButton?
             let primaryAction = UIAction(title: entry.label) { [weak self] _ in
                 guard let self else { return }
                 let command = buttonRef.flatMap { self.displayedCommandByButton[ObjectIdentifier($0)] } ?? baseCommand
@@ -827,8 +838,7 @@ class MarkdownEditingTextView: UITextView {
             let button = GlassAccessoryBar.iconButton(
                 symbol: entry.command.symbolName,
                 label: label,
-                action: primaryAction,
-                menu: variantMenu(for: entry.command, active: active)
+                action: primaryAction
             )
             buttonRef = button
             displayedCommandByButton[ObjectIdentifier(button)] = entry.command

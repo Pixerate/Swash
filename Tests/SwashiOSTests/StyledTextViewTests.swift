@@ -1210,5 +1210,27 @@ final class StyledTextViewTests: XCTestCase {
         XCTAssertEqual(boldAction.state, .on)
         XCTAssertEqual(italicAction.state, .off)
     }
-}
 
+    func testKeyboardBarRebuildsVariantMenuOnlyWhenTheActiveVariantChanges() throws {
+        let suiteName = "SwashBarVariantMenuTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let e = try editor("1. first\n2. second\n\nPlain text")
+        e.textView.recentFormats = RecentFormatCommands(defaults: defaults)
+
+        // Moving within the same list type keeps the long-press menu; leaving the list rebuilds it
+        e.caret(after: "fir")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        let listButton = try XCTUnwrap(e.textView.recentButton(for: .bulletList))
+        let numberedMenu = try XCTUnwrap(listButton.menu)
+        e.caret(after: "sec")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertTrue(listButton.menu === numberedMenu, "same list type keeps the same menu")
+        e.caret(after: "Plain")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertFalse(listButton.menu === numberedMenu, "leaving the list rebuilds the menu")
+        let plainActions = listButton.menu?.children.compactMap { $0 as? UIAction } ?? []
+        XCTAssertTrue(plainActions.allSatisfy { $0.state == .off })
+    }
+}
