@@ -565,20 +565,22 @@ class MarkdownEditingTextView: UITextView {
     func formattingMenu(for range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
         guard formattingBarEnabled == true, range.length > 0 else { return nil }
         let selection = markdownSelection
-        let formatting = MarkdownFormatting(text: markdownText, flavor: controller?.flavor ?? .github)
+        let currentFlavor = controller?.flavor ?? flavor
+        let formatting = MarkdownFormatting(text: markdownText, flavor: currentFlavor)
         let entries = FormatManifest.entries(for: .bubble).filter {
             $0.command.isAvailableOnIOS && formatting.isEnabled($0.command, selection: selection)
         }
         guard !entries.isEmpty else { return nil }
+        let active = FormatManifestLayout.activeFormats(formatting: formatting, text: markdownText, selection: selection, flavor: currentFlavor)
         var formatElements: [UIMenuElement] = []
         let inline = entries.filter(\.command.isInlineFormat)
         if !inline.isEmpty {
-            formatElements.append(UIMenu(options: [.displayInline, .displayAsPalette], children: inline.map(action)))
+            formatElements.append(UIMenu(options: [.displayInline, .displayAsPalette], children: inline.map { action($0, active: active) }))
         }
         let blocks = entries.filter { !$0.command.isInlineFormat }
         if !blocks.isEmpty {
             let sections = FormatManifestLayout.groups(blocks).map { group in
-                UIMenu(options: .displayInline, children: menuElements(for: group))
+                UIMenu(options: .displayInline, children: menuElements(for: group, active: active))
             }
             formatElements.append(UIMenu(title: "Format", image: UIImage(systemName: "textformat"), children: sections))
         }
@@ -629,11 +631,27 @@ class MarkdownEditingTextView: UITextView {
     private weak var formattingBar: GlassAccessoryBar?
     /// The recent format buttons currently shown in the keyboard bar, in order.
     private(set) var recentFormatButtons: [UIButton] = []
+    private var recentBarEntries: [(entry: FormatMenuEntry, button: UIButton)] = []
     private var recentButtonsByCommand: [FormatCommand: UIButton] = [:]
+    private var displayedCommandByButton: [ObjectIdentifier: FormatCommand] = [:]
+    private var displayedSymbolByButton: [ObjectIdentifier: String] = [:]
+    /// The active list type or heading level each list/heading button's long-press menu was
+    /// built for (`.some(nil)` when none was active), so the menu is rebuilt only when it changes.
+    private var variantMenuStateByButton: [ObjectIdentifier: FormatCommand?] = [:]
 
     /// The keyboard bar button for a recent command, if it is currently in the bar.
     func recentButton(for command: FormatCommand) -> UIButton? {
         recentButtonsByCommand[command]
+    }
+
+    /// The format command currently displayed by `button` in the keyboard bar.
+    func displayedCommand(for button: UIButton) -> FormatCommand? {
+        displayedCommandByButton[ObjectIdentifier(button)]
+    }
+
+    /// The SF Symbol name currently displayed by `button` in the keyboard bar.
+    func displayedSymbolName(for button: UIButton) -> String? {
+        displayedSymbolByButton[ObjectIdentifier(button)]
     }
 
     /// The last parse behind `activeFormats`: the bar refreshes on every edit and selection
@@ -651,7 +669,7 @@ class MarkdownEditingTextView: UITextView {
             formatting = MarkdownFormatting(text: text, flavor: flavor)
             cachedFormatting = (text, flavor, formatting)
         }
-        return FormatManifestLayout.activeFormats(formatting: formatting, text: text, selection: markdownSelection)
+        return FormatManifestLayout.activeFormats(formatting: formatting, text: text, selection: markdownSelection, flavor: flavor)
     }
 
     /// Whether the editor is in Markdown source mode. In Source mode, character buttons appear
@@ -684,8 +702,12 @@ class MarkdownEditingTextView: UITextView {
         refreshFormattingBarState()
     }
 
-    private func action(_ entry: FormatMenuEntry) -> UIAction {
-        let action = UIAction(title: entry.label, image: UIImage(systemName: entry.command.symbolName)) { [weak self] _ in
+    private func action(_ entry: FormatMenuEntry, active: Set<FormatCommand> = []) -> UIAction {
+        let action = UIAction(
+            title: entry.label,
+            image: UIImage(systemName: entry.command.symbolName),
+            state: active.contains(entry.command) ? .on : .off
+        ) { [weak self] _ in
             self?.invokeFormatCommand(entry.command)
         }
         if let shortcut = entry.shortcut {
@@ -696,24 +718,83 @@ class MarkdownEditingTextView: UITextView {
 
     /// A group's menu items: a command's variants become a submenu named after the command
     /// (Heading › Heading 1–3); other commands are plain actions.
-    private func menuElements(for group: [FormatMenuEntry]) -> [UIMenuElement] {
+    private func menuElements(for group: [FormatMenuEntry], active: Set<FormatCommand> = []) -> [UIMenuElement] {
         FormatManifestLayout.commandRuns(group).map { run -> UIMenuElement in
-            guard run.count > 1 else { return action(run[0]) }
+            guard run.count > 1 else { return action(run[0], active: active) }
             let title = run[0].command.definition?.label ?? run[0].label
-            return UIMenu(title: title, image: UIImage(systemName: run[0].command.variantsSymbolName), children: run.map(action))
+            return UIMenu(title: title, image: UIImage(systemName: run[0].command.variantsSymbolName), children: run.map { action($0, active: active) })
         }
     }
 
-    /// Updates the selected state of the recent format buttons and the open format panel.
+    /// Long-press menu for a list or heading button on the keyboard bar, with the active item checked.
+    private func variantMenu(for command: FormatCommand, active: Set<FormatCommand>) -> UIMenu? {
+        if command.isListFormat {
+            let entries = FormatManifestLayout.formatPanelEntries.filter(\.command.isListFormat)
+            guard !entries.isEmpty else { return nil }
+            return UIMenu(title: "List", children: entries.map { action($0, active: active) })
+        }
+        if command.isHeadingFormat {
+            let entries = FormatManifestLayout.formatPanelEntries.filter(\.command.isHeadingFormat)
+            guard !entries.isEmpty else { return nil }
+            return UIMenu(title: "Heading", children: entries.map { action($0, active: active) })
+        }
+        return nil
+    }
+
+    /// Updates the selected state and active list/heading icon of the recent format buttons and the open format panel.
     func refreshFormattingBarState() {
         guard formattingBarEnabled == true else { return }
         let active = activeFormats
-        for (command, button) in recentButtonsByCommand {
-            if button.isSelected != active.contains(command) {
-                button.isSelected = active.contains(command)
+        applyActiveFormatsToBarButtons(active)
+        (inputView as? FormatPanelInputView)?.update(activeFormats: active)
+    }
+
+    private func applyActiveFormatsToBarButtons(_ active: Set<FormatCommand>) {
+        let activeList = [FormatCommand.bulletList, .numberedList, .taskList].first { active.contains($0) }
+        let activeHeading = active.first { $0.isHeadingFormat }
+        let hasExplicitActiveList = activeList.map { target in recentBarEntries.contains { $0.entry.command == target } } ?? false
+        let hasExplicitActiveHeading = activeHeading.map { target in recentBarEntries.contains { $0.entry.command == target } } ?? false
+
+        var adaptedList = false
+        var adaptedHeading = false
+        recentButtonsByCommand.removeAll(keepingCapacity: true)
+
+        for (entry, button) in recentBarEntries {
+            var displayedCommand = entry.command
+            if entry.command.isListFormat, !hasExplicitActiveList, !adaptedList, let activeList {
+                displayedCommand = activeList
+                adaptedList = true
+            } else if entry.command.isHeadingFormat, !hasExplicitActiveHeading, !adaptedHeading, let activeHeading {
+                displayedCommand = activeHeading
+                adaptedHeading = true
+            }
+
+            let id = ObjectIdentifier(button)
+            displayedCommandByButton[id] = displayedCommand
+            recentButtonsByCommand[entry.command] = button
+            recentButtonsByCommand[displayedCommand] = button
+
+            let symbol = displayedCommand.symbolName
+            let isSelected = active.contains(displayedCommand)
+            if displayedSymbolByButton[id] != symbol || button.isSelected != isSelected {
+                displayedSymbolByButton[id] = symbol
+                button.isSelected = isSelected
+                var configuration = button.configuration
+                configuration?.image = UIImage(systemName: symbol)
+                configuration?.baseForegroundColor = isSelected ? .tintColor : .label
+                button.configuration = configuration
+            }
+
+            // Rebuild the long-press menu only when the active list type or heading level changes
+            if entry.command.isListFormat || entry.command.isHeadingFormat {
+                let menuState: FormatCommand? = entry.command.isListFormat ? activeList : activeHeading
+                if variantMenuStateByButton[id] != .some(menuState),
+                   let menu = variantMenu(for: entry.command, active: active) {
+                    button.menu = menu
+                    variantMenuStateByButton[id] = .some(menuState)
+                }
             }
         }
-        (inputView as? FormatPanelInputView)?.update(activeFormats: active)
     }
 
     /// Rebuilds the formatting bar's items when recents change, without animating while typing.
@@ -734,17 +815,40 @@ class MarkdownEditingTextView: UITextView {
         items.append(panel)
 
         recentFormatButtons.removeAll()
+        recentBarEntries.removeAll()
         recentButtonsByCommand.removeAll()
+        displayedCommandByButton.removeAll()
+        displayedSymbolByButton.removeAll()
+        variantMenuStateByButton.removeAll()
         let active = activeFormats
         var formatButtons: [UIView] = []
         for entry in FormatManifestLayout.keyboardBarEntries(from: recentFormats) {
             let label = entry.label.replacingOccurrences(of: "…", with: "")
-            let button = GlassAccessoryBar.iconButton(symbol: entry.command.symbolName, label: label, action: action(entry))
-            button.isSelected = active.contains(entry.command)
+            let baseCommand = entry.command
+            // Weak: the button owns this action, so a strong capture would leak every bar button
+            weak var buttonRef: UIButton?
+            let primaryAction = UIAction(title: entry.label) { [weak self] _ in
+                guard let self else { return }
+                let command = buttonRef.flatMap { self.displayedCommandByButton[ObjectIdentifier($0)] } ?? baseCommand
+                self.invokeFormatCommand(command)
+            }
+            if let shortcut = entry.shortcut {
+                primaryAction.discoverabilityTitle = "\(entry.label) (\(shortcut.displayString))"
+            }
+            let button = GlassAccessoryBar.iconButton(
+                symbol: entry.command.symbolName,
+                label: label,
+                action: primaryAction
+            )
+            buttonRef = button
+            displayedCommandByButton[ObjectIdentifier(button)] = entry.command
+            displayedSymbolByButton[ObjectIdentifier(button)] = entry.command.symbolName
             recentFormatButtons.append(button)
+            recentBarEntries.append((entry, button))
             recentButtonsByCommand[entry.command] = button
             formatButtons.append(button)
         }
+        applyActiveFormatsToBarButtons(active)
 
         // In Source mode, character buttons come first; in Formatted mode, format commands (#191)
         let characterButtons = makeCharacterButtons()
@@ -932,34 +1036,12 @@ enum FormatManifestLayout {
 
     /// Formats active at `selection` (raw-Markdown UTF-16 offsets) in `text`.
     static func activeFormats(text: String, selection: NSRange, flavor: MarkdownFlavor = .github) -> Set<FormatCommand> {
-        activeFormats(formatting: MarkdownFormatting(text: text, flavor: flavor), text: text, selection: selection)
+        FormatCommandEdits.activeFormats(text: text, selection: selection, flavor: flavor)
     }
 
     /// `activeFormats` with an existing parse of `text`.
-    static func activeFormats(formatting: MarkdownFormatting, text: String, selection: NSRange) -> Set<FormatCommand> {
-        let ns = text as NSString
-        let clampedLocation = min(max(0, selection.location), ns.length)
-        let clampedLength = min(max(0, selection.length), ns.length - clampedLocation)
-        let clamped = NSRange(location: clampedLocation, length: clampedLength)
-        var active: Set<FormatCommand> = []
-        if formatting.isActive(.strong, selection: clamped) { active.insert(.bold) }
-        if formatting.isActive(.emphasis, selection: clamped) { active.insert(.italic) }
-        if formatting.isActive(.strikethrough, selection: clamped) { active.insert(.strikethrough) }
-        if formatting.isActive(.code, selection: clamped) || formatting.codeSpan(containing: clamped) != nil {
-            active.insert(.code)
-        }
-        if formatting.link(at: clamped) != nil { active.insert(.link) }
-        if formatting.codeBlock(containing: clamped) != nil { active.insert(.codeBlock) }
-        if formatting.isQuoted(selection: clamped) { active.insert(.quote) }
-        switch formatting.activeBlockFormatIncludingEmptyLine(selection: clamped) {
-        case .heading(let level)?: active.insert(.heading(level))
-        case .paragraph?: active.insert(.paragraph)
-        case .bulletList?: active.insert(.bulletList)
-        case .numberedList?: active.insert(.numberedList)
-        case .taskList?: active.insert(.taskList)
-        case .quote?, nil: break
-        }
-        return active
+    static func activeFormats(formatting: MarkdownFormatting, text: String, selection: NSRange, flavor: MarkdownFlavor = .github) -> Set<FormatCommand> {
+        FormatCommandEdits.activeFormats(formatting: formatting, selection: selection, flavor: flavor)
     }
 
     /// Splits entries into the manifest's groups (consecutive entries with the same group).
@@ -995,72 +1077,6 @@ enum FormatManifestLayout {
     }
 }
 
-extension FormatCommand: @retroactive Hashable, @retroactive RawRepresentable {
-    nonisolated public var rawValue: String {
-        switch self {
-        case .bold: return "format.bold"
-        case .italic: return "format.italic"
-        case .strikethrough: return "format.strikethrough"
-        case .code: return "format.code"
-        case .link: return "format.link"
-        case .heading(let level): return "format.heading.\(level)"
-        case .paragraph: return "format.paragraph"
-        case .bulletList: return "format.bulletList"
-        case .numberedList: return "format.numberedList"
-        case .taskList: return "format.taskList"
-        case .quote: return "format.quote"
-        case .codeBlock: return "format.codeBlock"
-        case .table: return "format.table"
-        case .callout(let type): return "format.callout.\(type?.rawValue ?? "plain")"
-        case .footnote: return "format.footnote"
-        case .tableOfContents: return "format.tableOfContents"
-        }
-    }
-
-    nonisolated public init?(rawValue: String) {
-        switch rawValue {
-        case "format.bold", "bold": self = .bold
-        case "format.italic", "italic": self = .italic
-        case "format.strikethrough", "strikethrough": self = .strikethrough
-        case "format.code", "code": self = .code
-        case "format.link", "link": self = .link
-        case "format.heading", "heading": self = .heading(1)
-        case "format.paragraph", "paragraph": self = .paragraph
-        case "format.bulletList", "bulletList": self = .bulletList
-        case "format.numberedList", "numberedList": self = .numberedList
-        case "format.taskList", "taskList": self = .taskList
-        case "format.quote", "quote": self = .quote
-        case "format.codeBlock", "codeBlock": self = .codeBlock
-        case "format.table", "table": self = .table
-        case "format.footnote", "footnote": self = .footnote
-        case "format.tableOfContents", "tableOfContents": self = .tableOfContents
-        default:
-            for prefix in ["format.heading.", "format.heading:", "heading.", "heading:"] where rawValue.hasPrefix(prefix) {
-                if let level = Int(rawValue.dropFirst(prefix.count)), (1...6).contains(level) {
-                    self = .heading(level)
-                    return
-                }
-            }
-            for prefix in ["format.callout.", "format.callout:", "callout.", "callout:"] where rawValue.hasPrefix(prefix) {
-                let suffix = String(rawValue.dropFirst(prefix.count))
-                if suffix == "plain" || suffix == "none" {
-                    self = .callout(nil)
-                    return
-                }
-                if let type = AlertType(rawValue: suffix) {
-                    self = .callout(type)
-                    return
-                }
-            }
-            return nil
-        }
-    }
-
-    nonisolated public func hash(into hasher: inout Hasher) {
-        hasher.combine(rawValue)
-    }
-}
-
 extension FormatCommand {
     /// Whether the iOS editors can apply the command. Table conversion, callouts, footnotes and
     /// the table of contents are macOS editor features (`FormatCommandEdits` has no edit for them).
@@ -1077,6 +1093,20 @@ extension FormatCommand {
         case .bold, .italic, .strikethrough, .code, .link: return true
         default: return false
         }
+    }
+
+    /// List formats (bulleted, numbered, to-do).
+    var isListFormat: Bool {
+        switch self {
+        case .bulletList, .numberedList, .taskList: return true
+        default: return false
+        }
+    }
+
+    /// Heading formats (levels 1–6).
+    var isHeadingFormat: Bool {
+        if case .heading = self { return true }
+        return false
     }
 
     /// The command's icon on iOS (the manifest has labels and shortcuts, not icons).
