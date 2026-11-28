@@ -2,9 +2,10 @@
 //  EditorFind.swift
 //  Swash
 //
-//  Find and replace in the iOS Source and Formatted editors (#271). The system find bar
-//  (`UIFindInteraction`) drives `MarkdownEditingTextView`'s `UITextSearching` methods; the rules
-//  for what matches and what may be replaced live here, so tests can check them without the bar.
+//  Find and replace rules shared by the iOS and macOS editors (#271). Each platform's find bar
+//  (`UIFindInteraction` with `EditorTextSearcher` on iOS, `NSTextFinder` with
+//  `EditorTextFinderClient` on macOS) asks these what matches and what may be replaced, so tests
+//  can check them without the bar.
 //
 //  Matching runs over the text view's storage. In Source that's the Markdown itself. In Formatted
 //  it's the Markdown with its syntax markers hidden (a 0.01 pt font or a clear colour) and each
@@ -15,15 +16,23 @@
 //  The writing partner's ghost text is drawn on an overlay, never in the storage, so it can't match.
 //
 
-#if os(iOS)
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
 import UIKit
+#endif
+
+/// The find bar's word option: Contains, Starts With or Whole Word.
+enum EditorFindWordMatch: Equatable {
+    case contains, startsWith, fullWord
+}
 
 enum EditorFind {
     /// The ranges of `query` in `text`, in order, without overlaps.
     static func matches(of query: String, in text: NSString,
                         options: NSString.CompareOptions = [.caseInsensitive],
-                        wordMatch: UITextSearchOptions.WordMatchMethod = .contains) -> [NSRange] {
+                        wordMatch: EditorFindWordMatch = .contains) -> [NSRange] {
         let needle = query as NSString
         guard needle.length > 0, text.length >= needle.length else { return [] }
         let options = options.subtracting([.backwards, .anchored])
@@ -44,7 +53,7 @@ enum EditorFind {
     }
 
     /// Whether a candidate meets the find bar's word option (Contains, Starts With, Whole Word).
-    private static func fits(_ range: NSRange, in text: NSString, wordMatch: UITextSearchOptions.WordMatchMethod) -> Bool {
+    private static func fits(_ range: NSRange, in text: NSString, wordMatch: EditorFindWordMatch) -> Bool {
         func isWordCharacter(at index: Int) -> Bool {
             guard index >= 0, index < text.length else { return false }
             guard let scalar = UnicodeScalar(text.character(at: index)) else { return true }
@@ -65,8 +74,8 @@ enum EditorFind {
     static func isHiddenMarker(at index: Int, in storage: NSAttributedString) -> Bool {
         guard index >= 0, index < storage.length else { return false }
         if storage.attribute(.attachment, at: index, effectiveRange: nil) != nil { return false }
-        if let font = storage.attribute(.font, at: index, effectiveRange: nil) as? UIFont, font.pointSize < 1 { return true }
-        if let color = storage.attribute(.foregroundColor, at: index, effectiveRange: nil) as? UIColor, color == .clear { return true }
+        if let font = storage.attribute(.font, at: index, effectiveRange: nil) as? PlatformFont, font.pointSize < 1 { return true }
+        if let color = storage.attribute(.foregroundColor, at: index, effectiveRange: nil) as? PlatformColor, color == .clear { return true }
         return false
     }
 
@@ -84,112 +93,24 @@ enum EditorFind {
     /// Matches inside collapsed tables and images, which the find bar can't show.
     static func attachmentMatches(of query: String, in storage: NSAttributedString,
                                   options: NSString.CompareOptions = [.caseInsensitive],
-                                  wordMatch: UITextSearchOptions.WordMatchMethod = .contains) -> (tables: Int, images: Int) {
+                                  wordMatch: EditorFindWordMatch = .contains) -> (tables: Int, images: Int, blocks: Int) {
         var tables = 0
         var images = 0
+        var blocks = 0
         storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
             guard let raw = swashRawMarkdown(for: value) else { return }
             let count = matches(of: query, in: raw as NSString, options: options, wordMatch: wordMatch).count
-            if value is TableTextAttachment { tables += count } else { images += count }
+            // By its source, so this file doesn't depend on either platform's attachment classes
+            let source = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if source.hasPrefix("|") {
+                tables += count
+            } else if source.hasPrefix("![") || source.hasPrefix("<img") {
+                images += count
+            } else {
+                blocks += count
+            }
         }
-        return (tables, images)
-    }
-}
-
-/// The find bar's searchable object for one editor: matches come from `EditorFind`, replacing goes
-/// through the editor, and highlighting, ordering and scrolling are UITextView's own.
-@MainActor
-final class EditorTextSearcher: NSObject, UITextSearching, UIFindInteractionDelegate {
-    typealias DocumentIdentifier = AnyHashable?
-
-    private weak var textView: MarkdownEditingTextView?
-
-    init(textView: MarkdownEditingTextView) {
-        self.textView = textView
-    }
-
-    /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103).
-    nonisolated deinit {}
-
-    // MARK: UIFindInteractionDelegate
-
-    func findInteraction(_ interaction: UIFindInteraction, sessionFor view: UIView) -> UIFindSession? {
-        UITextSearchingFindSession(searchableObject: self)
-    }
-
-    func findInteraction(_ interaction: UIFindInteraction, didEnd session: UIFindSession) {
-        textView?.findHint = nil
-    }
-
-    // MARK: UITextSearching
-
-    var selectedTextRange: UITextRange? { textView?.selectedTextRange }
-
-    var supportsTextReplacement: Bool { textView?.isEditable ?? false }
-
-    func compare(_ foundRange: UITextRange, toRange: UITextRange, document: AnyHashable??) -> ComparisonResult {
-        guard let textView else { return .orderedSame }
-        return textView.compare(foundRange.start, to: toRange.start)
-    }
-
-    func performTextSearch(queryString: String, options: UITextSearchOptions, resultAggregator: UITextSearchAggregator<AnyHashable?>) {
-        guard let textView else { return resultAggregator.finishedSearching() }
-        for range in textView.findMatches(of: queryString, options: options) {
-            guard let found = textRange(range) else { continue }
-            resultAggregator.foundRange(found, searchString: queryString, document: nil)
-        }
-        resultAggregator.finishedSearching()
-        textView.noteSearch(queryString, options: options)
-    }
-
-    func decorate(foundTextRange: UITextRange, document: AnyHashable??, usingStyle style: UITextSearchFoundTextStyle) {
-        textView?.decorate(foundTextRange: foundTextRange, document: nil, usingStyle: style)
-    }
-
-    func clearAllDecoratedFoundText() {
-        textView?.clearAllDecoratedFoundText()
-    }
-
-    func shouldReplace(foundTextRange: UITextRange, document: AnyHashable??, withText: String) -> Bool {
-        guard let textView, let range = nsRange(foundTextRange) else { return false }
-        return textView.canReplaceFoundRange(range)
-    }
-
-    func replace(foundTextRange: UITextRange, document: AnyHashable??, withText replacement: String) {
-        guard let textView, let range = nsRange(foundTextRange) else { return }
-        textView.replaceFoundRanges([range], with: replacement, actionName: "Replace")
-    }
-
-    func replaceAll(queryString: String, options: UITextSearchOptions, withText replacement: String) {
-        guard let textView else { return }
-        let skipped = textView.replaceFoundRanges(textView.findMatches(of: queryString, options: options),
-                                                  with: replacement, actionName: "Replace All")
-        textView.noteReplaceAll(queryString, skipped: skipped)
-    }
-
-    func willHighlight(foundTextRange: UITextRange, document: AnyHashable??) {
-        textView?.willHighlight(foundTextRange: foundTextRange, document: nil)
-    }
-
-    func scrollRangeToVisible(_ range: UITextRange, inDocument: AnyHashable??) {
-        textView?.scrollRangeToVisible(range, inDocument: AnyHashable??.none)
-    }
-
-    // MARK: Ranges
-
-    private func textRange(_ range: NSRange) -> UITextRange? {
-        guard let textView,
-              let start = textView.position(from: textView.beginningOfDocument, offset: range.location),
-              let end = textView.position(from: start, offset: range.length) else { return nil }
-        return textView.textRange(from: start, to: end)
-    }
-
-    private func nsRange(_ range: UITextRange) -> NSRange? {
-        guard let textView else { return nil }
-        let location = textView.offset(from: textView.beginningOfDocument, to: range.start)
-        let length = textView.offset(from: range.start, to: range.end)
-        guard location >= 0, length >= 0, location + length <= textView.textStorage.length else { return nil }
-        return NSRange(location: location, length: length)
+        return (tables, images, blocks)
     }
 }
 
@@ -199,14 +120,17 @@ struct EditorFindHint: Equatable {
     var query: String
     var tables = 0
     var images = 0
+    /// Other blocks shown as attachments (widgets).
+    var blocks = 0
     var skipped = 0
 
-    var isEmpty: Bool { tables == 0 && images == 0 && skipped == 0 }
+    var isEmpty: Bool { tables == 0 && images == 0 && blocks == 0 && skipped == 0 }
 
     var message: String {
         var parts: [String] = []
         if tables > 0 { parts.append(tables == 1 ? "1 more in a table" : "\(tables) more in tables") }
         if images > 0 { parts.append(images == 1 ? "1 more in an image" : "\(images) more in images") }
+        if blocks > 0 { parts.append(blocks == 1 ? "1 more in a block" : "\(blocks) more in blocks") }
         if skipped > 0 {
             parts.append(skipped == 1 ? "1 not replaced: it crosses formatting" : "\(skipped) not replaced: they cross formatting")
         }
@@ -214,7 +138,7 @@ struct EditorFindHint: Equatable {
     }
 }
 
-/// Shown over the Formatted editor while a search has matches the find bar can't show.
+/// Shown over the Formatted editor (iOS and macOS) while a search has matches the find bar can't show.
 struct EditorFindHintView: View {
     let hint: EditorFindHint
     var onShowInSource: () -> Void
@@ -242,7 +166,7 @@ struct EditorFindHintView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .glassEffect(.regular, in: .capsule)
+        .findHintBackground()
         .padding(.horizontal, 12)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("FindHint")
@@ -258,4 +182,15 @@ struct EditorFindHintView: View {
     EditorFindHintView(hint: hint, onShowInSource: { hint.skipped = 0 }, onDismiss: {})
         .padding()
 }
-#endif
+
+private extension View {
+    /// Liquid Glass where there is one (iOS and macOS 26), a material capsule before.
+    @ViewBuilder
+    func findHintBackground() -> some View {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            glassEffect(.regular, in: .capsule)
+        } else {
+            background(.regularMaterial, in: Capsule())
+        }
+    }
+}

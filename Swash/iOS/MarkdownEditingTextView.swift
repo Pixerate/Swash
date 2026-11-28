@@ -530,7 +530,7 @@ class MarkdownEditingTextView: UITextView {
     func findMatches(of query: String, options: UITextSearchOptions?) -> [NSRange] {
         EditorFind.matches(of: query, in: textStorage.string as NSString,
                            options: options?.stringCompareOptions ?? [.caseInsensitive],
-                           wordMatch: options?.wordMatchMethod ?? .contains)
+                           wordMatch: options.map { EditorFindWordMatch($0.wordMatchMethod) } ?? .contains)
     }
 
     /// Whether a storage range may be replaced: not across a hidden marker or an attachment.
@@ -575,7 +575,7 @@ class MarkdownEditingTextView: UITextView {
     /// The find bar's search ran: note what it can't show (matches inside tables and images).
     func noteSearch(_ query: String, options: UITextSearchOptions) {
         let inAttachments = EditorFind.attachmentMatches(of: query, in: textStorage,
-                                                         options: options.stringCompareOptions, wordMatch: options.wordMatchMethod)
+                                                         options: options.stringCompareOptions, wordMatch: EditorFindWordMatch(options.wordMatchMethod))
         var hint = EditorFindHint(query: query, tables: inAttachments.tables, images: inAttachments.images)
         // A Replace All's skipped count stands until the search changes
         if let old = findHint, old.query == query { hint.skipped = old.skipped }

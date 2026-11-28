@@ -73,6 +73,28 @@ final class BlockMenuTarget: NSObject {
 final class SwashEditorController {
     weak var textView: NSTextView?
     weak var coordinator: SwashTextView.Coordinator?
+    /// Called when the find bar's search has matches it can't show (inside tables and images in
+    /// Formatted) or Replace All skipped some; nil when there's nothing to say (#271).
+    var onFindHintChange: ((EditorFindHint?) -> Void)?
+    /// Whether the next editor shown opens the find bar ("Show in Source"), with Replace.
+    private var pendingFind: Bool?
+
+    /// Opens the find bar, on the last search, in the editor shown next.
+    func presentFindInNextEditor(showingReplace: Bool) {
+        pendingFind = showingReplace
+    }
+
+    /// Opens the find bar in `textView` if "Show in Source" asked for it and it's a new editor.
+    fileprivate func showPendingFind(in textView: SwashNSTextView, isNewEditor: Bool) {
+        guard isNewEditor, let showingReplace = pendingFind else { return }
+        pendingFind = nil
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView, let window = textView.window else { return }
+            window.makeFirstResponder(textView)
+            textView.textFinder.performAction(showingReplace ? .showReplaceInterface : .showFindInterface)
+            textView.textFinder.performAction(.nextMatch)
+        }
+    }
     /// Agents' carets, selections and changed ranges, drawn over the text (#151, #152).
     var agentCarets: AgentCaretStore? {
         didSet { attachAgentCarets() }
@@ -509,6 +531,80 @@ class SwashNSTextView: NSTextView {
     var flavor: MarkdownFlavor = .github
     /// Formatting shortcuts (⌘B, ⌘I, …), handled here so they take precedence over menu key equivalents.
     var onFormatCommand: ((FormatCommand) -> Void)?
+
+    // MARK: Find and replace (#271)
+
+    /// The find bar. Not NSTextView's own (`usesFindBar`): its client is private, so it couldn't
+    /// skip replacements across hidden markers (EditorTextFinder.swift, GOTCHAS #125).
+    let textFinder = NSTextFinder()
+    private lazy var textFinderClient = EditorTextFinderClient(textView: self)
+    /// Set while the find bar replaces matches, so the writing partner doesn't take it for typing.
+    var isReplacingFoundText = false
+    /// What the find bar can't show for the current search (Formatted's tables and images, and
+    /// Replace All's skipped matches); reported to the editor controller.
+    private(set) var findHint: EditorFindHint? {
+        didSet {
+            if oldValue != findHint { (delegate as? SwashTextView.Coordinator)?.parent.controller?.onFindHintChange?(findHint) }
+        }
+    }
+    private var findObservation: NSKeyValueObservation?
+    private nonisolated(unsafe) var findStorageObserver: NSObjectProtocol?
+
+    /// Puts the find bar in `scrollView`, with incremental search.
+    func installTextFinder(in scrollView: NSScrollView) {
+        usesFindBar = false
+        isIncrementalSearchingEnabled = false
+        textFinder.client = textFinderClient
+        textFinder.findBarContainer = scrollView
+        textFinder.isIncrementalSearchingEnabled = true
+        // Typing in the bar runs an incremental search: count what it can't show
+        findObservation = textFinder.observe(\.incrementalMatchRanges) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.refreshFindHint() }
+        }
+        // Edits move or remove matches: the finder searches again
+        if let textStorage, findStorageObserver == nil {
+            findStorageObserver = NotificationCenter.default.addObserver(
+                forName: NSTextStorage.didProcessEditingNotification, object: textStorage, queue: .main
+            ) { [weak self] notification in
+                let characters = (notification.object as? NSTextStorage)?.editedMask.contains(.editedCharacters) ?? true
+                MainActor.assumeIsolated {
+                    if characters { self?.textFinder.noteClientStringWillChange() }
+                }
+            }
+        }
+    }
+
+    /// Edit › Find's items (`TextFinderCommand`, GOTCHAS #123) and the find bar's own buttons.
+    override func performTextFinderAction(_ sender: Any?) {
+        let tag = (sender as? NSValidatedUserInterfaceItem)?.tag ?? (sender as? NSControl)?.tag
+        guard let tag, let action = NSTextFinder.Action(rawValue: tag) else { return super.performTextFinderAction(sender) }
+        textFinder.performAction(action)
+        refreshFindHint()
+    }
+
+    /// Counts the find bar's matches inside tables and images, which it can't show (Formatted only;
+    /// Source has no attachments). Nil once the bar is closed.
+    func refreshFindHint() {
+        guard isStyled, enclosingScrollView?.isFindBarVisible == true, let storage = textStorage,
+              let search = FindPasteboard.search() else {
+            findHint = nil
+            return
+        }
+        let inAttachments = EditorFind.attachmentMatches(of: search.query, in: storage, options: search.options, wordMatch: search.wordMatch)
+        var hint = EditorFindHint(query: search.query, tables: inAttachments.tables, images: inAttachments.images, blocks: inAttachments.blocks)
+        if let old = findHint, old.query == search.query { hint.skipped = old.skipped }
+        findHint = hint.isEmpty ? nil : hint
+    }
+
+    /// The find bar replaced matches, leaving `skipped` that cross hidden formatting.
+    func noteFindReplacement(skipped: Int) {
+        guard isStyled else { return }
+        refreshFindHint()
+        guard let search = FindPasteboard.search() else { return }
+        var hint = findHint ?? EditorFindHint(query: search.query)
+        hint.skipped = skipped
+        findHint = hint.isEmpty ? nil : hint
+    }
     
     /// Storage range of the task checkbox marker under `point` (view coordinates), if any.
     func taskMarkerRange(at point: NSPoint) -> NSRange? {
@@ -857,6 +953,9 @@ class SwashNSTextView: NSTextView {
     }
 
     override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(performTextFinderAction(_:)), let action = NSTextFinder.Action(rawValue: item.tag) {
+            return textFinder.validateAction(action)
+        }
         if item.action == #selector(acceptSuggestion(_:)) || item.action == #selector(dismissSuggestion(_:)) {
             guard let coordinator = delegate as? SwashTextView.Coordinator else { return false }
             return !coordinator.writingPartner.suggestions.isEmpty
@@ -999,6 +1098,7 @@ class SwashNSTextView: NSTextView {
     
     deinit {
         NotificationCenter.default.removeObserver(self)
+        if let findStorageObserver { NotificationCenter.default.removeObserver(findStorageObserver) }
     }
     
     @objc private func handleFolderAccessGranted() {
@@ -1231,6 +1331,7 @@ struct SwashTextView: NSViewRepresentable {
         scrollView.autoresizingMask = [.width, .height]
         
         textView.delegate = context.coordinator
+        textView.installTextFinder(in: scrollView)
         // Image data (screenshots, images dragged from a browser) as well as files and text
         textView.registerForDraggedTypes(textView.registeredDraggedTypes + [.png, .tiff, .fileURL])
         textView.isRichText = false
@@ -1238,8 +1339,7 @@ struct SwashTextView: NSViewRepresentable {
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isContinuousSpellCheckingEnabled = true
-        textView.usesFindBar = true
-        textView.isIncrementalSearchingEnabled = true
+        // Swash's own find bar (#271), in the scroll view below
 
         // Premium typography and spacing styling
         textView.textColor = NSColor.textColor
@@ -1283,8 +1383,10 @@ struct SwashTextView: NSViewRepresentable {
         context.coordinator.isUpdatingFromSwiftUI = true
         context.coordinator.parent = self
         context.coordinator.currentTextView = textView
+        let isNewEditor = controller?.textView !== textView
         controller?.textView = textView
         controller?.coordinator = context.coordinator
+        controller?.showPendingFind(in: textView, isNewEditor: isNewEditor)
         if controller?.agentCarets != nil { controller?.attachAgentCarets() }
         
         // The binding usually just echoes what the editor published from its last edit: skip
@@ -2018,7 +2120,9 @@ struct SwashTextView: NSViewRepresentable {
         
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
             verifyWritingToolsState(in: textView)
-            if !isApplyingEdit, !isHighlighting, !isUpdatingFromSwiftUI, !isWritingToolsActive {
+            // The find bar's replacements aren't typing (#271)
+            let isFindReplacement = (textView as? SwashNSTextView)?.isReplacingFoundText == true
+            if !isApplyingEdit, !isHighlighting, !isUpdatingFromSwiftUI, !isWritingToolsActive, !isFindReplacement {
                 writingPartner.willType(replacementString, in: affectedCharRange, textView: textView, coordinator: self)
             }
             if (replacementString == "{" || replacementString == "}"), !isApplyingEdit, !isHighlighting, !isUpdatingFromSwiftUI,
