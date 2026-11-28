@@ -1305,6 +1305,398 @@ final class StyledTextViewTests: XCTestCase {
         XCTAssertEqual(listMarkers(in: e).map(\.info.text), ["•"])
     }
 
+    // MARK: - Insert Affordance Overlay (SWA-94)
+
+    /// The affordance's idle delay plus room for the timer to fire.
+    static let affordanceWait = StyledTextView.Coordinator.insertAffordanceDelay + 0.1
+
+    func testInsertAffordanceRevealsAfterDebounceOnEmptyLine() throws {
+        let e = try editor("Hello\n\nWorld")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+
+        // Caret on the empty middle line
+        e.select(raw: NSRange(location: 6, length: 0))
+        e.pump(0.1)
+
+        // Before debounce finishes, affordance shouldn't be visible
+        if let button = e.textView.insertAffordanceButton {
+            XCTAssertTrue(button.isHidden || button.alpha == 0, "Affordance should not be visible immediately")
+        }
+
+        // Wait for 750ms debounce (plus buffer)
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton, "Affordance button must exist after debounce")
+        XCTAssertFalse(button.isHidden, "Affordance button should be visible")
+        XCTAssertEqual(button.alpha, 1.0, accuracy: 0.05, "Affordance button alpha should be 1.0")
+
+        // Button should be centered at the caret
+        let caret = e.textView.caretRect(for: e.textView.selectedTextRange!.start)
+        XCTAssertEqual(button.center.x, caret.minX, accuracy: 2.0)
+        XCTAssertEqual(button.center.y, caret.midY, accuracy: 2.0)
+    }
+
+    func testInsertAffordanceDoesNotShowOnNonEmptyLine() throws {
+        let e = try editor("Hello\nWorld")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+
+        // Move caret to non-empty line
+        e.select(raw: NSRange(location: 2, length: 0))
+        e.pump(0.1)
+
+        // Wait beyond debounce
+        e.pump(0.85)
+
+        if let button = e.textView.insertAffordanceButton {
+            XCTAssertTrue(button.isHidden || button.alpha == 0, "Affordance must not show on a non-empty line")
+        }
+    }
+
+    func testInsertAffordanceHidesImmediatelyOnTyping() throws {
+        let e = try editor("")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+        e.select(raw: NSRange(location: 0, length: 0))
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertFalse(button.isHidden)
+
+        // Type a character
+        e.type("a")
+
+        XCTAssertTrue(button.isHidden, "Affordance must hide immediately upon typing")
+        XCTAssertEqual(button.alpha, 0, "Affordance alpha must be 0 immediately upon typing")
+    }
+
+    func testInsertAffordanceHidesOnSelectionChange() throws {
+        let e = try editor("First\n\nSecond")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+
+        // Move to empty line and wait for affordance
+        e.select(raw: NSRange(location: 6, length: 0))
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertFalse(button.isHidden)
+
+        // Move selection to non-empty line
+        e.select(raw: NSRange(location: 1, length: 0))
+
+        XCTAssertTrue(button.isHidden, "Affordance must hide immediately upon selection change")
+    }
+
+    func testInsertAffordanceHidesOnScroll() throws {
+        let e = try editor("First\n\nSecond")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+
+        e.select(raw: NSRange(location: 6, length: 0))
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertFalse(button.isHidden)
+
+        // UIKit's own scrolling (caret into view, offset restored after a styling pass) keeps it
+        e.textView.setContentOffset(CGPoint(x: 0, y: 50), animated: false)
+        e.coordinator.scrollViewDidScroll(e.textView)
+        XCTAssertFalse(button.isHidden, "a programmatic scroll must not hide the affordance")
+
+        // The person's drag hides it
+        e.coordinator.scrollViewDidScroll(DraggingScrollView())
+        XCTAssertTrue(button.isHidden, "Affordance must hide immediately upon scrolling")
+    }
+
+    /// A scroll view the person is dragging, for the scroll delegate.
+    private final class DraggingScrollView: UIScrollView {
+        override var isDragging: Bool { true }
+    }
+
+    func testInsertAffordanceAppearsAfterReturnMakesAnEmptyLine() throws {
+        let e = try editor("Hello")
+        _ = e.textView.becomeFirstResponder()
+        e.caret(after: "Hello")
+        e.pump(0.1)
+
+        e.pressReturn()
+        XCTAssertEqual(e.text, "Hello\n")
+        e.pump(Self.affordanceWait)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton, "Return onto an empty line must reveal the affordance")
+        XCTAssertTrue(button.isShowing)
+    }
+
+    func testInsertAffordanceSkipsBlankLinesInCodeMathAndFrontMatter() throws {
+        for (markdown, caret) in [
+            ("```\nlet a = 1\n\nlet b = 2\n```", 14),   // fenced code
+            ("$$\nx = 1\n\ny = 2\n$$", 9),               // display math
+            ("---\ntitle: A\n\nauthor: B\n---\n\nBody", 13), // front matter
+        ] {
+            let e = try editor(markdown)
+            _ = e.textView.becomeFirstResponder()
+            e.pump(0.1)
+            XCTAssertEqual((markdown as NSString).substring(with: NSRange(location: caret - 1, length: 2)), "\n\n", "caret on the blank line")
+            e.select(raw: NSRange(location: caret, length: 0))
+            e.pump(Self.affordanceWait)
+            XCTAssertFalse(e.textView.insertAffordanceButton?.isShowing ?? false, "no affordance in \(markdown.debugDescription)")
+        }
+    }
+
+    func testInsertAffordanceNotShownInSlackOrWithoutFormatting() throws {
+        let slack = try EditorHarness("Hello\n\nWorld", flavor: .slack)
+        harnesses.append(slack)
+        _ = slack.textView.becomeFirstResponder()
+        slack.select(raw: NSRange(location: 6, length: 0))
+        slack.pump(Self.affordanceWait)
+        XCTAssertFalse(slack.textView.insertAffordanceButton?.isShowing ?? false, "Slack mrkdwn has no blocks to insert")
+        slack.tearDown()
+
+        let e = try editor("Hello\n\nWorld")
+        e.setWritingOptions(WritingOptions(), formattingEnabled: false)
+        _ = e.textView.becomeFirstResponder()
+        e.select(raw: NSRange(location: 6, length: 0))
+        e.pump(Self.affordanceWait)
+        XCTAssertFalse(e.textView.insertAffordanceButton?.isShowing ?? false, "distraction-free editing shows no affordance")
+    }
+
+    func testInsertAffordanceTimerCancelledIfInterruptedBeforeFiring() throws {
+        let e = try editor("")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+        e.select(raw: NSRange(location: 0, length: 0))
+
+        // Wait 350ms (less than 750ms)
+        e.pump(0.35)
+
+        // Type before timer fires
+        e.type("x")
+
+        // Wait remainder of time
+        e.pump(0.55)
+
+        if let button = e.textView.insertAffordanceButton {
+            XCTAssertTrue(button.isHidden || button.alpha == 0, "Affordance must not show if typing occurred before debounce elapsed")
+        }
+    }
+
+    func testInsertAffordanceTapOpensInsertPanel() throws {
+        let e = try editor("")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+        e.select(raw: NSRange(location: 0, length: 0))
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertFalse(button.isHidden)
+        XCTAssertTrue(button.isAccessibilityElement)
+
+        // One handler, for the primary action only, so one tap runs it once
+        XCTAssertEqual(button.allControlEvents, .primaryActionTriggered)
+
+        // Tap the affordance button
+        button.sendActions(for: .primaryActionTriggered)
+        e.pump(0.1)
+
+        // The button should hide immediately and fall out of accessibility tree
+        XCTAssertTrue(button.isHidden, "Affordance must hide immediately upon tap")
+        XCTAssertEqual(button.alpha, 0, "Affordance alpha must be 0 upon tap")
+        XCTAssertFalse(button.isAccessibilityElement, "Affordance must not be an accessibility element when hidden")
+
+        // The insert panel should now be presented
+        XCTAssertTrue(e.textView.isShowingInsertPanel, "Tapping insert affordance should open insert panel")
+        XCTAssertTrue(e.textView.inputView is InsertPanelInputView, "Input view should be InsertPanelInputView")
+    }
+
+    func testInsertAffordanceVoiceOverAccessibilityState() throws {
+        let e = try editor("First\n\nSecond")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+
+        // Caret on empty line (offset 6)
+        e.select(raw: NSRange(location: 6, length: 0))
+        e.pump(0.1)
+
+        // Before debounce, button is either nil or not an accessibility element
+        if let button = e.textView.insertAffordanceButton {
+            XCTAssertFalse(button.isAccessibilityElement, "Affordance must not be an accessibility element before visible")
+        }
+
+        // Wait for debounce reveal
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertFalse(button.isHidden)
+        XCTAssertEqual(button.alpha, 1.0, accuracy: 0.05)
+        XCTAssertTrue(button.isAccessibilityElement, "Affordance must be an accessibility element strictly while visible")
+        XCTAssertEqual(button.accessibilityLabel, "Insert block", "Accessibility label must be 'Insert block'")
+        XCTAssertTrue(button.accessibilityTraits.contains(.button), "Accessibility traits must include .button")
+        XCTAssertEqual(button.accessibilityIdentifier, "EmptyLineInsertButton")
+
+        // Accessibility activation triggers the button action
+        XCTAssertTrue(button.accessibilityActivate())
+        e.pump(0.1)
+
+        XCTAssertTrue(button.isHidden)
+        XCTAssertFalse(button.isAccessibilityElement, "Affordance must not be accessible after tap/activation")
+        XCTAssertTrue(e.textView.isShowingInsertPanel)
+    }
+
+    func testTappingEmptyLineInsertAffordanceOpensInsertPanelAndInsertsAtTargetLine() throws {
+        let e = try editor("Intro\n\nOutro")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+
+        // Caret on the empty line (offset 6)
+        e.select(raw: NSRange(location: 6, length: 0))
+        e.pump(0.85)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertFalse(button.isHidden)
+
+        // Tap affordance
+        button.sendActions(for: .primaryActionTriggered)
+        e.pump(0.1)
+
+        XCTAssertTrue(button.isHidden)
+        XCTAssertFalse(button.isAccessibilityElement)
+        XCTAssertTrue(e.textView.isShowingInsertPanel)
+
+        // Insert a callout block via the insert panel callback
+        e.textView.handleInsertBlock(.callout)
+        e.pump(0.1)
+
+        XCTAssertFalse(e.textView.isShowingInsertPanel)
+        XCTAssertNil(e.textView.inputView)
+        // Blank lines on both sides, so "Outro" isn't a lazy continuation of the callout
+        XCTAssertEqual(e.textView.markdownText, "Intro\n\n> [!NOTE]\n> \n\nOutro")
+        XCTAssertEqual(e.textView.markdownSelection.location, "Intro\n\n> [!NOTE]\n> ".count)
+    }
+
+    func testInsertedBlocksKeepTheirNeighbours() {
+        // A table on the blank line between paragraphs: "Outro" stays a paragraph
+        let table = MarkdownEditingCommands.insertBlock(.table, text: "Intro\n\nOutro", at: 6)
+        XCTAssertEqual(table.text, "Intro\n\n| Column 1 | Column 2 |\n| --- | --- |\n|  |  |\n\nOutro")
+        XCTAssertEqual(table.selection.location, ("Intro\n\n| Column 1 | Column 2 |\n| --- | --- |\n| " as NSString).length)
+        let tables = MarkdownDocument.parse(table.text, flavor: .github).root.children.filter {
+            if case .table = $0.kind { return true }; return false
+        }
+        XCTAssertEqual(tables.count, 1)
+        XCTAssertEqual(MarkdownDocument.parse(table.text, flavor: .github).root.children.last.map {
+            (table.text as NSString).substring(with: $0.range)
+        }, "Outro")
+
+        // An image between paragraphs is a paragraph of its own
+        let image = MarkdownEditingCommands.insertBlock(.image, text: "Intro\n\nOutro", at: 6)
+        XCTAssertEqual(image.text, "Intro\n\n![Image]()\n\nOutro")
+
+        // On a line with text (the keyboard bar's +), the block goes below it and the text stays
+        let below = MarkdownEditingCommands.insertBlock(.codeBlock, text: "Intro\nOutro", at: 2)
+        XCTAssertEqual(below.text, "Intro\n\n```\n\n```\n\nOutro")
+        XCTAssertEqual(below.selection.location, ("Intro\n\n```\n" as NSString).length)
+        let last = MarkdownEditingCommands.insertBlock(.callout, text: "Only line", at: 4)
+        XCTAssertEqual(last.text, "Only line\n\n> [!NOTE]\n> ")
+
+        // A blank line already there isn't doubled
+        let spaced = MarkdownEditingCommands.insertBlock(.math, text: "Intro\n\n\n\nOutro", at: 7)
+        XCTAssertEqual(spaced.text, "Intro\n\n$$\n\n$$\n\nOutro")
+    }
+
+    func testBlockInsertKindCommands() throws {
+        // Table
+        let tableEdit = MarkdownEditingCommands.insertBlock(.table, text: "Intro\n\nOutro", at: 6)
+        XCTAssertTrue(tableEdit.text.contains("| Column 1 | Column 2 |"))
+        XCTAssertTrue(tableEdit.text.contains("| --- | --- |"))
+        XCTAssertTrue(tableEdit.text.contains("|  |  |"))
+
+        // Code block
+        let codeEdit = MarkdownEditingCommands.insertBlock(.codeBlock, text: "", at: 0)
+        XCTAssertEqual(codeEdit.text, "```\n\n```")
+        XCTAssertEqual(codeEdit.selection.location, 4)
+
+        // Math
+        let mathEdit = MarkdownEditingCommands.insertBlock(.math, text: "", at: 0)
+        XCTAssertEqual(mathEdit.text, "$$\n\n$$")
+        XCTAssertEqual(mathEdit.selection.location, 3)
+
+        // Mermaid
+        let mermaidEdit = MarkdownEditingCommands.insertBlock(.mermaid, text: "", at: 0)
+        XCTAssertEqual(mermaidEdit.text, "```mermaid\ngraph TD\n    \n```")
+        XCTAssertEqual(mermaidEdit.selection.location, "```mermaid\ngraph TD\n    ".count)
+
+        // Image
+        let imageEdit = MarkdownEditingCommands.insertBlock(.image, text: "", at: 0)
+        XCTAssertEqual(imageEdit.text, "![Image]()")
+        XCTAssertEqual(imageEdit.selection.location, "![Image](".count)
+    }
+
+    func testInsertAffordanceDoesNotShowWhenPreferenceDisabled() throws {
+        let e = try editor("")
+        e.setWritingOptions(WritingOptions(), showEmptyLineInsertAffordance: false)
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+        e.select(raw: NSRange(location: 0, length: 0))
+        e.pump(Self.affordanceWait)
+
+        XCTAssertFalse(e.textView.insertAffordanceButton?.isShowing ?? false,
+                       "Affordance must not show when showEmptyLineInsertAffordance is disabled")
+    }
+
+    func testInsertAffordanceDynamicToggleDismissesActiveAffordanceImmediately() throws {
+        let e = try editor("")
+        _ = e.textView.becomeFirstResponder()
+        e.pump(0.1)
+        e.select(raw: NSRange(location: 0, length: 0))
+        e.pump(Self.affordanceWait)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton)
+        XCTAssertTrue(button.isShowing)
+
+        // The setting reaches the (possibly kept) coordinator through updateUIView
+        e.setWritingOptions(WritingOptions(), showEmptyLineInsertAffordance: false)
+        XCTAssertFalse(button.isShowing, "Toggling preference off must immediately dismiss active affordance")
+        XCTAssertFalse(e.coordinator.showEmptyLineInsertAffordance)
+
+        e.setWritingOptions(WritingOptions(), showEmptyLineInsertAffordance: true)
+        XCTAssertTrue(e.coordinator.showEmptyLineInsertAffordance)
+    }
+
+    // MARK: - Insert Panel & Keyboard Bar Toggle (SWA-92)
+
+    func testInsertPanelToggleAndMutualExclusivityWithFormatPanel() throws {
+        let e = try editor("# Test")
+        let textView = e.textView
+
+        // Initially neither panel is showing
+        XCTAssertFalse(textView.isShowingInsertPanel)
+        XCTAssertFalse(textView.isShowingFormatPanel)
+
+        // Toggle Insert panel
+        textView.toggleInsertPanel()
+        XCTAssertTrue(textView.isShowingInsertPanel)
+        XCTAssertFalse(textView.isShowingFormatPanel)
+        XCTAssertTrue(textView.inputView is InsertPanelInputView)
+
+        // Opening format panel while insert panel is showing dismisses insert panel
+        textView.toggleFormatPanel()
+        XCTAssertTrue(textView.isShowingFormatPanel)
+        XCTAssertFalse(textView.isShowingInsertPanel)
+        XCTAssertTrue(textView.inputView is FormatPanelInputView)
+
+        // Opening insert panel while format panel is showing dismisses format panel
+        textView.toggleInsertPanel()
+        XCTAssertTrue(textView.isShowingInsertPanel)
+        XCTAssertFalse(textView.isShowingFormatPanel)
+        XCTAssertTrue(textView.inputView is InsertPanelInputView)
+
+        // Resigning first responder dismisses the panel
+        _ = textView.resignFirstResponder()
+        XCTAssertFalse(textView.isShowingInsertPanel)
+        XCTAssertNil(textView.inputView)
+    }
+
     // MARK: - Active formats and keyboard bar list/format state (SWA-67 / #189)
 
     func testActiveFormatsDetectsListsHeadingsInlineFormatsAndFlavors() throws {

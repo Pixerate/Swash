@@ -56,6 +56,12 @@ final class PreviewSnapshotTests: XCTestCase {
             PreviewCase(name: "iOS-FormatPanel-Dark", style: .dark, size: CGSize(width: 393, height: 260)) {
                 AnyView(FormatPanel(entries: formatEntries, apply: { _ in }, close: {}))
             },
+            PreviewCase(name: "iOS-InsertPanel-Light", style: .light, size: CGSize(width: 393, height: 260)) {
+                AnyView(InsertPanelView(onSelect: { _ in }, close: {}))
+            },
+            PreviewCase(name: "iOS-InsertPanel-Dark", style: .dark, size: CGSize(width: 393, height: 260)) {
+                AnyView(InsertPanelView(onSelect: { _ in }, close: {}))
+            },
             PreviewCase(name: "iOS-OutlineList-Light", style: .light) {
                 AnyView(
                     NavigationStack {
