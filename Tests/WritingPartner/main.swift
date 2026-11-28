@@ -160,6 +160,11 @@ expect("Where this shines is in long files\n", "Where this shines is in long fil
 expect("Where there is smoke there is fire\n", "Where there is smoke there is fire.\n")
 expect("When in doubt do the simplest thing\n", "When in doubt do the simplest thing.\n")
 expect("When `foo` is nil it returns early\n", "When `foo` is nil it returns early.\n")
+// Commands after a "When" / "Where" clause and a comma: "do" and "have" open the command (SWA-41)
+expect("When in doubt, do the simplest thing\n", "When in doubt, do the simplest thing.\n")
+expect("Where possible, have the build run tests\n", "Where possible, have the build run tests.\n")
+expect("When ready, do the following steps\n", "When ready, do the following steps.\n")
+expect("When in doubt, don't break the build\n", "When in doubt, don't break the build.\n")
 
 // "When" and "Where" genuine questions (→ ?)
 expect("When does this happen in production\n", "When does this happen in production?\n")
@@ -176,6 +181,8 @@ expect("When, if ever, does this happen\n", "When, if ever, does this happen?\n"
 expect("When youre ready, can you check this\n", "When you're ready, can you check this?\n")
 expect("When the window closes, what happens next\n", "When the window closes, what happens next?\n")
 expect("When you call `foo(a, b)`, what happens next\n", "When you call `foo(a, b)`, what happens next?\n")
+expect("When you get there, do you call me\n", "When you get there, do you call me?\n")
+expect("Where it failed, have the tests passed since\n", "Where it failed, have the tests passed since?\n")
 check(type("how does this work then\n", isActive: { $0 != .terminalPunctuation }).text == "How does this work then\n",
       "terminalPunctuation can be turned off")
 
@@ -189,6 +196,9 @@ do {
         "Where this shines is in long files",
         "When a sentence finishes, the editor keeps pace",
         "When in doubt do the simplest thing",
+        "When in doubt, do the simplest thing",
+        "Where possible, have the build run tests",
+        "When ready, do the following steps",
     ]
     for clause in declaratives {
         check(!PunctuateVoice.isQuestionClause(clause, taggerOverride: nilTagger),
@@ -199,6 +209,7 @@ do {
         "Where exactly do we store the cache",
         "Where in the repo does this live",
         "When you're ready, can you check this",
+        "When you get there, do you call me",
     ]
     for clause in questions {
         check(PunctuateVoice.isQuestionClause(clause, taggerOverride: nilTagger),

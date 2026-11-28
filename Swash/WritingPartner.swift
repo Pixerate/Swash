@@ -1180,12 +1180,72 @@ nonisolated extension PunctuateVoice {
 
         if let firstComma = commas.first, firstComma + 1 < nsClause.length {
             let mainClause = nsClause.substring(from: firstComma + 1)
-            if !clauseTokens(in: mainClause).isEmpty {
+            let mainTokens = clauseTokens(in: mainClause)
+            if let head = mainTokens.first?.lower {
+                // "When in doubt, do the simplest thing" and "Where possible, have the build run
+                // tests" are commands: a main clause opened by an auxiliary that can also be an
+                // imperative is only a question when a subject follows it.
+                if imperativeAuxiliaries.contains(head),
+                   !hasInvertedSubject(mainTokens, in: mainClause, taggerOverride: taggerOverride) {
+                    return false
+                }
                 return isQuestionClause(mainClause, taggerOverride: taggerOverride)
             }
         }
 
         return false
+    }
+
+    /// Auxiliaries that also open commands ("do the following", "don't break the build", "have the
+    /// team review it"), so a clause they start is a question only when a subject follows them.
+    private static let imperativeAuxiliaries: Set<String> = ["do", "don't", "have"]
+
+    private static let invertedSubjectPronouns: Set<String> = ["i", "you", "we", "they"]
+
+    /// Whether `tokens` (a clause opened by one of `imperativeAuxiliaries`) puts a subject after the
+    /// auxiliary and a verb after that subject, as a question does ("do you call me", "do the
+    /// tests pass", "have the builds finished"), rather than starting a command ("do the simplest
+    /// thing", "do the following steps", "have the build run tests").
+    private static func hasInvertedSubject(
+        _ tokens: [ClauseToken],
+        in clause: String,
+        taggerOverride: (([ClauseToken], String) -> [NLTag?])?
+    ) -> Bool {
+        guard tokens.count >= 2 else { return false }
+        if invertedSubjectPronouns.contains(tokens[1].lower) { return true }
+        let tags = lexicalTags(for: tokens, in: clause, taggerOverride: taggerOverride)
+        // The subject: an optional determiner, any adjectives (including "-ing" words used as
+        // adjectives, "the following steps"), then a head noun.
+        var k = 1
+        if k < tokens.count, tags[k] == .determiner || whDeterminers.contains(tokens[k].lower) { k += 1 }
+        while k < tokens.count,
+              tags[k] == .adjective || (tags[k] == .verb && tokens[k].lower.hasSuffix("ing") && k > 1) {
+            k += 1
+        }
+        guard k < tokens.count,
+              !inversionVerbs.contains(tokens[k].lower),
+              tags[k] == .noun || tags[k] == .pronoun || tags[k] == nil || tags[k] == .other
+        else { return false } // "don't break the build": a verb straight after the auxiliary is a command
+        let verbIndices = (k + 1 ..< tokens.count).filter { tags[$0] == .verb }
+        guard let verbIndex = verbIndices.first else { return false }
+        if tokens[0].lower == "have" {
+            // "Have the builds finished" asks; "have the team review it" tells: after "have" the
+            // verb must look like a past participle, not a bare infinitive.
+            return looksLikePastParticiple(tokens[verbIndex].lower)
+        }
+        return true
+    }
+
+    private static let irregularPastParticiples: Set<String> = [
+        "been", "done", "gone", "made", "said", "had", "got", "found", "left", "built", "sent", "kept",
+        "brought", "bought", "thought", "taught", "caught", "held", "lost", "met", "paid", "read", "seen",
+        "set", "shut", "sold", "told", "won", "begun", "broken", "chosen", "drawn", "driven", "eaten",
+        "fallen", "flown", "forgotten", "given", "grown", "hidden", "known", "ridden", "risen", "shown",
+        "spoken", "stolen", "taken", "thrown", "woken", "worn", "written",
+    ]
+
+    private static func looksLikePastParticiple(_ word: String) -> Bool {
+        word.hasSuffix("ed") || irregularPastParticiples.contains(word)
     }
 
     static func clauseTokens(in text: String) -> [ClauseToken] {
