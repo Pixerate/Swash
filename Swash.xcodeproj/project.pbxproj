@@ -830,7 +830,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -880,7 +880,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1033,7 +1033,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.QuickLookExtension;
 				PRODUCT_MODULE_NAME = SwashQuickLookExtension;
@@ -1064,7 +1064,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.QuickLookExtension;
 				PRODUCT_MODULE_NAME = SwashQuickLookExtension;
@@ -1107,7 +1107,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ShareExtension;
 				PRODUCT_MODULE_NAME = SwashShareExtension;
@@ -1150,7 +1150,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ShareExtension;
 				PRODUCT_MODULE_NAME = SwashShareExtension;
@@ -1180,7 +1180,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ThumbnailExtension;
 				PRODUCT_MODULE_NAME = SwashThumbnailExtension;
@@ -1210,7 +1210,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ThumbnailExtension;
 				PRODUCT_MODULE_NAME = SwashThumbnailExtension;
@@ -1252,7 +1252,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.WidgetExtension;
 				PRODUCT_MODULE_NAME = SwashWidgetExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1293,7 +1293,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.WidgetExtension;
 				PRODUCT_MODULE_NAME = SwashWidgetExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1315,7 +1315,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.SwashiOSTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -1340,7 +1340,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.SwashiOSTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -1373,7 +1373,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LM_SKIP_METADATA_EXTRACTION = YES;
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.Stickers;
 				PRODUCT_MODULE_NAME = SwashStickers;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1409,7 +1409,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LM_SKIP_METADATA_EXTRACTION = YES;
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.Stickers;
 				PRODUCT_MODULE_NAME = SwashStickers;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1465,7 +1465,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				OTHER_LDFLAGS = "$(inherited) -Wl,-dead_strip_dylibs";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1557,7 +1557,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.QuickLookExtension;
 				PRODUCT_MODULE_NAME = SwashQuickLookExtension;
@@ -1600,7 +1600,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ShareExtension;
 				PRODUCT_MODULE_NAME = SwashShareExtension;
@@ -1630,7 +1630,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ThumbnailExtension;
 				PRODUCT_MODULE_NAME = SwashThumbnailExtension;
@@ -1672,7 +1672,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.WidgetExtension;
 				PRODUCT_MODULE_NAME = SwashWidgetExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1694,7 +1694,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.SwashiOSTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -1727,7 +1727,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LM_SKIP_METADATA_EXTRACTION = YES;
-				MARKETING_VERSION = 1.52.0;
+				MARKETING_VERSION = 1.53.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.Stickers;
 				PRODUCT_MODULE_NAME = SwashStickers;
 				PRODUCT_NAME = "$(TARGET_NAME)";
