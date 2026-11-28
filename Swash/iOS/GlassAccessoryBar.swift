@@ -135,7 +135,7 @@ class GlassAccessoryBar: UIView {
         if let action { button.addAction(action, for: .primaryActionTriggered) }
         if let menu {
             button.menu = menu
-            button.showsMenuAsPrimaryAction = true
+            button.showsMenuAsPrimaryAction = (action == nil)
         }
         button.accessibilityLabel = label
         button.largeContentTitle = label

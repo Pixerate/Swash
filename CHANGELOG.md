@@ -1,5 +1,16 @@
 # swash
 
+## 1.50.0
+
+### Minor Changes
+
+- d5da86a: Show the active list type (`list.bullet`, `list.number`, `checklist`), heading level, and inline formats in the iOS keyboard bar, edit menu, and format panel as the caret moves.
+
+### Patch Changes
+
+- 9e98846: Fix NewDocumentSeed race condition by binding seeded text to the specific window and document identity instead of a global queue. Seeds hold their document and window weakly, so a seed left unclaimed (its window closed, or its document gone) is dropped instead of landing in an unrelated later window.
+- f990b53: Improve Writing Partner terminal punctuation to inspect the final sentence on multi-sentence lines and disambiguate declarative "When"/"Where" subordinate clauses from questions. Commands after the comma, such as "When in doubt, do the simplest thing" or "Where possible, have the build run tests", now end with a full stop; "do", "don't" and "have" after the comma open a question only when a subject follows them ("When you get there, do you call me?").
+
 ## 1.49.1
 
 ### Patch Changes

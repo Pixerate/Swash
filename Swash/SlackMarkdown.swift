@@ -594,4 +594,130 @@ extension FormatCommandEdits {
         guard let node = formatting.link(at: selection), case .link(let destination, _, _) = node.kind else { return nil }
         return destination
     }
+
+    /// Formats active at `selection` (raw-Markdown UTF-16 offsets) in `text` for `flavor`.
+    static func activeFormats(text: String, selection: NSRange, flavor: MarkdownFlavor = .github) -> Set<FormatCommand> {
+        activeFormats(formatting: MarkdownFormatting(text: text, flavor: flavor), selection: selection, flavor: flavor)
+    }
+
+    /// `activeFormats` reusing an existing `MarkdownFormatting` parse.
+    static func activeFormats(formatting: MarkdownFormatting, selection: NSRange, flavor: MarkdownFlavor = .github) -> Set<FormatCommand> {
+        let ns = formatting.text as NSString
+        guard selection.location != NSNotFound else { return [] }
+        let clampedLocation = min(max(0, selection.location), ns.length)
+        let clampedLength = min(max(0, selection.length), ns.length - clampedLocation)
+        let clamped = NSRange(location: clampedLocation, length: clampedLength)
+        var active: Set<FormatCommand> = []
+        let inCodeBlock = formatting.codeBlock(containing: clamped) != nil
+        if inCodeBlock {
+            active.insert(.codeBlock)
+        }
+        if formatting.isActive(.strong, selection: clamped) { active.insert(.bold) }
+        if formatting.isActive(.emphasis, selection: clamped) { active.insert(.italic) }
+        if formatting.isActive(.strikethrough, selection: clamped) { active.insert(.strikethrough) }
+        if formatting.isActive(.code, selection: clamped) || formatting.codeSpan(containing: clamped) != nil {
+            active.insert(.code)
+        }
+        if !inCodeBlock, clamped.length == 0 {
+            let loc = clamped.location
+            func isBetweenEmptyPair(_ delim: String) -> Bool {
+                let len = (delim as NSString).length
+                let ch = (delim as NSString).character(at: 0)
+                guard loc >= len, loc + len <= ns.length else { return false }
+                guard ns.substring(with: NSRange(location: loc - len, length: len)) == delim,
+                      ns.substring(with: NSRange(location: loc, length: len)) == delim else { return false }
+                let beforeOK = loc - len == 0 || ns.character(at: loc - len - 1) != ch
+                let afterOK = loc + len == ns.length || ns.character(at: loc + len) != ch
+                return beforeOK && afterOK
+            }
+            if isBetweenEmptyPair("`") { active.insert(.code) }
+            if flavor == .slack {
+                if isBetweenEmptyPair("*") { active.insert(.bold) }
+                if isBetweenEmptyPair("_") { active.insert(.italic) }
+                if isBetweenEmptyPair("~") { active.insert(.strikethrough) }
+            } else {
+                if isBetweenEmptyPair("**") || isBetweenEmptyPair("__") { active.insert(.bold) }
+                if isBetweenEmptyPair("*") || isBetweenEmptyPair("_") { active.insert(.italic) }
+                if isBetweenEmptyPair("~~") { active.insert(.strikethrough) }
+            }
+        }
+        if formatting.link(at: clamped) != nil { active.insert(.link) }
+        if formatting.isQuoted(selection: clamped) { active.insert(.quote) }
+        switch formatting.activeBlockFormatIncludingEmptyLine(selection: clamped) {
+        case .heading(let level)?: active.insert(.heading(level))
+        case .paragraph?: active.insert(.paragraph)
+        case .bulletList?: active.insert(.bulletList)
+        case .numberedList?: active.insert(.numberedList)
+        case .taskList?: active.insert(.taskList)
+        case .quote?: active.insert(.quote)
+        case nil: break
+        }
+        return active
+    }
+}
+
+extension FormatCommand: @retroactive Hashable, @retroactive RawRepresentable {
+    nonisolated public var rawValue: String {
+        switch self {
+        case .bold: return "format.bold"
+        case .italic: return "format.italic"
+        case .strikethrough: return "format.strikethrough"
+        case .code: return "format.code"
+        case .link: return "format.link"
+        case .heading(let level): return "format.heading.\(level)"
+        case .paragraph: return "format.paragraph"
+        case .bulletList: return "format.bulletList"
+        case .numberedList: return "format.numberedList"
+        case .taskList: return "format.taskList"
+        case .quote: return "format.quote"
+        case .codeBlock: return "format.codeBlock"
+        case .table: return "format.table"
+        case .callout(let type): return "format.callout.\(type?.rawValue ?? "plain")"
+        case .footnote: return "format.footnote"
+        case .tableOfContents: return "format.tableOfContents"
+        }
+    }
+
+    nonisolated public init?(rawValue: String) {
+        switch rawValue {
+        case "format.bold", "bold": self = .bold
+        case "format.italic", "italic": self = .italic
+        case "format.strikethrough", "strikethrough": self = .strikethrough
+        case "format.code", "code": self = .code
+        case "format.link", "link": self = .link
+        case "format.heading", "heading": self = .heading(1)
+        case "format.paragraph", "paragraph": self = .paragraph
+        case "format.bulletList", "bulletList": self = .bulletList
+        case "format.numberedList", "numberedList": self = .numberedList
+        case "format.taskList", "taskList": self = .taskList
+        case "format.quote", "quote": self = .quote
+        case "format.codeBlock", "codeBlock": self = .codeBlock
+        case "format.table", "table": self = .table
+        case "format.footnote", "footnote": self = .footnote
+        case "format.tableOfContents", "tableOfContents": self = .tableOfContents
+        default:
+            for prefix in ["format.heading.", "format.heading:", "heading.", "heading:"] where rawValue.hasPrefix(prefix) {
+                if let level = Int(rawValue.dropFirst(prefix.count)), (1...6).contains(level) {
+                    self = .heading(level)
+                    return
+                }
+            }
+            for prefix in ["format.callout.", "format.callout:", "callout.", "callout:"] where rawValue.hasPrefix(prefix) {
+                let suffix = String(rawValue.dropFirst(prefix.count))
+                if suffix == "plain" || suffix == "none" {
+                    self = .callout(nil)
+                    return
+                }
+                if let type = AlertType(rawValue: suffix) {
+                    self = .callout(type)
+                    return
+                }
+            }
+            return nil
+        }
+    }
+
+    nonisolated public func hash(into hasher: inout Hasher) {
+        hasher.combine(rawValue)
+    }
 }

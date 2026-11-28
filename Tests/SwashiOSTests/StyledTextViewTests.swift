@@ -1436,6 +1436,193 @@ final class StyledTextViewTests: XCTestCase {
         XCTAssertFalse(textView.isShowingInsertPanel)
         XCTAssertNil(textView.inputView)
     }
+
+    // MARK: - Active formats and keyboard bar list/format state (SWA-67 / #189)
+
+    func testActiveFormatsDetectsListsHeadingsInlineFormatsAndFlavors() throws {
+        let markdown = """
+        Plain paragraph
+
+        # Heading One
+        ### Heading Three
+
+        - Bullet item
+        * Star bullet
+        1. Numbered item
+        - [ ] Open task
+        - [x] Done task
+
+        > Quoted line
+        > - Quoted bullet
+
+        Here is **bold**, *italic*, ~~strike~~, `code`, [***bold italic***](https://example.com) text.
+
+        ```swift
+        let insideCode = 1
+        ```
+        """
+        let ns = markdown as NSString
+        func caret(in snippet: String, offset: Int = 2) -> NSRange {
+            let range = ns.range(of: snippet)
+            XCTAssertNotEqual(range.location, NSNotFound, "missing \(snippet)")
+            return NSRange(location: range.location + offset, length: 0)
+        }
+
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "Plain paragraph")), [.paragraph])
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "Heading One")), [.heading(1)])
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "Heading Three")), [.heading(3)])
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "Bullet item")), [.bulletList])
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "Star bullet")), [.bulletList])
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "Numbered item")), [.numberedList])
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "Open task")), [.taskList])
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "Done task")), [.taskList])
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "Quoted line")), [.quote])
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "Quoted bullet")), [.quote, .bulletList])
+
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "**bold**", offset: 4)), [.paragraph, .bold])
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "*italic*", offset: 3)), [.paragraph, .italic])
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "~~strike~~", offset: 4)), [.paragraph, .strikethrough])
+        XCTAssertEqual(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "`code`", offset: 2)), [.paragraph, .code])
+        XCTAssertEqual(
+            FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "[***bold italic***]", offset: 10)),
+            [.paragraph, .bold, .italic, .link]
+        )
+        XCTAssertTrue(FormatManifestLayout.activeFormats(text: markdown, selection: caret(in: "insideCode")).contains(.codeBlock))
+
+        // Slack mrkdwn flavor
+        let slack = "Slack *bold* and _italic_ and ~strike~ and <https://example.com|site>"
+        let slackNS = slack as NSString
+        XCTAssertEqual(
+            FormatCommandEdits.activeFormats(text: slack, selection: NSRange(location: slackNS.range(of: "bold").location + 1, length: 0), flavor: .slack),
+            [.paragraph, .bold]
+        )
+        XCTAssertEqual(
+            FormatCommandEdits.activeFormats(text: slack, selection: NSRange(location: slackNS.range(of: "italic").location + 1, length: 0), flavor: .slack),
+            [.paragraph, .italic]
+        )
+        XCTAssertEqual(
+            FormatCommandEdits.activeFormats(text: slack, selection: NSRange(location: slackNS.range(of: "strike").location + 1, length: 0), flavor: .slack),
+            [.paragraph, .strikethrough]
+        )
+        XCTAssertEqual(
+            FormatCommandEdits.activeFormats(text: slack, selection: NSRange(location: slackNS.range(of: "site").location + 1, length: 0), flavor: .slack),
+            [.paragraph, .link]
+        )
+    }
+
+    func testMovingCaretIntoListTypesAndInlineFormatsUpdatesKeyboardBarAndMenus() throws {
+        let suiteName = "SwashActiveListBarTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let markdown = "Plain text\n\n1. Numbered item\n\n- [ ] Task item\n\n- Bullet item\n\n## Section Two\n\nSome **bold** and *italic* and ~~strike~~ and `code` and [link](https://example.com)."
+        let e = try editor(markdown)
+        e.textView.recentFormats = RecentFormatCommands(defaults: defaults)
+
+        // Start in plain text: list button is unselected with list.bullet
+        e.caret(after: "Plain")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        let listSlotButton = try XCTUnwrap(e.textView.recentButton(for: .bulletList))
+        let headingSlotButton = try XCTUnwrap(e.textView.recentButton(for: .heading(1)))
+        XCTAssertFalse(listSlotButton.isSelected)
+        XCTAssertEqual(e.textView.displayedSymbolName(for: listSlotButton), "list.bullet")
+        XCTAssertEqual(listSlotButton.configuration?.baseForegroundColor, .label)
+        XCTAssertFalse(headingSlotButton.isSelected)
+        XCTAssertEqual(e.textView.displayedSymbolName(for: headingSlotButton), "1.square")
+
+        // Moving caret into a numbered list shows the numbered-list icon (list.number), highlighted, in the bar
+        e.caret(after: "Numbered")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertTrue(listSlotButton.isSelected, "list button highlights in a numbered list")
+        XCTAssertEqual(e.textView.displayedSymbolName(for: listSlotButton), "list.number")
+        XCTAssertEqual(e.textView.displayedCommand(for: listSlotButton), .numberedList)
+        XCTAssertEqual(listSlotButton.configuration?.baseForegroundColor, .tintColor)
+        XCTAssertTrue(e.textView.recentButton(for: .numberedList) === listSlotButton)
+        let numberedMenuActions = listSlotButton.menu?.children.compactMap { $0 as? UIAction } ?? []
+        XCTAssertEqual(numberedMenuActions.first { $0.title == "Numbered List" }?.state, .on)
+        XCTAssertEqual(numberedMenuActions.first { $0.title == "Bullet List" }?.state, .off)
+
+        // Moving caret into plain text clears it and restores list.bullet
+        e.caret(after: "Plain")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertFalse(listSlotButton.isSelected, "moving into plain text clears list highlight")
+        XCTAssertEqual(e.textView.displayedSymbolName(for: listSlotButton), "list.bullet")
+        XCTAssertEqual(listSlotButton.configuration?.baseForegroundColor, .label)
+        let plainMenuActions = listSlotButton.menu?.children.compactMap { $0 as? UIAction } ?? []
+        XCTAssertTrue(plainMenuActions.allSatisfy { $0.state == .off })
+
+        // Moving caret into a task list shows checklist icon, highlighted
+        e.caret(after: "Task")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertTrue(listSlotButton.isSelected)
+        XCTAssertEqual(e.textView.displayedSymbolName(for: listSlotButton), "checklist")
+        XCTAssertEqual(listSlotButton.configuration?.baseForegroundColor, .tintColor)
+        let taskMenuActions = listSlotButton.menu?.children.compactMap { $0 as? UIAction } ?? []
+        XCTAssertEqual(taskMenuActions.first { $0.title == FormatCommand.taskList.label }?.state, .on)
+
+        // Moving caret into a bullet list shows list.bullet icon, highlighted
+        e.caret(after: "Bullet")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertTrue(listSlotButton.isSelected)
+        XCTAssertEqual(e.textView.displayedSymbolName(for: listSlotButton), "list.bullet")
+        XCTAssertEqual(listSlotButton.configuration?.baseForegroundColor, .tintColor)
+
+        // Moving caret into Heading 2 shows 2.square icon, highlighted
+        e.caret(after: "Section")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertFalse(listSlotButton.isSelected)
+        XCTAssertTrue(headingSlotButton.isSelected)
+        XCTAssertEqual(e.textView.displayedSymbolName(for: headingSlotButton), "2.square")
+        XCTAssertEqual(headingSlotButton.configuration?.baseForegroundColor, .tintColor)
+        let headingMenuActions = headingSlotButton.menu?.children.compactMap { $0 as? UIAction } ?? []
+        XCTAssertEqual(headingMenuActions.first { $0.title == "Heading 2" }?.state, .on)
+
+        // Bold, italic and link buttons show selected inside formatted text
+        e.caret(after: "**bo")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertEqual(e.textView.recentButton(for: .bold)?.isSelected, true)
+        XCTAssertEqual(e.textView.recentButton(for: .italic)?.isSelected, false)
+
+        e.caret(after: "*ita")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertEqual(e.textView.recentButton(for: .italic)?.isSelected, true)
+        XCTAssertEqual(e.textView.recentButton(for: .bold)?.isSelected, false)
+
+        e.caret(after: "[li")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertEqual(e.textView.recentButton(for: .link)?.isSelected, true)
+
+        // Edit menu marks active inline and block formats with UIAction.state = .on
+        let boldRange = (markdown as NSString).range(of: "bold")
+        e.select(raw: boldRange)
+        let menu = try XCTUnwrap(e.textView.editMenu(for: e.textView.selectedRange, suggestedActions: []))
+        let palette = try XCTUnwrap(menu.children.compactMap { $0 as? UIMenu }.first { $0.options.contains(.displayAsPalette) })
+        let boldAction = try XCTUnwrap(palette.children.compactMap { $0 as? UIAction }.first { $0.title == "Bold" })
+        let italicAction = try XCTUnwrap(palette.children.compactMap { $0 as? UIAction }.first { $0.title == "Italic" })
+        XCTAssertEqual(boldAction.state, .on)
+        XCTAssertEqual(italicAction.state, .off)
+    }
+
+    func testKeyboardBarRebuildsVariantMenuOnlyWhenTheActiveVariantChanges() throws {
+        let suiteName = "SwashBarVariantMenuTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let e = try editor("1. first\n2. second\n\nPlain text")
+        e.textView.recentFormats = RecentFormatCommands(defaults: defaults)
+
+        // Moving within the same list type keeps the long-press menu; leaving the list rebuilds it
+        e.caret(after: "fir")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        let listButton = try XCTUnwrap(e.textView.recentButton(for: .bulletList))
+        let numberedMenu = try XCTUnwrap(listButton.menu)
+        e.caret(after: "sec")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertTrue(listButton.menu === numberedMenu, "same list type keeps the same menu")
+        e.caret(after: "Plain")
+        e.textView.delegate?.textViewDidChangeSelection?(e.textView)
+        XCTAssertFalse(listButton.menu === numberedMenu, "leaving the list rebuilds the menu")
+        let plainActions = listButton.menu?.children.compactMap { $0 as? UIAction } ?? []
+        XCTAssertTrue(plainActions.allSatisfy { $0.state == .off })
+    }
 }
-
-
