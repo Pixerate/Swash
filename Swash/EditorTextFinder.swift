@@ -10,7 +10,7 @@
 //  - a Replace or Replace All is one undo step, made through `shouldChangeText(inRanges:)` and
 //    `didChangeText()`, so the coordinator restyles and the binding updates as for typing;
 //  - matches inside tables and images, which the bar can't show, are counted for the hint.
-//  See GOTCHAS #125.
+//  See GOTCHAS #126.
 //
 
 #if os(macOS)

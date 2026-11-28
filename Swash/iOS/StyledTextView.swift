@@ -384,7 +384,7 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
-            // UIKit's smart punctuation mustn't rewrite Swash's own edits (GOTCHAS #125)
+            // UIKit's smart punctuation mustn't rewrite Swash's own edits (GOTCHAS #126)
             if let editing = textView as? MarkdownEditingTextView, !editing.isOwnEditChange(range, replacement: replacement) { return false }
             if let styled = textView as? StyledUITextView {
                 cancelInsertAffordanceTimer()
@@ -1489,7 +1489,7 @@ final class StyledUITextView: MarkdownEditingTextView {
             let effectiveContentX = geometry.contentX
             let boxCenter = CGPoint(x: box.midX, y: box.midY)
 
-            let hitTargetSize: CGFloat = max(44.0, boxSize + 16.0)
+            let hitTargetSize = ListMarkerRenderer.checkboxMetrics(for: geometry.font).hitTarget
             let minX = min(boxCenter.x - hitTargetSize / 2.0, effectiveContentX - max(44.0, boxSize + 12.0))
             let maxX = min(boxCenter.x + hitTargetSize / 2.0, effectiveContentX + 4.0)
             let minY = boxCenter.y - hitTargetSize / 2.0

@@ -399,7 +399,7 @@ class MarkdownEditingTextView: UITextView {
     /// its own replacement, when only that replacement is. Once a text field with smart punctuation
     /// has had the keyboard (the find bar's), UIKit follows `replace(_:withText:)` with its own
     /// changes through the delegate, whatever this view's `smartDashesType`: a table's `---` rule
-    /// became `—` (GOTCHAS #125).
+    /// became `—` (GOTCHAS #126).
     func isOwnEditChange(_ range: NSRange, replacement: String) -> Bool {
         guard let applying = applyingReplacement else { return true }
         return applying.range == range && applying.text == replacement
@@ -448,7 +448,7 @@ class MarkdownEditingTextView: UITextView {
 
     /// The find bar. Not UITextView's own (`isFindInteractionEnabled`): its `UITextSearching`
     /// methods are declared in a Swift extension, so a subclass can't override them, and replacing
-    /// must go through the editor's edit path, skip hidden markers and be one undo step (GOTCHAS #125).
+    /// must go through the editor's edit path, skip hidden markers and be one undo step (GOTCHAS #126).
     private(set) var editorFindInteraction: UIFindInteraction?
     /// The find bar's searchable object and session delegate (the interaction holds it weakly).
     private(set) var textSearcher: EditorTextSearcher?
@@ -546,7 +546,7 @@ class MarkdownEditingTextView: UITextView {
     /// Each match is its own small replacement, not one edit from the first to the last: that span
     /// would expand the tables and images between them into their source, and the restyle that
     /// collapses them again changes the storage under the undo step, so undoing it went out of
-    /// bounds (GOTCHAS #125).
+    /// bounds (GOTCHAS #126).
     @discardableResult
     func replaceFoundRanges(_ ranges: [NSRange], with replacement: String, actionName: String) -> Int {
         let replaceable = ranges.filter(canReplaceFoundRange).sorted { $0.location < $1.location }

@@ -3,7 +3,7 @@
 //  Swash
 //
 //  The iOS find bar (#271): `UIFindInteraction` drives `EditorTextSearcher`, which matches and
-//  replaces by the shared rules in Swash/EditorFind.swift. See GOTCHAS #125.
+//  replaces by the shared rules in Swash/EditorFind.swift. See GOTCHAS #126.
 //
 
 #if os(iOS)

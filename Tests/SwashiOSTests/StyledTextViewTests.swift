@@ -575,8 +575,59 @@ final class StyledTextViewTests: XCTestCase {
         XCTAssertTrue(checked.isChecked)
     }
 
-    func testCheckboxAndBulletVectorAlignmentWithHeadings() throws {
-        // Verify checkbox box and bullet metrics scale monotonically with font point sizes
+    /// Markers are SF Symbols (#184): Reminders-style circles for tasks, the system's bullets by level.
+    func testListMarkerSymbolChoice() {
+        XCTAssertEqual(ListMarkerRenderer.symbolName(for: ListMarkerInfo(text: "☐", indent: 0)), "circle")
+        XCTAssertEqual(ListMarkerRenderer.symbolName(for: ListMarkerInfo(text: "☑", indent: 0)), "checkmark.circle.fill")
+        XCTAssertEqual(ListMarkerRenderer.symbolName(for: ListMarkerInfo(text: "•", indent: 0)), "circle.fill")
+        XCTAssertEqual(ListMarkerRenderer.symbolName(for: ListMarkerInfo(text: "◦", indent: 0)), "circle")
+        XCTAssertEqual(ListMarkerRenderer.symbolName(for: ListMarkerInfo(text: "▪", indent: 0)), "square.fill")
+        XCTAssertNil(ListMarkerRenderer.symbolName(for: ListMarkerInfo(text: "1.", indent: 0)))
+        XCTAssertNil(ListMarkerRenderer.symbolImage(for: ListMarkerInfo(text: "1.", indent: 0), font: .systemFont(ofSize: 17)))
+
+        let font = UIFont.systemFont(ofSize: 17)
+        for glyph in ["☐", "☑", "•", "◦", "▪"] {
+            let image = ListMarkerRenderer.symbolImage(for: ListMarkerInfo(text: glyph, indent: 0), font: font)
+            XCTAssertNotNil(image, "no SF Symbol for \(glyph)")
+            XCTAssertTrue(image?.isSymbolImage == true, "\(glyph) isn't drawn with an SF Symbol")
+        }
+
+        // A checkbox is a circle about as tall as the text; a bullet is small, as in the system's lists
+        let checkbox = ListMarkerRenderer.checkboxMetrics(for: font).size
+        XCTAssertEqual(checkbox.width, checkbox.height, accuracy: 1.5)
+        XCTAssertGreaterThan(checkbox.height, font.capHeight)
+        XCTAssertLessThan(checkbox.height, font.lineHeight * 1.3)
+        let disc = ListMarkerRenderer.symbolSize(for: ListMarkerInfo(text: "•", indent: 0), font: font)
+        XCTAssertGreaterThan(disc.height, font.pointSize * 0.25)
+        XCTAssertLessThan(disc.height, font.pointSize * 0.6)
+
+        // Unticked markers use secondaryLabel, or label under Increase Contrast
+        XCTAssertEqual(ListMarkerRenderer.neutralColor(for: UITraitCollection(accessibilityContrast: .normal)), .secondaryLabel)
+        XCTAssertEqual(ListMarkerRenderer.neutralColor(for: UITraitCollection(accessibilityContrast: .high)), .label)
+    }
+
+    /// Each marker is drawn at its symbol's own size, and the checkbox tap target is centred on the circle.
+    func testMarkerRectsMatchTheirSymbols() throws {
+        let e = try editor("- [ ] task\n- [x] done\n- one\n  - two\n    - three\n1. first")
+        let markers = markerRects(in: e)
+        XCTAssertEqual(markers.count, 6)
+        let bodyFont = try XCTUnwrap(e.storage.attribute(.font, at: (e.storage.string as NSString).range(of: "task").location, effectiveRange: nil) as? UIFont)
+        for marker in markers where marker.info.isTask || marker.info.bulletKind != nil {
+            let size = ListMarkerRenderer.symbolSize(for: marker.info, font: bodyFont)
+            XCTAssertEqual(marker.rect.width, size.width, accuracy: 0.5, marker.info.text)
+            XCTAssertEqual(marker.rect.height, size.height, accuracy: 0.5, marker.info.text)
+            XCTAssertGreaterThan(marker.rect.midY, marker.lineRect.minY, marker.info.text)
+            XCTAssertLessThan(marker.rect.midY, marker.lineRect.maxY, marker.info.text)
+        }
+        let inset = e.textView.textContainerInset
+        for marker in markers where marker.info.isTask {
+            let centre = CGPoint(x: marker.rect.midX + inset.left, y: marker.rect.midY + inset.top)
+            XCTAssertEqual(e.textView.taskMarkerRange(at: centre), marker.range)
+        }
+    }
+
+    func testCheckboxAndBulletAlignmentWithHeadings() throws {
+        // Checkbox and bullet symbols scale with the line's font size
         let bodyFont = UIFont.systemFont(ofSize: 16)
         let h2Font = UIFont.systemFont(ofSize: 22, weight: .bold)
         let h1Font = UIFont.systemFont(ofSize: 28, weight: .bold)
@@ -585,13 +636,12 @@ final class StyledTextViewTests: XCTestCase {
         let h2Metrics = ListMarkerRenderer.checkboxMetrics(for: h2Font)
         let h1Metrics = ListMarkerRenderer.checkboxMetrics(for: h1Font)
 
-        XCTAssertGreaterThan(h1Metrics.boxSize, h2Metrics.boxSize)
-        XCTAssertGreaterThan(h2Metrics.boxSize, bodyMetrics.boxSize)
-        XCTAssertGreaterThan(h1Metrics.cornerRadius, bodyMetrics.cornerRadius)
+        XCTAssertGreaterThan(h1Metrics.size.height, h2Metrics.size.height)
+        XCTAssertGreaterThan(h2Metrics.size.height, bodyMetrics.size.height)
 
-        let bodyBullet = ListMarkerRenderer.bulletMetrics(for: bodyFont)
-        let h1Bullet = ListMarkerRenderer.bulletMetrics(for: h1Font)
-        XCTAssertGreaterThan(h1Bullet.bulletSize, bodyBullet.bulletSize)
+        let bullet = ListMarkerInfo(text: "•", indent: 0)
+        XCTAssertGreaterThan(ListMarkerRenderer.symbolSize(for: bullet, font: h1Font).height,
+                             ListMarkerRenderer.symbolSize(for: bullet, font: bodyFont).height)
 
         // Verify vertical alignment calculations anchor visual center to capHeight
         let e = try editor("- [ ] Body item 1\n- [ ] Body item 2")
@@ -628,6 +678,7 @@ final class StyledTextViewTests: XCTestCase {
         XCTAssertEqual(markers.count, 2, file: file, line: line)
         guard let first = markers.first, let last = markers.last else { return }
         XCTAssertEqual(last.info.isTask, isTask, file: file, line: line)
+        XCTAssertEqual(ListMarkerRenderer.symbolName(for: last.info), isTask ? "circle" : "circle.fill", file: file, line: line)
         XCTAssertGreaterThan(last.lineRect.minY, first.lineRect.minY, "the empty item should be on its own line", file: file, line: line)
         XCTAssertGreaterThanOrEqual(last.rect.minY, last.lineRect.minY - 0.5, file: file, line: line)
         XCTAssertLessThanOrEqual(last.rect.maxY, last.lineRect.maxY + 0.5, file: file, line: line)
@@ -753,18 +804,17 @@ final class StyledTextViewTests: XCTestCase {
         for size in sizes {
             let font = UIFont.systemFont(ofSize: size)
             let checkbox = ListMarkerRenderer.checkboxMetrics(for: font)
-            let bullet = ListMarkerRenderer.bulletMetrics(for: font)
+            let bullet = ListMarkerRenderer.symbolSize(for: ListMarkerInfo(text: "•", indent: 0), font: font).height
 
             // Monotonically non-decreasing
-            XCTAssertGreaterThanOrEqual(checkbox.boxSize, previousBoxSize)
-            XCTAssertGreaterThanOrEqual(bullet.bulletSize, previousBulletSize)
+            XCTAssertGreaterThanOrEqual(checkbox.size.height, previousBoxSize)
+            XCTAssertGreaterThanOrEqual(bullet, previousBulletSize)
 
-            // Minimum HIG touch target dimension calculation
-            let hitTarget = max(44.0, checkbox.boxSize + 16.0)
-            XCTAssertGreaterThanOrEqual(hitTarget, 44.0)
+            // At least the HIG's 44 pt tap target
+            XCTAssertGreaterThanOrEqual(checkbox.hitTarget, 44.0)
 
-            previousBoxSize = checkbox.boxSize
-            previousBulletSize = bullet.bulletSize
+            previousBoxSize = checkbox.size.height
+            previousBulletSize = bullet
         }
     }
 
@@ -1966,7 +2016,7 @@ final class StyledTextViewTests: XCTestCase {
     }
 
     /// Once the find bar's field has had the keyboard, UIKit smart-punctuates the editor's own
-    /// edits through the delegate; they must land as made (GOTCHAS #125).
+    /// edits through the delegate; they must land as made (GOTCHAS #126).
     func testEditsAfterTheFindBarKeepTheirPunctuation() throws {
         let find = try editor("x")
         find.controller.presentFind(showingReplace: false)
