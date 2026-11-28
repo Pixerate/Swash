@@ -8,8 +8,6 @@
 //
 
 import AppKit
-import OSLog
-@testable import PixerateMarkdown
 
 var failures = 0
 func check(_ name: String, _ condition: Bool, _ message: String = "") {
@@ -36,20 +34,6 @@ func createMockWindowAndDocument() -> (NSWindow, NSDocument) {
 @MainActor
 func runTests() {
     print("=== Testing NewDocumentSeed Window & Document Binding ===")
-
-    // Test 0: Reproduction check of the legacy race condition
-    // Under the legacy model, a global FIFO queue allowed an unrelated window to claim another window's seed
-    do {
-        var legacyQueue: [String] = []
-        func legacyCreateDocument(with text: String) { legacyQueue.append(text) }
-        func legacyTake() -> String? { legacyQueue.isEmpty ? nil : legacyQueue.removeFirst() }
-
-        legacyCreateDocument(with: "# Target Note")
-        let stolenByUnrelatedWindow = legacyTake()
-        let targetWindowClaim = legacyTake()
-        check("Legacy FIFO queue demonstrates bug where unrelated window steals seed", stolenByUnrelatedWindow == "# Target Note")
-        check("Legacy FIFO queue leaves target window empty", targetWindowClaim == nil)
-    }
 
     // Test 1: Window-specific claiming prevents other windows from intercepting
     do {
@@ -119,6 +103,47 @@ func runTests() {
         // Both are now empty
         check("Window 1 empty after take", NewDocumentSeed.take(for: window1) == nil)
         check("Window 2 empty after take", NewDocumentSeed.take(for: window2) == nil)
+    }
+
+    // Test 4: A seed whose window closes before claiming it is dropped, not left for a later window
+    do {
+        NewDocumentSeed.clearForTesting()
+        let (windowA, docA) = createMockWindowAndDocument()
+        let (windowB, docB) = createMockWindowAndDocument()
+        NewDocumentSeed.registerForTesting(text: "Closed early", document: docA, window: windowA)
+        NewDocumentSeed.registerForTesting(text: "Document only", document: docB, window: nil)
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: windowA)
+        check("Closing window A drops its seed", NewDocumentSeed.pendingCountForTesting == 1,
+              "pending: \(NewDocumentSeed.pendingCountForTesting)")
+        check("Closed window A gets nil", NewDocumentSeed.take(for: windowA) == nil)
+
+        // A seed registered only by document is dropped when that document's window closes
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: windowB)
+        check("Closing document B's window drops its document-only seed", NewDocumentSeed.pendingCountForTesting == 0,
+              "pending: \(NewDocumentSeed.pendingCountForTesting)")
+        check("Window B gets nil after closing", NewDocumentSeed.take(for: windowB) == nil)
+    }
+
+    // Test 5: A seed whose document was deallocated unclaimed is pruned, so no later object reusing
+    // its address (and so its ObjectIdentifier) can inherit it
+    do {
+        NewDocumentSeed.clearForTesting()
+        weak var released: NSDocument?
+        autoreleasepool {
+            let doc = MockDocument()
+            released = doc
+            NewDocumentSeed.registerForTesting(text: "Stale seed", document: doc, window: nil)
+        }
+        check("Unclaimed document was deallocated", released == nil)
+        check("Seed of a deallocated document is pruned", NewDocumentSeed.pendingCountForTesting == 0,
+              "pending: \(NewDocumentSeed.pendingCountForTesting)")
+        var leaked = 0
+        for _ in 0..<32 {
+            let (window, _) = createMockWindowAndDocument()
+            if NewDocumentSeed.take(for: window) != nil { leaked += 1 }
+        }
+        check("No later window inherits the stale seed", leaked == 0, "leaked to \(leaked) window(s)")
     }
 
     print("=== Finished NewDocumentSeed Tests ===")
