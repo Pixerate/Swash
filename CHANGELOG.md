@@ -1,5 +1,11 @@
 # swash
 
+## 1.49.1
+
+### Patch Changes
+
+- ed3f4dc: Add Xcode previews for every Swash Pro state in the account settings: free (paywall), Swash Pro, shared by family, included with Pixerate Pro, complimentary, direct download and signed in.
+
 ## 1.49.0
 
 ### Minor Changes
