@@ -14,7 +14,7 @@ concurrency:
 jobs:
   build:
     name: Build macOS App
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -22,7 +22,7 @@ jobs:
       - name: Set up Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
+          xcode-version: '^27.1'
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -95,7 +95,7 @@ jobs:
 
   build-ios:
     name: Build iOS App (Simulator)
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -103,7 +103,7 @@ jobs:
       - name: Set up Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
+          xcode-version: '^27.1'
 
       - name: Build (Release, iOS Simulator, unsigned)
         run: |
@@ -125,9 +125,9 @@ jobs:
       - name: iOS editor tests (Simulator)
         run: |
           DEVICE_ID=$(xcrun simctl list devices available --json | python3 -c '
-          import json, sys
+          import itertools, json, sys
           runtimes = json.load(sys.stdin)["devices"]
-          ios = sorted((r for r in runtimes if ".iOS-" in r), key=lambda r: [int(p) for p in r.rsplit(".iOS-", 1)[1].split("-")], reverse=True)
+          ios = sorted((r for r in runtimes if ".iOS-" in r), key=lambda r: [int(p) for p in itertools.takewhile(str.isdigit, r.rsplit(".iOS-", 1)[1].split("-"))], reverse=True)
           print(next(d["udid"] for r in ios for d in runtimes[r] if d["name"].startswith("iPhone")))
           ')
           echo "Testing on $(xcrun simctl list devices | grep "$DEVICE_ID")"

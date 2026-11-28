@@ -907,7 +907,7 @@ nonisolated enum Scorer {
                         isRestored = finalNorm.lowercased() == origNorm.lowercased()
                     case .pronounI, .capitals, .terminalPunctuation, .clauseComma, .curlyQuotes, .dashes, .ellipses,
                          .doubledWords, .aAndAn, .agreementAndTense, .missingWords,
-                         .formatLists, .formatHeadings, .formatSpacing, .formatSpans, .formatEmphasis, .formatTasks, .formatTables, .formatLinks:
+                         .formatLists, .formatHeadings, .formatSpacing, .formatSpans, .formatEmphasis, .formatTasks, .formatTables, .formatLinks, .formatTitleLines:
                         isRestored = finalNorm == origNorm
                     }
                     if isRestored {
@@ -928,7 +928,7 @@ nonisolated enum Scorer {
                         isWrong = finalNorm.lowercased() != origNorm.lowercased()
                     case .pronounI, .capitals, .terminalPunctuation, .clauseComma, .curlyQuotes, .dashes, .ellipses,
                          .doubledWords, .aAndAn, .agreementAndTense, .missingWords,
-                         .formatLists, .formatHeadings, .formatSpacing, .formatSpans, .formatEmphasis, .formatTasks, .formatTables, .formatLinks:
+                         .formatLists, .formatHeadings, .formatSpacing, .formatSpans, .formatEmphasis, .formatTasks, .formatTables, .formatLinks, .formatTitleLines:
                         isWrong = finalNorm != origNorm
                     }
                     if isWrong {

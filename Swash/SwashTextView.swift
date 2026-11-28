@@ -286,6 +286,31 @@ final class SwashEditorController {
         onPartnerMarksChange?(count)
     }
 
+    // MARK: Edit layers (#229)
+
+    /// Called when the partner's edit layers may have changed, with how many edits they hold.
+    var onPartnerLayersChange: ((Int) -> Void)?
+    private(set) var partnerLayerEditCount = 0
+
+    func partnerLayersDidChange(_ count: Int) {
+        guard count != partnerLayerEditCount else { return }
+        partnerLayerEditCount = count
+        onPartnerLayersChange?(count)
+    }
+
+    /// The partner's edits this session, on their Copyedit and Ghostwrite layers.
+    func partnerLayerEdits() -> [LayeredEdit] {
+        guard let textView = textView, let coordinator = coordinator else { return [] }
+        return coordinator.writingPartner.layerEdits(in: textView, coordinator: coordinator)
+    }
+
+    /// Reverts the partner's edits `ids` as one undo step, leaving the person's typing alone.
+    @discardableResult
+    func revertPartnerEdits(_ ids: Set<Int>) -> Int {
+        guard let textView = textView, let coordinator = coordinator else { return 0 }
+        return coordinator.writingPartner.revertEdits(ids, in: textView, coordinator: coordinator)
+    }
+
     /// Starts stepping through what the partner isn't sure about.
     @discardableResult
     func reviewPartnerMarks() -> Bool {
@@ -731,14 +756,14 @@ class SwashNSTextView: NSTextView {
         guard let coordinator = delegate as? SwashTextView.Coordinator else { return base.isEmpty ? nil : base }
         var actions: [NSAccessibilityCustomAction] = []
         if coordinator.writingPartner.hasActiveIntroduction {
-            actions.append(NSAccessibilityCustomAction(name: "Turn on Automatically") { [weak self, weak coordinator] in
+            actions.append(NSAccessibilityCustomAction(name: "Turn on Copyedit") { [weak self, weak coordinator] in
                 guard let self, let coordinator else { return false }
-                coordinator.writingPartner.chooseIntroductionMode(.automatic, in: self, coordinator: coordinator)
+                coordinator.writingPartner.chooseIntroductionMode(.copyedit, in: self, coordinator: coordinator)
                 return true
             })
-            actions.append(NSAccessibilityCustomAction(name: "Turn on Suggest") { [weak self, weak coordinator] in
+            actions.append(NSAccessibilityCustomAction(name: "Turn on Ghostwrite") { [weak self, weak coordinator] in
                 guard let self, let coordinator else { return false }
-                coordinator.writingPartner.chooseIntroductionMode(.suggest, in: self, coordinator: coordinator)
+                coordinator.writingPartner.chooseIntroductionMode(.ghostwrite, in: self, coordinator: coordinator)
                 return true
             })
             actions.append(NSAccessibilityCustomAction(name: "Not now") { [weak self, weak coordinator] in
@@ -899,7 +924,7 @@ class SwashNSTextView: NSTextView {
         if flags == .option, (event.keyCode == 36 || event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\n"),
            let coordinator = delegate as? SwashTextView.Coordinator {
             if coordinator.writingPartner.hasActiveIntroduction {
-                coordinator.writingPartner.chooseIntroductionMode(.automatic, in: self, coordinator: coordinator)
+                coordinator.writingPartner.chooseIntroductionMode(.copyedit, in: self, coordinator: coordinator)
                 return
             }
             if coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
@@ -937,7 +962,7 @@ class SwashNSTextView: NSTextView {
            (event.keyCode == 36 || event.charactersIgnoringModifiers == "\r" || event.charactersIgnoringModifiers == "\n"),
            let coordinator = delegate as? SwashTextView.Coordinator {
             if coordinator.writingPartner.hasActiveIntroduction {
-                coordinator.writingPartner.chooseIntroductionMode(.automatic, in: self, coordinator: coordinator)
+                coordinator.writingPartner.chooseIntroductionMode(.copyedit, in: self, coordinator: coordinator)
                 return true
             }
             if coordinator.writingPartner.acceptSuggestionAtCaret(in: self, coordinator: coordinator) {
@@ -1306,7 +1331,7 @@ struct SwashTextView: NSViewRepresentable {
         // paragraphs never reach another's prompts (SWA-30). Saving an untitled document
         // (nil -> URL) is the same document and keeps it.
         if baseChanged && context.coordinator.lastBaseURL != nil {
-            context.coordinator.writingPartner.resetBandleaderSession()
+            context.coordinator.writingPartner.documentDidChange()
         }
         
         // Highlight if the text was updated, if style parameters changed, if baseURL updated, or on first run.
@@ -1350,6 +1375,9 @@ struct SwashTextView: NSViewRepresentable {
         context.coordinator.applyWritingOptions(writingOptions, in: textView)
         context.coordinator.writingPartner.onPauseChange = onPartnerPauseChange
         context.coordinator.writingPartner.onMarksChange = { [weak controller] count in controller?.partnerMarksDidChange(count) }
+        context.coordinator.writingPartner.onLayersChange = { [weak controller, weak partner = context.coordinator.writingPartner] in
+            controller?.partnerLayersDidChange(partner?.layers.edits.count ?? 0)
+        }
         if context.coordinator.writingPartner.isPaused != isPartnerPaused {
             context.coordinator.writingPartner.setPaused(isPartnerPaused, in: textView)
         }
@@ -2150,7 +2178,7 @@ struct SwashTextView: NSViewRepresentable {
             if writingPartner.hasActiveIntroduction {
                 // Only ⌥Return, a deliberate chord, turns it on: Tab indents lists and mustn't opt in
                 if commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
-                    writingPartner.chooseIntroductionMode(.automatic, in: textView, coordinator: self)
+                    writingPartner.chooseIntroductionMode(.copyedit, in: textView, coordinator: self)
                     return true
                 } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
                     writingPartner.dismissIntroduction(in: textView)

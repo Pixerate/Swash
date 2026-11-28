@@ -5,10 +5,12 @@
 //  The writing partner on iPhone and iPad (#109). The session (WritingPartnerSession.swift) is the
 //  Mac's; here are the iOS editors as its `WritingPartnerHost`, and `IOSWritingPartnerOverlay`, the
 //  canvas it draws on: suggestion and mark underlines, the partner's cursor and the word it is
-//  typing (drawn, never written, until it lands: GOTCHAS #79), and its notes in place.
+//  typing (drawn, never written, until it lands: GOTCHAS #79) in the chosen Flair treatment, and
+//  its notes in place.
 //
 
 #if os(iOS)
+import FlairEffects
 import SwiftUI
 import UIKit
 import NaturalLanguage
@@ -46,7 +48,7 @@ final class IOSWritingPartnerHost: WritingPartnerHost {
     init(textView: MarkdownEditingTextView, isStyled: Bool) {
         self.textView = textView
         self.isStyled = isStyled
-        WritingPartnerCopy.isPad = UIDevice.current.userInterfaceIdiom == .pad
+        WritingPartnerCopy.isPad = textView.traitCollection.userInterfaceIdiom == .pad
     }
 
     var partnerRawText: String { rawText() }
@@ -208,18 +210,21 @@ final class IOSWritingPartnerHost: WritingPartnerHost {
 
 /// Draws the partner over an iOS editor. A subview of the text view (so it scrolls with the text),
 /// it never takes touches except on its notes.
+///
+/// The partner's cursor, its selection, the word it types and what it changed are the chosen Flair
+/// text treatment (Settings › Writing Partner › Partner style), staged as on the Mac
+/// (`WritingPartnerOverlay`): `checking`, `caret`, `selecting`, `typing`, `landed`. The treatment's
+/// layers above the text are this view's; the ones behind it go in the text view's own layer, under
+/// the view that draws the glyphs, so a ribbon can pass under the letters. With Reduce Motion on,
+/// Flair holds each stage still and fades it.
 final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
     static let tint = UIColor.systemPurple
 
     private weak var host: IOSWritingPartnerHost?
-    private let sweepLayer = CALayer()
     private let suggestionLayer = CAShapeLayer()
     private let suggestionTintLayer = CAShapeLayer()
     private let markLayer = CAShapeLayer()
-    private let caretLayer = CALayer()
-    private let changedLayer = CAShapeLayer()
-    private let ghostCover = CAShapeLayer()
-    private let ghostLabel = UILabel()
+    private let renderer = FlairTextTreatmentRenderer()
 
     private weak var carets: AgentCaretStore?
     private var subscription: UUID?
@@ -229,12 +234,22 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
     private var undoReminder: UIView?
     private var suggestionPrompt: UIView?
 
+    /// What the last frame drew of the partner's cursor and the word it is typing.
+    private var drawnCaret = false
+    private var drawnGhost: String?
+
     var hasSuggestionUnderlines: Bool { suggestionLayer.path.map { !$0.isEmpty } ?? false }
     var hasMarkUnderlines: Bool { markLayer.path.map { !$0.isEmpty } ?? false }
-    var isShowingCaret: Bool { !caretLayer.isHidden }
-    var isShowingGhost: Bool { !ghostLabel.isHidden }
-    var ghostText: String? { ghostLabel.isHidden ? nil : ghostLabel.attributedText?.string }
+    var isShowingCaret: Bool { drawnCaret }
+    var isShowingGhost: Bool { drawnGhost != nil }
+    var ghostText: String? { drawnGhost }
     var activeNoteView: UIView? { suggestionPrompt ?? undoReminder ?? introduction }
+    /// The Flair treatment drawn now (its id), for tests.
+    var treatmentID: String? { look?.id }
+    /// Whether any treatment layers are on screen, for tests.
+    var isDrawingTreatment: Bool {
+        !(renderer.behindLayer.sublayers ?? []).isEmpty || !(renderer.aboveLayer.sublayers ?? []).isEmpty
+    }
 
     init(host: IOSWritingPartnerHost) {
         self.host = host
@@ -242,34 +257,42 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
         isUserInteractionEnabled = true
         backgroundColor = .clear
         accessibilityElementsHidden = false
-        for layer in [sweepLayer, suggestionTintLayer, suggestionLayer, markLayer, changedLayer, ghostCover, caretLayer] as [CALayer] {
+        for layer in [suggestionTintLayer, suggestionLayer, markLayer] as [CALayer] {
             layer.contentsScale = traitCollection.displayScale
             self.layer.addSublayer(layer)
         }
-        suggestionTintLayer.fillColor = Self.tint.withAlphaComponent(0.10).cgColor
-        suggestionLayer.strokeColor = Self.tint.cgColor
+        self.layer.addSublayer(renderer.aboveLayer)
         suggestionLayer.lineWidth = 2
         suggestionLayer.fillColor = nil
-        markLayer.strokeColor = Self.tint.withAlphaComponent(0.7).cgColor
         markLayer.lineWidth = 2
         markLayer.lineDashPattern = [1.5, 3]
         markLayer.lineCap = .round
         markLayer.fillColor = nil
-        changedLayer.fillColor = Self.tint.withAlphaComponent(0.14).cgColor
-        caretLayer.backgroundColor = Self.tint.cgColor
-        caretLayer.cornerRadius = 1
-        caretLayer.isHidden = true
-        ghostLabel.isHidden = true
-        ghostLabel.isAccessibilityElement = false
-        addSubview(ghostLabel)
+        applyColors()
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _: UITraitCollection) in
+            self.look = nil
+            self.applyColors()
+            self.renderPartner()
+        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// Nonisolated: an isolated deinit crashes on the iOS Simulator (GOTCHAS #103). The caret
-    /// subscription is dropped when the overlay leaves its text view instead.
+    /// subscription and the display link are dropped when the overlay leaves its text view instead.
     nonisolated deinit {}
+
+    /// The underline colours in the current appearance (`systemPurple` is lighter in Dark Mode).
+    private func applyColors() {
+        let tint = Self.tint.resolvedColor(with: traitCollection)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        suggestionTintLayer.fillColor = tint.withAlphaComponent(0.10).cgColor
+        suggestionLayer.strokeColor = tint.cgColor
+        markLayer.strokeColor = tint.withAlphaComponent(0.7).cgColor
+        CATransaction.commit()
+    }
 
     /// Covers the text view's whole content (it scrolls with the text), and stays on top of it.
     private func fit() {
@@ -279,7 +302,7 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             frame = CGRect(origin: .zero, size: size)
-            for layer in [sweepLayer, suggestionTintLayer, suggestionLayer, markLayer, changedLayer, ghostCover] as [CALayer] {
+            for layer in [suggestionTintLayer, suggestionLayer, markLayer] as [CALayer] {
                 layer.frame = bounds
             }
             CATransaction.commit()
@@ -289,9 +312,12 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
 
     override func didMoveToSuperview() {
         super.didMoveToSuperview()
-        if superview == nil, let subscription {
-            carets?.unsubscribe(subscription)
-            self.subscription = nil
+        if superview == nil {
+            if let subscription {
+                carets?.unsubscribe(subscription)
+                self.subscription = nil
+            }
+            stop()
         }
         fit()
     }
@@ -305,28 +331,115 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
         return nil
     }
 
+    // MARK: The treatment
+
+    /// The chosen treatment with the partner's values, resolved for a style and appearance.
+    struct Look {
+        let id: String
+        let dark: Bool
+        let stages: FlairJSON
+
+        func plan(_ stage: FlairTextTreatmentStage, at time: Double, over target: FlairTreatmentTarget) -> FlairTextTreatmentPlan {
+            FlairTextTreatments.planResolved(stages, stage: stage, time: max(0, time), target: target,
+                                             reduceMotion: UIAccessibility.isReduceMotionEnabled)
+        }
+    }
+
+    /// The look for a treatment id (the default when it's unknown) in `traits`' appearance, in the
+    /// partner's tint and with no name tag. The Settings preview draws with it too.
+    static func look(id: String, traits: UITraitCollection) -> Look? {
+        guard let treatment = FlairTextTreatments.treatment(id: id)
+                ?? FlairTextTreatments.treatment(id: WritingPartnerDefaults.defaultStyle)
+                ?? FlairTextTreatments.all.first else { return nil }
+        let tint = rgba(Self.tint, in: traits)
+        let dark = traits.userInterfaceStyle == .dark
+        let values = treatment.values(values: [
+            "color": .string(String(format: "#%02X%02X%02X", Int((tint.r * 255).rounded()),
+                                    Int((tint.g * 255).rounded()), Int((tint.b * 255).rounded()))),
+            "darkTheme": .bool(dark),
+            "nameTag": .bool(false),
+        ])
+        return Look(id: treatment.id, dark: dark, stages: FlairTextTreatments.resolve(treatment, values: values))
+    }
+
+    /// A colour as `traits` show it.
+    static func rgba(_ color: UIColor, in traits: UITraitCollection) -> FlairRGBA {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.resolvedColor(with: traits).getRed(&r, green: &g, blue: &b, alpha: &a)
+        return FlairRGBA(Double(r), Double(g), Double(b), Double(a))
+    }
+
+    nonisolated static func caret(_ rect: CGRect) -> FlairTreatmentCaret {
+        FlairTreatmentCaret(x: Double(rect.midX), y: Double(rect.minY), height: Double(rect.height))
+    }
+
+    private var look: Look?
+
+    /// The look for the chosen style and the editor's appearance, resolved again when either changes.
+    private func currentLook(in textView: UITextView) -> Look? {
+        let id = WritingPartnerDefaults.style()
+        let dark = textView.traitCollection.userInterfaceStyle == .dark
+        if let look, look.dark == dark, look.id == id || FlairTextTreatments.treatment(id: id) == nil { return look }
+        look = Self.look(id: id, traits: textView.traitCollection)
+        return look
+    }
+
+    // MARK: Stages
+
+    /// A stage that plays to its end on its own: a `checking` sweep, or a `landed` fix.
+    private struct Playback {
+        let stage: FlairTextTreatmentStage
+        let start: Double
+        var target: FlairTreatmentTarget
+        /// The director's range of a landed fix, to follow its rectangles while it still reports it.
+        var range: NSRange?
+    }
+
+    private var playbacks: [Playback] = []
+    /// When the partner's cursor, its selection and its typing each began, in ms.
+    private var caretStart: Double?
+    private var selectStart: Double?
+    private var typingStart: Double?
+    private var displayLink: CADisplayLink?
+
+    private static var now: Double { CACurrentMediaTime() * 1000 }
+
+    private var isPlaying: Bool { !playbacks.isEmpty || !(carets?.carets.isEmpty ?? true) }
+
+    /// Draws a frame, and keeps drawing on the display's clock while anything plays.
+    private func render() {
+        drawFrame()
+        if displayLink == nil, isPlaying, window != nil {
+            // The proxy holds the overlay weakly: a display link retains its target
+            let link = CADisplayLink(target: DisplayLinkProxy(self), selector: #selector(DisplayLinkProxy.tick))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        }
+    }
+
+    fileprivate func tick() {
+        drawFrame()
+        if !isPlaying || window == nil { stop() }
+    }
+
+    private func stop() {
+        displayLink?.invalidate()
+        displayLink = nil
+        playbacks.removeAll()
+        renderer.clear()
+        renderer.behindLayer.removeFromSuperlayer()
+        drawnCaret = false
+        drawnGhost = nil
+    }
+
     // MARK: Underlines
 
+    /// Sweeps across `rects`: what the partner looked at and left alone.
     func sweep(_ rects: [CGRect]) {
         fit()
-        guard !UIAccessibility.isReduceMotionEnabled, !rects.isEmpty else { return }
-        let path = UIBezierPath()
-        for rect in rects { path.append(UIBezierPath(roundedRect: rect, cornerRadius: 3)) }
-        let shape = CAShapeLayer()
-        shape.path = path.cgPath
-        shape.fillColor = Self.tint.withAlphaComponent(0.12).cgColor
-        shape.frame = bounds
-        sweepLayer.addSublayer(shape)
-        let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 1
-        fade.toValue = 0
-        fade.duration = 0.5
-        fade.isRemovedOnCompletion = false
-        fade.fillMode = .forwards
-        CATransaction.begin()
-        CATransaction.setCompletionBlock { shape.removeFromSuperlayer() }
-        shape.add(fade, forKey: "fade")
-        CATransaction.commit()
+        guard !rects.isEmpty else { return }
+        playbacks.append(Playback(stage: .checking, start: Self.now, target: FlairTreatmentTarget(lines: rects)))
+        render()
     }
 
     func showSuggestions(_ rects: [CGRect]) {
@@ -366,47 +479,94 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
         }
     }
 
+    /// Redraws every playing stage from the director's state (the editor calls it after restyling).
     func renderPartner() {
-        guard let host, let textView = host.textView, let target else { return }
         fit()
-        let carets = self.carets?.carets ?? []
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        defer { CATransaction.commit() }
+        render()
+    }
 
-        // What it just changed, tinted until the director clears it
-        let changed = UIBezierPath()
-        for caret in carets {
-            for range in caret.changed {
-                for rect in host.partnerRects(forRaw: target.realRange(forAgent: range)) {
-                    changed.append(UIBezierPath(roundedRect: rect, cornerRadius: 3))
+    /// One frame: the plan of every stage at this moment, drawn by Flair's renderer.
+    private func drawFrame() {
+        guard let host, let textView = host.textView, let look = currentLook(in: textView) else { return }
+        let now = Self.now
+        var plans: [FlairTextTreatmentPlan] = []
+        var live: [FlairTextTreatmentPlan] = []
+        var font: UIFont?
+        var ghostShown: String?
+        var caretShown = false
+
+        let carets = self.carets?.carets ?? []
+        if carets.isEmpty {
+            caretStart = nil
+            selectStart = nil
+            typingStart = nil
+        } else if let target {
+            caretStart = caretStart ?? now
+            for caret in carets {
+                let head = caretRect(atAgent: caret.head, target: target).map(Self.caret)
+                // What it just changed: the `landed` stage starts, and runs on after the cursor has gone
+                for range in caret.changed {
+                    let raw = target.realRange(forAgent: range)
+                    let lines = host.partnerRects(forRaw: raw)
+                    guard !lines.isEmpty else { continue }
+                    let end = host.partnerCaretRect(atRaw: NSMaxRange(raw)).map(Self.caret)
+                    let landed = FlairTreatmentTarget(lines: lines, caret: end ?? head)
+                    if let index = playbacks.firstIndex(where: { $0.stage == .landed && $0.range == range }) {
+                        playbacks[index].target = landed
+                    } else {
+                        playbacks.append(Playback(stage: .landed, start: now, target: landed, range: range))
+                    }
+                }
+                if let ghost = target.ghost, let layout = ghostLayout(ghost, in: textView) {
+                    // Typing begins while the selection still shows, so nothing is drawn behind the word twice
+                    typingStart = typingStart ?? now
+                    font = layout.attributes[.font] as? UIFont
+                    let ink = layout.attributes[.foregroundColor] as? UIColor ?? textView.textColor ?? .label
+                    let background = textView.backgroundColor ?? .systemBackground
+                    let typing = FlairTreatmentTarget(lines: layout.covered, caret: head, text: ghost.text,
+                                                      color: Self.rgba(ink, in: textView.traitCollection),
+                                                      background: Self.rgba(background, in: textView.traitCollection))
+                    live.append(look.plan(.typing, at: now - (typingStart ?? now), over: typing))
+                    ghostShown = ghost.text
+                } else if caret.selection.length > 0 {
+                    typingStart = nil
+                    selectStart = selectStart ?? now
+                    let lines = host.partnerRects(forRaw: target.realRange(forAgent: caret.selection))
+                    live.append(look.plan(.selecting, at: now - (selectStart ?? now), over: FlairTreatmentTarget(lines: lines, caret: head)))
+                } else {
+                    selectStart = nil
+                    typingStart = nil
+                }
+                if let head {
+                    live.append(look.plan(.caret, at: now - (caretStart ?? now), over: FlairTreatmentTarget(caret: head)))
+                    caretShown = true
                 }
             }
         }
-        changedLayer.path = changed.cgPath
 
-        // The word it is typing: the old word covered, the new one drawn in its place
-        if let ghost = target.ghost, let layout = ghostLayout(ghost, in: textView) {
-            let cover = UIBezierPath()
-            for rect in layout.covered { cover.append(UIBezierPath(rect: rect.insetBy(dx: -1, dy: 0))) }
-            ghostCover.path = cover.cgPath
-            ghostCover.fillColor = (textView.backgroundColor ?? .systemBackground).cgColor
-            ghostLabel.attributedText = NSAttributedString(string: ghost.text, attributes: layout.attributes)
-            ghostLabel.sizeToFit()
-            ghostLabel.frame.origin = layout.origin
-            ghostLabel.isHidden = false
-        } else {
-            ghostCover.path = nil
-            ghostLabel.isHidden = true
+        // Sweeps and landed fixes, until each is done
+        playbacks.removeAll { playback in
+            let plan = look.plan(playback.stage, at: now - playback.start, over: playback.target)
+            if plan.done { return true }
+            plans.append(plan)
+            return false
         }
+        plans += live
+        drawnCaret = caretShown
+        drawnGhost = ghostShown
 
-        // Its caret
-        if let caret = carets.first, let rect = caretRect(atAgent: caret.head, target: target) {
-            caretLayer.frame = CGRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height)
-            caretLayer.isHidden = false
-        } else {
-            caretLayer.isHidden = true
+        guard !plans.isEmpty else {
+            renderer.clear()
+            renderer.behindLayer.removeFromSuperlayer()
+            return
         }
+        // Behind the text: in the text view's layer, under its subviews (the glyphs) and over its
+        // background. It shares the overlay's content coordinates, since the overlay sits at zero.
+        if renderer.behindLayer.superlayer !== textView.layer {
+            textView.layer.insertSublayer(renderer.behindLayer, at: 0)
+        }
+        renderer.contentsScale = window?.screen.scale ?? traitCollection.displayScale
+        renderer.draw(plans, font: font.map { $0 as CTFont })
     }
 
     /// The partner's insertion point at an offset in the director's text: in the word being typed
@@ -418,14 +578,15 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
             let offset = position - ghost.range.location
             if offset >= 0, offset <= typed {
                 let prefix = NSAttributedString(string: (ghost.text as NSString).substring(to: offset), attributes: layout.attributes)
-                return CGRect(x: layout.origin.x + prefix.size().width, y: layout.origin.y, width: 2, height: layout.height)
+                return CGRect(x: layout.origin.x + prefix.size().width - 1, y: layout.line.minY, width: 2, height: layout.line.height)
             }
         }
         return host.partnerCaretRect(atRaw: target.realPosition(forAgent: position))
     }
 
+    /// Where the word being typed goes: over the word it replaces (`covered`), in that word's font.
     private func ghostLayout(_ ghost: (range: NSRange, text: String), in textView: UITextView)
-        -> (origin: CGPoint, height: CGFloat, attributes: [NSAttributedString.Key: Any], covered: [CGRect])? {
+        -> (origin: CGPoint, line: CGRect, attributes: [NSAttributedString.Key: Any], covered: [CGRect])? {
         guard let host else { return nil }
         let storage = textView.textStorage
         guard storage.length > 0 else { return nil }
@@ -436,10 +597,7 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
         for key in [NSAttributedString.Key.font, .foregroundColor, .kern] {
             if let value = storage.attribute(key, at: index, effectiveRange: nil) { attributes[key] = value }
         }
-        let font = attributes[.font] as? UIFont ?? .preferredFont(forTextStyle: .body)
-        // The drawn word's line is centred on the caret's, which UIKit sizes from the same font
-        let origin = CGPoint(x: caret.minX, y: caret.midY - font.lineHeight / 2)
-        return (origin, caret.height, attributes, IOSWritingPartnerHost.rects(forStorage: range, in: textView))
+        return (CGPoint(x: caret.midX, y: caret.minY), caret, attributes, IOSWritingPartnerHost.rects(forStorage: range, in: textView))
     }
 
     // MARK: Notes
@@ -504,6 +662,13 @@ final class IOSWritingPartnerOverlay: UIView, WritingPartnerCanvas {
     }
 }
 
+/// A display link's target that holds the overlay weakly (a display link retains its target).
+private final class DisplayLinkProxy: NSObject {
+    weak var overlay: IOSWritingPartnerOverlay?
+    init(_ overlay: IOSWritingPartnerOverlay) { self.overlay = overlay }
+    @objc func tick() { overlay?.tick() }
+}
+
 extension JazzTextSuggestionKind {
     /// The SF Symbol for the suggestion prompt (as on the Mac's).
     var symbolName: String {
@@ -538,9 +703,9 @@ struct PartnerIntroductionCard: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
-                Button("Automatically") { onChooseMode(.automatic) }
+                Button(WritingPartnerMode.copyedit.title) { onChooseMode(.copyedit) }
                     .buttonStyle(.glassProminent)
-                Button("Suggest") { onChooseMode(.suggest) }
+                Button(WritingPartnerMode.ghostwrite.title) { onChooseMode(.ghostwrite) }
                     .buttonStyle(.glass)
                 Spacer(minLength: 0)
                 Button("Not now", action: onDismiss)

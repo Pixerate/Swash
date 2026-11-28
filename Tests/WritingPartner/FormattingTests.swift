@@ -158,8 +158,70 @@ func runFormattingTests() {
     suite.removePersistentDomain(forName: "formatting-tests")
     check(WritingPartnerDefaults.isRuleEnabled(.formatTables, suite), "Formatting rules are on by default")
     suite.set(false, forKey: WritingPartnerDefaults.formattingKey(.formatTables))
-    check(!WritingPartnerDefaults.isRuleEnabled(.formatTables, suite), "Each formatting rule has its own switch")
-    check(!WritingPartnerDefaults.formattingInSource(suite), "Formatting is off in Source view by default")
+    check(!WritingPartnerDefaults.isRuleEnabled(.formatTables, suite), "A formatting rule's hidden override still turns it off (tests)")
+
+    // MARK: Title lines (Copyedit auto-formatting, #229)
+    let body = "This paragraph goes on to explain what the section is about in some detail.\n"
+    expectTidy("Next steps\n\n" + body, "# Next steps\n\n" + body, rule: .formatTitleLines)
+    expectTidy("Intro text that opens the document and runs on.\n\nNext steps\n\n" + body,
+               "Intro text that opens the document and runs on.\n\n## Next steps\n\n" + body, rule: .formatTitleLines)
+    expectTidy("# Plan\n\nOverview\n\n" + body, "# Plan\n\n## Overview\n\n" + body, rule: .formatTitleLines)
+    expectTidy("### Old\n\nText.\n\nNew section\n\n" + body, "### Old\n\nText.\n\n### New section\n\n" + body, rule: .formatTitleLines)
+    expectTidy("Shopping\n\n- milk\n- eggs\n", "# Shopping\n\n- milk\n- eggs\n", rule: .formatTitleLines)
+    // Left alone: sentences, greetings, lines that run on, lines followed by something short or nothing
+    expectTidy("This is done.\n\n" + body, "This is done.\n\n" + body, rule: .formatTitleLines)
+    expectTidy("Hi Sam\n\n" + body, "Hi Sam\n\n" + body, rule: .formatTitleLines)
+    expectTidy("lowercase start\n\n" + body, "lowercase start\n\n" + body, rule: .formatTitleLines)
+    expectTidy("Next steps\n" + body, "Next steps\n" + body, rule: .formatTitleLines)
+    expectTidy("Thanks\n\nJack\n", "Thanks\n\nJack\n", rule: .formatTitleLines)
+    expectTidy("Next steps\n\nShort.\n", "Next steps\n\nShort.\n", rule: .formatTitleLines)
+    expectTidy("Next steps\n", "Next steps\n", rule: .formatTitleLines)
+    expectTidy("Use `code` here\n\n" + body, "Use `code` here\n\n" + body, rule: .formatTitleLines)
+    expectTidy("Next steps\n\n" + body, "Next steps\n\n" + body, caret: 3, rule: .formatTitleLines)
+
+    // MARK: Edit layers (#229)
+    do {
+        var layers = EditLayerStack()
+        // "i dont know" → "I dont know" → "I don't know", then the person types at the end
+        var text = "i dont know" as NSString
+        layers.recordPartnerEdit(replacing: NSRange(location: 0, length: 1), original: "i", replacement: "I",
+                                 layer: .copyedit, rules: [.pronounI])
+        text = text.replacingCharacters(in: NSRange(location: 0, length: 1), with: "I") as NSString
+        layers.recordPartnerEdit(replacing: NSRange(location: 2, length: 4), original: "dont", replacement: "don't",
+                                 layer: .copyedit, rules: [.contraction])
+        text = text.replacingCharacters(in: NSRange(location: 2, length: 4), with: "don't") as NSString
+        layers.move(through: NSRange(location: text.length, length: 0), replacement: " why")
+        text = text.appending(" why") as NSString
+        check(layers.edits.map(\.range) == [NSRange(location: 0, length: 1), NSRange(location: 2, length: 5)],
+              "Layer edits keep their place as the person types after them")
+        // The person types before them: they move along
+        layers.move(through: NSRange(location: 0, length: 0), replacement: "So ")
+        text = ("So " + (text as String)) as NSString
+        check(layers.edits.first?.range == NSRange(location: 3, length: 1), "Layer edits move with typing before them")
+        // Revert just the apostrophe: the typing after it stays
+        let one = layers.reverts(for: [layers.edits[1].id], in: text)
+        let reverted = EditLayerStack.apply(one, to: text, caret: text.length)
+        check(reverted.text == "So I dont know why" && reverted.caret == (reverted.text as NSString).length,
+              "Reverting one edit keeps the person's typing and caret: \(reverted.text)")
+        // Revert the whole Copyedit layer
+        let all = layers.reverts(for: layers.ids(on: .copyedit), in: text)
+        check(EditLayerStack.apply(all, to: text, caret: 0).text == "So i dont know why", "Reverting the layer puts back both")
+        // The person retypes the partner's word: it's theirs now and leaves the layer
+        layers.move(through: NSRange(location: 5, length: 5), replacement: "do not")
+        check(layers.edits.count == 1 && layers.edits.first?.layer == .copyedit, "Text the person rewrote leaves its layer")
+        // An edit whose text changed out of sight isn't reverted
+        check(layers.reverts(for: layers.ids(on: .copyedit), in: "So X" as NSString).isEmpty, "A changed edit isn't reverted")
+        check(layers.validate(against: "So X" as NSString).count == 1 && layers.isEmpty, "Validation drops it")
+        // Layers are separate, and a later edit on the same layer folds in an earlier one it rewrote
+        var stack = EditLayerStack()
+        stack.recordPartnerEdit(replacing: NSRange(location: 0, length: 4), original: "teh", replacement: "the ", layer: .copyedit)
+        stack.recordPartnerEdit(replacing: NSRange(location: 0, length: 4), original: "the ", replacement: "The ", layer: .copyedit)
+        check(stack.edits.count == 1 && stack.edits.first?.original == "teh", "A same-layer edit over another folds it in")
+        stack.recordPartnerEdit(replacing: NSRange(location: 4, length: 0), original: "", replacement: "cat sat.", layer: .ghostwrite)
+        check(stack.edits(on: .ghostwrite).count == 1 && stack.edits(on: .copyedit).count == 1, "Ghostwrite has its own layer")
+        check(stack.record(range: NSRange(location: 0, length: 1), original: "a", replacement: "b", layer: .user) == nil,
+              "The person's own typing isn't recorded as a layer edit")
+    }
 
     // MARK: Typing timelines
     let timelines: [(typed: String, expected: String)] = [
@@ -191,7 +253,7 @@ func runFormattingTests() {
                 guard let markdown = example["markdown"] as? String else { continue }
                 // Only the fixes that must keep the rendering: the rest change it on purpose
                 // without the voice's own rendering check, so this checks the rules themselves
-                let result = tidied(markdown, flavor: flavor, isActive: { ![.formatHeadings, .formatTasks, .formatLists, .formatSpans, .formatLinks].contains($0) },
+                let result = tidied(markdown, flavor: flavor, isActive: { ![.formatHeadings, .formatTasks, .formatLists, .formatSpans, .formatLinks, .formatTitleLines].contains($0) },
                                     verify: false).text
                 if FormattingVoice.render(result, flavor: flavor) != FormattingVoice.render(markdown, flavor: flavor) {
                     changed.append(example["example"] as? Int ?? -1)
