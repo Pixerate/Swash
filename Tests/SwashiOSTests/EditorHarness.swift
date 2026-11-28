@@ -114,7 +114,8 @@ final class EditorHarness {
     }
 
     /// Updates the hosted editor's writing options and formatting-bar visibility.
-    func setWritingOptions(_ options: WritingOptions, formattingEnabled: Bool = true, baseURL: URL? = nil) {
+    func setWritingOptions(_ options: WritingOptions, formattingEnabled: Bool = true, baseURL: URL? = nil,
+                           showEmptyLineInsertAffordance: Bool = true) {
         let box = self.box
         let binding = Binding(get: { box.text }, set: { box.text = $0 })
         host.rootView = StyledTextView(
@@ -123,7 +124,8 @@ final class EditorHarness {
             flavor: flavor,
             baseURL: baseURL,
             formattingEnabled: formattingEnabled,
-            writingOptions: options
+            writingOptions: options,
+            showEmptyLineInsertAffordance: showEmptyLineInsertAffordance
         )
         pump(0.05)
     }

@@ -191,7 +191,10 @@ class MarkdownEditingTextView: UITextView {
     /// The document's flavour, for finding links (Slack mrkdwn writes them as `<url|text>`).
     var flavor: MarkdownFlavor = .github {
         didSet {
-            if oldValue != flavor { refreshFormattingBarState() }
+            guard oldValue != flavor else { return }
+            // The Insert button comes and goes with Slack mrkdwn, which has none of its blocks
+            if (oldValue == .slack) != (flavor == .slack) { rebuildFormattingBarItems() }
+            refreshFormattingBarState()
         }
     }
     /// The document's file URL, for resolving relative and `[[wiki]]` note links in its folder.
@@ -396,7 +399,7 @@ class MarkdownEditingTextView: UITextView {
     /// its own replacement, when only that replacement is. Once a text field with smart punctuation
     /// has had the keyboard (the find bar's), UIKit follows `replace(_:withText:)` with its own
     /// changes through the delegate, whatever this view's `smartDashesType`: a table's `---` rule
-    /// became `—` (GOTCHAS #124).
+    /// became `—` (GOTCHAS #125).
     func isOwnEditChange(_ range: NSRange, replacement: String) -> Bool {
         guard let applying = applyingReplacement else { return true }
         return applying.range == range && applying.text == replacement
@@ -445,7 +448,7 @@ class MarkdownEditingTextView: UITextView {
 
     /// The find bar. Not UITextView's own (`isFindInteractionEnabled`): its `UITextSearching`
     /// methods are declared in a Swift extension, so a subclass can't override them, and replacing
-    /// must go through the editor's edit path, skip hidden markers and be one undo step (GOTCHAS #124).
+    /// must go through the editor's edit path, skip hidden markers and be one undo step (GOTCHAS #125).
     private(set) var editorFindInteraction: UIFindInteraction?
     /// The find bar's searchable object and session delegate (the interaction holds it weakly).
     private(set) var textSearcher: EditorTextSearcher?
@@ -543,7 +546,7 @@ class MarkdownEditingTextView: UITextView {
     /// Each match is its own small replacement, not one edit from the first to the last: that span
     /// would expand the tables and images between them into their source, and the restyle that
     /// collapses them again changes the storage under the undo step, so undoing it went out of
-    /// bounds (GOTCHAS #124).
+    /// bounds (GOTCHAS #125).
     @discardableResult
     func replaceFoundRanges(_ ranges: [NSRange], with replacement: String, actionName: String) -> Int {
         let replaceable = ranges.filter(canReplaceFoundRange).sorted { $0.location < $1.location }
@@ -795,8 +798,17 @@ class MarkdownEditingTextView: UITextView {
     /// Whether the format panel is showing in place of the keyboard.
     var isShowingFormatPanel: Bool { inputView is FormatPanelInputView }
 
+    /// Whether the insert panel is showing in place of the keyboard.
+    var isShowingInsertPanel: Bool { inputView is InsertPanelInputView }
+
+    /// Whether the document's flavour has the Insert panel's blocks (Slack mrkdwn has none of them).
+    var offersInsertPanel: Bool { flavor != .slack }
+
     /// Swaps the keyboard for the format panel (Aa), or back, as Notes does.
     func toggleFormatPanel() {
+        if isShowingInsertPanel {
+            dismissInsertPanel()
+        }
         if isShowingFormatPanel {
             inputView = nil
         } else {
@@ -807,21 +819,85 @@ class MarkdownEditingTextView: UITextView {
                 close: { [weak self] in self?.toggleFormatPanel() })
         }
         formatPanelButton?.isSelected = isShowingFormatPanel
+        insertButton?.isSelected = isShowingInsertPanel
         if !isFirstResponder { becomeFirstResponder() }
         reloadInputViews()
+    }
+
+    /// Targeted location for block insertion (e.g. from the empty-line affordance).
+    var targetedInsertLocation: Int?
+
+    /// Presents the insert panel targeting the given markdown location (or the current selection location).
+    func presentInsertPanel(targeting location: Int? = nil) {
+        if isShowingFormatPanel {
+            inputView = nil
+            formatPanelButton?.isSelected = false
+        }
+
+        targetedInsertLocation = location ?? markdownSelection.location
+
+        inputView = InsertPanelInputView(
+            onSelect: { [weak self] kind in
+                self?.handleInsertBlock(kind)
+            },
+            close: { [weak self] in
+                self?.dismissInsertPanel()
+            }
+        )
+        insertButton?.isSelected = true
+        if !isFirstResponder { becomeFirstResponder() }
+        reloadInputViews()
+    }
+
+    /// Toggles the insert panel, which replaces the keyboard on iPhone and iPad alike.
+    func toggleInsertPanel() {
+        if isShowingFormatPanel {
+            inputView = nil
+            formatPanelButton?.isSelected = false
+        }
+
+        if isShowingInsertPanel {
+            dismissInsertPanel()
+        } else {
+            presentInsertPanel(targeting: markdownSelection.location)
+        }
+    }
+
+    /// Closes the insert panel if open.
+    func dismissInsertPanel() {
+        targetedInsertLocation = nil
+        if inputView is InsertPanelInputView {
+            inputView = nil
+            reloadInputViews()
+        }
+        insertButton?.isSelected = false
+    }
+
+    /// Handles block insertion selection from the Insert panel.
+    func handleInsertBlock(_ kind: BlockInsertKind) {
+        let location = targetedInsertLocation ?? markdownSelection.location
+        dismissInsertPanel()
+        let edit = MarkdownEditingCommands.insertBlock(kind, text: markdownText, at: location)
+        applyMarkdownEdit(edit, actionName: "Insert \(kind.title)")
     }
 
     /// The keyboard comes back the next time editing starts.
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
-        if resigned, isShowingFormatPanel {
-            inputView = nil
-            formatPanelButton?.isSelected = false
+        if resigned {
+            if isShowingFormatPanel {
+                inputView = nil
+                formatPanelButton?.isSelected = false
+            }
+            if isShowingInsertPanel {
+                dismissInsertPanel()
+            }
         }
         return resigned
     }
 
     private weak var formatPanelButton: UIButton?
+    private weak var insertButton: UIButton?
     private weak var formattingBar: GlassAccessoryBar?
     /// The recent format buttons currently shown in the keyboard bar, in order.
     private(set) var recentFormatButtons: [UIButton] = []
@@ -1007,6 +1083,14 @@ class MarkdownEditingTextView: UITextView {
         panel.isSelected = isShowingFormatPanel
         formatPanelButton = panel
         items.append(panel)
+
+        if offersInsertPanel {
+            let insert = GlassAccessoryBar.iconButton(symbol: "plus", label: "Insert",
+                                                      action: UIAction(title: "Insert") { [weak self] _ in self?.toggleInsertPanel() })
+            insert.isSelected = isShowingInsertPanel
+            insertButton = insert
+            items.append(insert)
+        }
 
         recentFormatButtons.removeAll()
         recentBarEntries.removeAll()

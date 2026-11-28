@@ -25,6 +25,8 @@ struct StyledTextView: UIViewRepresentable {
     var writingOptions = WritingOptions()
     /// Font, size (already adjusted for Dynamic Type), line width and theme (GOTCHAS #43).
     var typography = EditorTypography()
+    /// Controls whether the insert affordance appears after a pause on an empty line.
+    var showEmptyLineInsertAffordance: Bool = true
     /// A change makes the next rebuild start a new text view instead of taking the kept one back
     /// (folder access granted: images need loading afresh).
     var reuseKey: AnyHashable? = nil
@@ -51,6 +53,7 @@ struct StyledTextView: UIViewRepresentable {
         textView.backgroundColor = typography.theme.background ?? .systemBackground
         textView.textContainerInset = UIEdgeInsets(top: 20, left: 14, bottom: 20, right: 14)
         context.coordinator.lastTypography = typography
+        context.coordinator.showEmptyLineInsertAffordance = showEmptyLineInsertAffordance
         textView.alwaysBounceVertical = true
         textView.keyboardDismissMode = .interactive
         textView.smartQuotesType = .no
@@ -101,6 +104,14 @@ struct StyledTextView: UIViewRepresentable {
             coordinator.lastTypography = typography
             coordinator.applyTypography(in: textView)
         }
+        // The kept coordinator (#65) takes the setting from here, not from its init
+        if coordinator.showEmptyLineInsertAffordance != showEmptyLineInsertAffordance {
+            coordinator.showEmptyLineInsertAffordance = showEmptyLineInsertAffordance
+        }
+        if !coordinator.insertAffordanceIsAvailable {
+            coordinator.cancelInsertAffordanceTimer()
+            textView.hideInsertAffordance(animated: false)
+        }
         coordinator.applyWritingOptions(writingOptions, in: textView)
     }
 
@@ -142,6 +153,15 @@ struct StyledTextView: UIViewRepresentable {
         var lastBaseURL: URL?
         var lastTypography = EditorTypography()
         var lastWritingOptions = WritingOptions()
+        var showEmptyLineInsertAffordance: Bool {
+            didSet {
+                guard showEmptyLineInsertAffordance != oldValue else { return }
+                if !showEmptyLineInsertAffordance {
+                    cancelInsertAffordanceTimer()
+                    textView?.hideInsertAffordance(animated: false)
+                }
+            }
+        }
 
         private var cachedOffsetMap: AttachmentOffsetMap?
         /// The writing partner (#109): the Mac's session, with this editor as its host.
@@ -162,6 +182,7 @@ struct StyledTextView: UIViewRepresentable {
 
         init(_ parent: StyledTextView) {
             self.parent = parent
+            self.showEmptyLineInsertAffordance = parent.showEmptyLineInsertAffordance
             super.init()
         }
 
@@ -263,6 +284,8 @@ struct StyledTextView: UIViewRepresentable {
 
             textView.replaceUndoably(storageTarget, with: replacement, actionName: actionName)
             cachedOffsetMap = nil
+            // Hidden, not cancelled: the styling pass below schedules it again if the caret ends on an empty line
+            textView.hideInsertAffordance(animated: false)
             parent.text = swashRawMarkdown(from: storage)
             editGeneration += 1
             pendingRawSelection = rawSelection
@@ -333,8 +356,18 @@ struct StyledTextView: UIViewRepresentable {
 
         // MARK: UITextViewDelegate
 
+        /// Only the person's own scrolling hides the insert affordance: UIKit also scrolls to keep the
+        /// caret in view and to restore the offset after a styling pass, and those shouldn't.
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            guard scrollView.isDragging || scrollView.isDecelerating else { return }
+            textView?.hideInsertAffordance(animated: false)
+            cancelInsertAffordanceTimer()
+        }
+
         func textViewDidChange(_ textView: UITextView) {
             guard let textView = textView as? StyledUITextView else { return }
+            // Hidden, not cancelled: Return's selection change has just scheduled it for the new empty line
+            textView.hideInsertAffordance(animated: false)
             cachedOffsetMap = nil
             textView.setNeedsOverlayLayout()
             guard !isUpdatingFromSwiftUI, !isHighlighting else { return }
@@ -351,8 +384,12 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
-            // UIKit's smart punctuation mustn't rewrite Swash's own edits (GOTCHAS #124)
+            // UIKit's smart punctuation mustn't rewrite Swash's own edits (GOTCHAS #125)
             if let editing = textView as? MarkdownEditingTextView, !editing.isOwnEditChange(range, replacement: replacement) { return false }
+            if let styled = textView as? StyledUITextView {
+                cancelInsertAffordanceTimer()
+                styled.hideInsertAffordance(animated: false)
+            }
             guard let textView = textView as? StyledUITextView, !textView.isApplyingEdit, !isHighlighting,
                   textView.markedTextRange == nil else { return true }
             // The person's own typing, for the writing partner (GOTCHAS #78): not SwiftUI updates or Writing Tools
@@ -390,6 +427,10 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
+            cancelInsertAffordanceTimer()
+            if let styled = textView as? StyledUITextView {
+                styled.hideInsertAffordance(animated: false)
+            }
             guard !isHighlighting, !isUpdatingFromSwiftUI else {
                 lastSelection = textView.selectedRange
                 return
@@ -409,6 +450,7 @@ struct StyledTextView: UIViewRepresentable {
                 styled.refreshFormattingBarState()
                 // The Formatting voice tidies a block once the caret has left it (#113)
                 if !styled.isApplyingEdit, let host = partnerHost { writingPartner.selectionDidChange(in: host) }
+                scheduleInsertAffordanceTimer(in: styled)
             }
         }
 
@@ -426,6 +468,77 @@ struct StyledTextView: UIViewRepresentable {
         /// even though the primary action is removed (#82).
         func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem, defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
             textView.isFirstResponder ? nil : UITextItem.MenuConfiguration(menu: defaultMenu)
+        }
+
+        // MARK: - Insert Affordance Timer
+        private var insertAffordanceTimer: Timer?
+
+        func cancelInsertAffordanceTimer() {
+            insertAffordanceTimer?.invalidate()
+            insertAffordanceTimer = nil
+        }
+
+        /// The idle delay before the insert affordance appears on an empty line.
+        static let insertAffordanceDelay: TimeInterval = 0.75
+
+        func scheduleInsertAffordanceTimer(in textView: StyledUITextView) {
+            cancelInsertAffordanceTimer()
+            guard insertAffordanceIsAvailable else { return }
+            guard textView.isFirstResponder, !textView.isShowingInsertPanel else { return }
+            guard textView.selectedRange.length == 0 else { return }
+            guard isCaretOnEmptyLine(in: textView) else { return }
+
+            insertAffordanceTimer = Timer.scheduledTimer(withTimeInterval: Self.insertAffordanceDelay, repeats: false) { [weak self, weak textView] _ in
+                guard let self = self, let textView = textView else { return }
+                self.showInsertAffordanceIfEligible(in: textView)
+            }
+        }
+
+        func isCaretOnEmptyLine(in textView: StyledUITextView) -> Bool {
+            let storage = textView.textStorage
+            let selectedRange = textView.selectedRange
+            guard selectedRange.length == 0 else { return false }
+            let location = selectedRange.location
+            guard location <= storage.length else { return false }
+
+            let nsString = storage.string as NSString
+            let lineRange = nsString.lineRange(for: NSRange(location: location, length: 0))
+            let lineText = nsString.substring(with: lineRange)
+            let trimmed = lineText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty
+        }
+
+        /// Whether the affordance can appear at all: the setting is on, formatting is (not
+        /// distraction-free) and the flavour has blocks to insert (Slack mrkdwn has none of them).
+        var insertAffordanceIsAvailable: Bool {
+            showEmptyLineInsertAffordance && parent.formattingEnabled && parent.flavor != .slack
+        }
+
+        /// Whether the empty line at the caret takes a new block: not a blank line inside fenced or
+        /// indented code, a `$$` math block (a code block with info "math") or the front matter.
+        /// Parses the document, so it runs only when the timer fires (GOTCHAS #12).
+        func isInsertableEmptyLine(in textView: StyledUITextView) -> Bool {
+            let raw = swashRawMarkdown(from: textView.textStorage)
+            let location = rawRange(forStorage: textView.selectedRange, in: textView).location
+            let document = MarkdownDocument.parse(raw, flavor: parent.flavor)
+            let caret = NSRange(location: location, length: 0)
+            if MarkdownFormatting(text: raw, document: document).codeBlock(containing: caret) != nil { return false }
+            if let first = document.root.children.first, case .frontMatter = first.kind,
+               location <= NSMaxRange(first.range) { return false }
+            return true
+        }
+
+        func showInsertAffordanceIfEligible(in textView: StyledUITextView) {
+            guard insertAffordanceIsAvailable else { return }
+            guard textView.isFirstResponder, !textView.isShowingInsertPanel else { return }
+            guard textView.selectedRange.length == 0 else { return }
+            guard isCaretOnEmptyLine(in: textView) else { return }
+            guard isInsertableEmptyLine(in: textView) else { return }
+            guard let selectedTextRange = textView.selectedTextRange else { return }
+
+            let caret = textView.caretRect(for: selectedTextRange.start)
+            guard !caret.isNull, !caret.isInfinite else { return }
+            textView.showInsertAffordance(at: caret)
         }
 
         // MARK: Caret atomicity
@@ -526,8 +639,14 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         func highlight(in textView: StyledUITextView) {
+            textView.hideInsertAffordance(animated: false)
             guard !isHighlighting else { return }
-            defer { refreshPartnerDrawing() }
+            defer {
+                refreshPartnerDrawing()
+                // The pass restores the selection while `isHighlighting`, which the selection delegate
+                // ignores, so the idle timer for an empty line (after Return, say) starts here
+                scheduleInsertAffordanceTimer(in: textView)
+            }
             let storage = textView.textStorage
             if highlightIncrementally(in: textView, storage: storage) {
                 pendingRawSelection = nil
@@ -885,6 +1004,8 @@ final class StyledUITextView: MarkdownEditingTextView {
     private var lastLayoutWidth: CGFloat = 0
     private var lastLayoutHeight: CGFloat = 0
     private var placedTables: [ObjectIdentifier: TableTextAttachment] = [:]
+    /// The '+' insert affordance overlay button shown on empty line pause.
+    private(set) var insertAffordanceButton: InsertAffordanceButton?
     /// The checkbox tap's delegate. Not the text view itself: a scroll view is already the delegate
     /// of its own pan and text gestures, and overriding those callbacks would filter them too.
     private let taskTapFilter = TaskTapFilter()
@@ -950,6 +1071,7 @@ final class StyledUITextView: MarkdownEditingTextView {
             needsOverlayLayout = false
             layoutTableViews()
             layoutCodeBadgeButtons()
+            layoutInsertAffordance()
             coordinator?.refreshPartnerDrawing()
         }
     }
@@ -969,6 +1091,87 @@ final class StyledUITextView: MarkdownEditingTextView {
         setNeedsLayout()
     }
 
+
+    // MARK: - Insert Affordance Overlay
+
+    func handleInsertAffordanceTap() {
+        hideInsertAffordance(animated: false)
+        coordinator?.cancelInsertAffordanceTimer()
+        let rawLocation = coordinator?.rawRange(forStorage: selectedRange, in: self).location ?? selectedRange.location
+        presentInsertPanel(targeting: rawLocation)
+    }
+
+    func showInsertAffordance(at caretRect: CGRect) {
+        let button: InsertAffordanceButton
+        if let existing = insertAffordanceButton {
+            button = existing
+        } else {
+            let newButton = InsertAffordanceButton { [weak self] in
+                guard let self = self else { return }
+                self.handleInsertAffordanceTap()
+            }
+            addSubview(newButton)
+            insertAffordanceButton = newButton
+            button = newButton
+        }
+
+        let wasShowing = button.isShowing
+        button.frame = Self.insertAffordanceFrame(at: caretRect)
+        button.fadeIn()
+        guard !wasShowing, UIAccessibility.isVoiceOverRunning else { return }
+        // Queued after whatever VoiceOver is reading; the Insert Block action on the text view (or
+        // the button itself, which is an element while shown) opens the panel
+        UIAccessibility.post(notification: .announcement,
+                             argument: NSAttributedString(string: "Insert block button available",
+                                                          attributes: [.accessibilitySpeechQueueAnnouncement: true]))
+    }
+
+    /// The affordance's 24-point circle, centred on the caret.
+    static func insertAffordanceFrame(at caret: CGRect) -> CGRect {
+        let size: CGFloat = 24
+        return CGRect(x: caret.minX - size / 2, y: caret.midY - size / 2, width: size, height: size)
+    }
+
+    /// While the affordance shows, VoiceOver users reach it from the text view (an element that
+    /// hides its subviews) as an Insert Block action, and as an element after the text view.
+    override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
+        get {
+            var actions = super.accessibilityCustomActions ?? []
+            if insertAffordanceButton?.isShowing == true {
+                actions.append(UIAccessibilityCustomAction(name: "Insert Block") { [weak self] _ in
+                    self?.handleInsertAffordanceTap()
+                    return true
+                })
+            }
+            return actions
+        }
+        set { super.accessibilityCustomActions = newValue }
+    }
+
+    func hideInsertAffordance(animated: Bool = false) {
+        guard let button = insertAffordanceButton else { return }
+        if animated {
+            button.fadeOut()
+        } else {
+            button.hideImmediate()
+        }
+    }
+
+    private func layoutInsertAffordance() {
+        guard coordinator?.insertAffordanceIsAvailable == true else {
+            hideInsertAffordance(animated: false)
+            return
+        }
+        guard let button = insertAffordanceButton, button.isShowing else { return }
+        guard isFirstResponder, selectedRange.length == 0, coordinator?.isCaretOnEmptyLine(in: self) == true else {
+            hideInsertAffordance(animated: false)
+            return
+        }
+        guard let selectedTextRange = selectedTextRange else { return }
+        let caret = caretRect(for: selectedTextRange.start)
+        guard !caret.isNull, !caret.isInfinite else { return }
+        button.frame = Self.insertAffordanceFrame(at: caret)
+    }
 
     // MARK: - Caret geometry
 
@@ -1241,6 +1444,24 @@ final class StyledUITextView: MarkdownEditingTextView {
         return top
     }
 
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became {
+            coordinator?.cancelInsertAffordanceTimer()
+            coordinator?.scheduleInsertAffordanceTimer(in: self)
+        }
+        return became
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned {
+            coordinator?.cancelInsertAffordanceTimer()
+            hideInsertAffordance(animated: false)
+        }
+        return resigned
+    }
+
     // MARK: Task checkboxes
 
     @objc private func handleTaskTap(_ recognizer: UITapGestureRecognizer) {
@@ -1438,6 +1659,89 @@ private final class BlockMenuBar: GlassAccessoryBar {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+}
+
+/// A subtle, circular '+' insert button overlay displayed when the caret rests idle on an empty line.
+final class InsertAffordanceButton: UIButton {
+    private let action: () -> Void
+
+    init(action: @escaping () -> Void) {
+        self.action = action
+        super.init(frame: .zero)
+
+        var config = UIButton.Configuration.plain()
+        let symbolConfig = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        config.image = UIImage(systemName: "plus", withConfiguration: symbolConfig)
+        config.baseForegroundColor = .secondaryLabel
+        config.contentInsets = .zero
+        configuration = config
+
+        backgroundColor = .quaternarySystemFill
+        layer.cornerRadius = 12
+        layer.masksToBounds = true
+
+        isPointerInteractionEnabled = true
+        accessibilityLabel = "Insert block"
+        accessibilityTraits = [.button]
+        accessibilityIdentifier = "EmptyLineInsertButton"
+        accessibilityHint = "Double-tap to insert a block or media"
+        isAccessibilityElement = false
+        alpha = 0
+        isHidden = true
+
+        // `.primaryActionTriggered` alone: a tap sends it as well as `.touchUpInside`, so registering
+        // both ran the action twice
+        addAction(UIAction { [weak self] _ in self?.action() }, for: .primaryActionTriggered)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    /// Expands the hit target from the 24×24 visual frame to the standard Apple HIG minimum 44×44 pt.
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        let minSize: CGFloat = 44
+        let dx = max(0, (minSize - bounds.width) / 2)
+        let dy = max(0, (minSize - bounds.height) / 2)
+        let expanded = bounds.insetBy(dx: -dx, dy: -dy)
+        return expanded.contains(point)
+    }
+
+    override func accessibilityActivate() -> Bool {
+        action()
+        return true
+    }
+
+    /// Shown, or fading in.
+    var isShowing: Bool { !isHidden && alpha > 0 }
+
+    func fadeIn() {
+        layer.removeAllAnimations()
+        isHidden = false
+        isAccessibilityElement = true
+        UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .curveEaseOut]) {
+            self.alpha = 1
+        }
+    }
+
+    func fadeOut() {
+        layer.removeAllAnimations()
+        isAccessibilityElement = false
+        UIView.animate(withDuration: 0.2, delay: 0, options: [.beginFromCurrentState, .curveEaseIn], animations: {
+            self.alpha = 0
+        }, completion: { finished in
+            if finished && self.alpha == 0 {
+                self.isHidden = true
+            }
+        })
+    }
+
+    func hideImmediate() {
+        layer.removeAllAnimations()
+        isAccessibilityElement = false
+        alpha = 0
+        isHidden = true
     }
 }
 #endif

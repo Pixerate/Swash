@@ -241,6 +241,35 @@ final class FormatPanelInputView: UIInputView {
     }
 }
 
+// MARK: - Insert panel
+
+/// The insert panel that replaces the keyboard when "+" is tapped (in the keyboard bar or at an
+/// empty line): block insertion options in a grid at keyboard height, on iPhone and iPad alike.
+final class InsertPanelInputView: UIInputView {
+    private let host: UIHostingController<InsertPanelView>
+
+    init(onSelect: @escaping (BlockInsertKind) -> Void = { _ in }, close: @escaping () -> Void = {}) {
+        host = UIHostingController(rootView: InsertPanelView(onSelect: onSelect, close: close))
+        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: 300), inputViewStyle: .keyboard)
+        allowsSelfSizing = true
+        autoresizingMask = .flexibleWidth
+        host.view.backgroundColor = .clear
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            host.view.topAnchor.constraint(equalTo: topAnchor),
+            host.view.bottomAnchor.constraint(equalTo: bottomAnchor),
+            heightAnchor.constraint(equalToConstant: 300),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
 /// The panel's content. Commands and labels come from the format manifest; only the layout
 /// and icons are Swash's.
 struct FormatPanel: View {

@@ -65,4 +65,25 @@ final class FocusModeToolbarTests: XCTestCase {
         testDefaults.set(false, forKey: WritingDefaults.focusMode)
         XCTAssertFalse(testDefaults.bool(forKey: WritingDefaults.focusMode))
     }
+
+    func testEmptyLineInsertAffordanceSetting() async throws {
+        testDefaults.register(defaults: [
+            AppSettings.showEmptyLineInsertAffordance: true
+        ])
+        XCTAssertTrue(testDefaults.bool(forKey: AppSettings.showEmptyLineInsertAffordance))
+
+        testDefaults.set(false, forKey: AppSettings.showEmptyLineInsertAffordance)
+        XCTAssertFalse(testDefaults.bool(forKey: AppSettings.showEmptyLineInsertAffordance))
+
+        let document = SwashSampleDocument.standard
+        let view = IOSContentView(document: .constant(document), fileURL: nil)
+            .defaultAppStorage(testDefaults)
+
+        let hosting = UIHostingController(rootView: view)
+        hosting.view.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        hosting.loadViewIfNeeded()
+        hosting.view.layoutIfNeeded()
+
+        XCTAssertNotNil(hosting.view)
+    }
 }
