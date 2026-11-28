@@ -243,8 +243,8 @@ final class FormatPanelInputView: UIInputView {
 
 // MARK: - Insert panel
 
-/// The insert panel that replaces the keyboard when '+' is tapped: block insertion options
-/// in a grid at keyboard height (iPhone).
+/// The insert panel that replaces the keyboard when "+" is tapped (in the keyboard bar or at an
+/// empty line): block insertion options in a grid at keyboard height, on iPhone and iPad alike.
 final class InsertPanelInputView: UIInputView {
     private let host: UIHostingController<InsertPanelView>
 

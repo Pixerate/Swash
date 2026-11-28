@@ -2,7 +2,8 @@
 //  InsertPanelView.swift
 //  Swash
 //
-//  Glass-styled block insert panel and keyboard bar toggle button for iOS and iPadOS.
+//  The Insert panel (tables, callouts, code, math, Mermaid, images) for iOS and iPadOS, and
+//  the Markdown it inserts.
 //
 
 #if os(iOS)
@@ -47,58 +48,101 @@ public enum BlockInsertKind: String, CaseIterable, Identifiable, Sendable {
 // MARK: - Block Insertion Command
 
 extension MarkdownEditingCommands {
-    /// Inserts a block template of the given kind replacing the line at `location`.
-    public static func insertBlock(_ kind: BlockInsertKind, text: String, at location: Int) -> MarkdownEdit {
+    /// Inserts a block template of the given kind at the line holding `location`. A blank line is
+    /// replaced by the block; after a line with text, the block goes below it, so nothing is lost.
+    /// Blank lines separate the block from text above and below it, so a table or callout doesn't
+    /// take the next paragraph in as a row or a lazy continuation, and an image isn't inline.
+    ///
+    /// The Insert panel's own kinds rather than `BlockInsert` (the "/" menu's): that one has no
+    /// math, Mermaid or image, and `insertBlock(_:text:slashLocation:)` needs a typed "/".
+    static func insertBlock(_ kind: BlockInsertKind, text: String, at location: Int) -> MarkdownEdit {
         let ns = text as NSString
         let boundedLocation = max(0, min(location, ns.length))
         var lineStart = 0
         var lineEnd = 0
         var contentsEnd = 0
         ns.getLineStart(&lineStart, end: &lineEnd, contentsEnd: &contentsEnd, for: NSRange(location: boundedLocation, length: 0))
-        let lineRange = NSRange(location: lineStart, length: contentsEnd - lineStart)
-        let lineText = ns.substring(with: lineRange)
+        let lineText = ns.substring(with: NSRange(location: lineStart, length: contentsEnd - lineStart))
         let structure = MarkdownFormatting.structure(of: lineText)
         let prefix = structure.quotePrefix + structure.indent
+        // A blank line inside a quote keeps its ">" so the block stays in the quote
+        let separator = structure.quotePrefix.trimmingCharacters(in: .whitespaces)
 
-        let blockText: String
-        let caretOffset: Int
+        let (blockText, caretOffset) = template(kind, prefix: prefix)
+
+        let replacesLine = isBlank(lineText) || (structure.content.trimmingCharacters(in: .whitespaces).isEmpty && !isHeading(structure))
+        let target: NSRange
+        var leading = ""
+        if replacesLine {
+            target = NSRange(location: lineStart, length: contentsEnd - lineStart)
+            if lineStart > 0, !isBlank(line(before: lineStart, in: ns)) { leading = separator + "\n" }
+        } else {
+            // Below the line, after a blank one
+            target = NSRange(location: contentsEnd, length: 0)
+            leading = "\n" + separator + "\n"
+        }
+        // The line after the target, if any: a blank one already separates the block
+        var trailing = ""
+        if lineEnd < ns.length {
+            var nextEnd = 0, nextContentsEnd = 0
+            ns.getLineStart(nil, end: &nextEnd, contentsEnd: &nextContentsEnd, for: NSRange(location: lineEnd, length: 0))
+            let next = ns.substring(with: NSRange(location: lineEnd, length: nextContentsEnd - lineEnd))
+            if !isBlank(next) { trailing = "\n" + separator }
+        }
+
+        let inserted = leading + blockText + trailing
+        let edited = ns.replacingCharacters(in: target, with: inserted)
+        let caret = target.location + (leading as NSString).length + caretOffset
+        return MarkdownEdit(text: edited, selection: NSRange(location: caret, length: 0))
+    }
+
+    /// The block's Markdown, each line starting with `prefix`, and the caret's offset in it.
+    private static func template(_ kind: BlockInsertKind, prefix: String) -> (text: String, caret: Int) {
+        func length(_ string: String) -> Int { (string as NSString).length }
         switch kind {
         case .table:
             let header = prefix + "| Column 1 | Column 2 |"
             let separator = prefix + "| --- | --- |"
             let row = prefix + "|  |  |"
-            blockText = "\(header)\n\(separator)\n\(row)"
-            caretOffset = (header + "\n" + separator + "\n" + prefix + "| ").utf16.count
+            return ("\(header)\n\(separator)\n\(row)", length(header + "\n" + separator + "\n" + prefix + "| "))
         case .callout:
             let open = prefix + "> [!NOTE]\n" + prefix + "> "
-            blockText = open
-            caretOffset = (open as NSString).length
+            return (open, length(open))
         case .codeBlock:
             let open = prefix + "```\n" + prefix
-            blockText = open + "\n" + prefix + "```"
-            caretOffset = (open as NSString).length
+            return (open + "\n" + prefix + "```", length(open))
         case .math:
             let open = prefix + "$$\n" + prefix
-            blockText = open + "\n" + prefix + "$$"
-            caretOffset = (open as NSString).length
+            return (open + "\n" + prefix + "$$", length(open))
         case .mermaid:
-            let open = prefix + "```mermaid\ngraph TD\n" + prefix + "    "
-            blockText = open + "\n" + prefix + "```"
-            caretOffset = (open as NSString).length
+            let open = prefix + "```mermaid\n" + prefix + "graph TD\n" + prefix + "    "
+            return (open + "\n" + prefix + "```", length(open))
         case .image:
-            let open = prefix + "![Image]()"
-            blockText = open
-            caretOffset = (prefix + "![Image](").utf16.count
+            return (prefix + "![Image]()", length(prefix + "![Image]("))
         }
+    }
 
-        let edited = ns.replacingCharacters(in: lineRange, with: blockText)
-        let caret = lineRange.location + caretOffset
-        return MarkdownEdit(text: edited, selection: NSRange(location: caret, length: 0))
+    /// Blank, or only a quote marker: a line that already separates blocks.
+    private static func isBlank(_ line: String) -> Bool {
+        let structure = MarkdownFormatting.structure(of: line)
+        return structure.marker.trimmingCharacters(in: .whitespaces).isEmpty
+            && structure.content.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private static func isHeading(_ structure: MarkdownFormatting.LineStructure) -> Bool {
+        if case .heading = structure.format { return true }
+        return false
+    }
+
+    /// The line ending just before `lineStart`.
+    private static func line(before lineStart: Int, in ns: NSString) -> String {
+        let previous = ns.lineRange(for: NSRange(location: lineStart - 1, length: 0))
+        return ns.substring(with: previous).trimmingCharacters(in: .newlines)
     }
 }
 
-/// The insert panel presented in place of the keyboard on iPhone or as a popover on iPad,
-/// matching FormatPanel's liquid glass background styling (`.ultraThinMaterial`).
+/// The insert panel shown in place of the keyboard (on iPhone and iPad alike), matching
+/// FormatPanel's glass background styling (`.ultraThinMaterial`).
 public struct InsertPanelView: View {
     public let onSelect: (BlockInsertKind) -> Void
     public let close: () -> Void
@@ -164,70 +208,6 @@ public struct InsertPanelView: View {
     }
 }
 
-/// SwiftUI component representing the editor's glass keyboard accessory bar.
-public struct EditorKeyboardBarView: View {
-    public var isFormatActive: Bool = false
-    public var isInsertActive: Bool = false
-    public var onToggleFormat: () -> Void = {}
-    public var onToggleInsert: () -> Void = {}
-    public var onDismissKeyboard: () -> Void = {}
-
-    public init(
-        isFormatActive: Bool = false,
-        isInsertActive: Bool = false,
-        onToggleFormat: @escaping () -> Void = {},
-        onToggleInsert: @escaping () -> Void = {},
-        onDismissKeyboard: @escaping () -> Void = {}
-    ) {
-        self.isFormatActive = isFormatActive
-        self.isInsertActive = isInsertActive
-        self.onToggleFormat = onToggleFormat
-        self.onToggleInsert = onToggleInsert
-        self.onDismissKeyboard = onDismissKeyboard
-    }
-
-    public var body: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 4) {
-                Button(action: onToggleFormat) {
-                    Image(systemName: "textformat")
-                        .font(.body.weight(.medium))
-                        .frame(width: 32, height: 32)
-                        .foregroundStyle(isFormatActive ? Color.accentColor : Color.primary)
-                }
-                .buttonStyle(.glass)
-                .accessibilityLabel("Format")
-                .accessibilityAddTraits(isFormatActive ? .isSelected : [])
-
-                Button(action: onToggleInsert) {
-                    Image(systemName: "plus")
-                        .font(.body.weight(.medium))
-                        .frame(width: 32, height: 32)
-                        .foregroundStyle(isInsertActive ? Color.accentColor : Color.primary)
-                }
-                .buttonStyle(.glass)
-                .accessibilityLabel("Insert")
-                .accessibilityAddTraits(isInsertActive ? .isSelected : [])
-            }
-
-            Spacer()
-
-            Button(action: onDismissKeyboard) {
-                Image(systemName: "keyboard.chevron.compact.down")
-                    .font(.body.weight(.medium))
-                    .frame(width: 32, height: 32)
-                    .foregroundStyle(Color.primary)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .accessibilityLabel("Hide Keyboard")
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 60)
-        .background(.ultraThinMaterial)
-    }
-}
-
 // MARK: - Previews
 
 #Preview("Insert Panel - iPhone Light") {
@@ -251,16 +231,6 @@ public struct EditorKeyboardBarView: View {
 #Preview("Insert Panel - iPad Dark") {
     InsertPanelView()
         .frame(width: 360, height: 260)
-        .preferredColorScheme(.dark)
-}
-
-#Preview("Keyboard Bar - Default") {
-    EditorKeyboardBarView()
-        .preferredColorScheme(.light)
-}
-
-#Preview("Keyboard Bar - Insert Active") {
-    EditorKeyboardBarView(isInsertActive: true)
         .preferredColorScheme(.dark)
 }
 #endif

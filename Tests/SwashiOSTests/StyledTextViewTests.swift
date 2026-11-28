@@ -1047,6 +1047,9 @@ final class StyledTextViewTests: XCTestCase {
 
     // MARK: - Insert Affordance Overlay (SWA-94)
 
+    /// The affordance's idle delay plus room for the timer to fire.
+    static let affordanceWait = StyledTextView.Coordinator.insertAffordanceDelay + 0.1
+
     func testInsertAffordanceRevealsAfterDebounceOnEmptyLine() throws {
         let e = try editor("Hello\n\nWorld")
         _ = e.textView.becomeFirstResponder()
@@ -1137,11 +1140,66 @@ final class StyledTextViewTests: XCTestCase {
         let button = try XCTUnwrap(e.textView.insertAffordanceButton)
         XCTAssertFalse(button.isHidden)
 
-        // Simulate scrolling
+        // UIKit's own scrolling (caret into view, offset restored after a styling pass) keeps it
         e.textView.setContentOffset(CGPoint(x: 0, y: 50), animated: false)
         e.coordinator.scrollViewDidScroll(e.textView)
+        XCTAssertFalse(button.isHidden, "a programmatic scroll must not hide the affordance")
 
+        // The person's drag hides it
+        e.coordinator.scrollViewDidScroll(DraggingScrollView())
         XCTAssertTrue(button.isHidden, "Affordance must hide immediately upon scrolling")
+    }
+
+    /// A scroll view the person is dragging, for the scroll delegate.
+    private final class DraggingScrollView: UIScrollView {
+        override var isDragging: Bool { true }
+    }
+
+    func testInsertAffordanceAppearsAfterReturnMakesAnEmptyLine() throws {
+        let e = try editor("Hello")
+        _ = e.textView.becomeFirstResponder()
+        e.caret(after: "Hello")
+        e.pump(0.1)
+
+        e.pressReturn()
+        XCTAssertEqual(e.text, "Hello\n")
+        e.pump(Self.affordanceWait)
+
+        let button = try XCTUnwrap(e.textView.insertAffordanceButton, "Return onto an empty line must reveal the affordance")
+        XCTAssertTrue(button.isShowing)
+    }
+
+    func testInsertAffordanceSkipsBlankLinesInCodeMathAndFrontMatter() throws {
+        for (markdown, caret) in [
+            ("```\nlet a = 1\n\nlet b = 2\n```", 14),   // fenced code
+            ("$$\nx = 1\n\ny = 2\n$$", 9),               // display math
+            ("---\ntitle: A\n\nauthor: B\n---\n\nBody", 13), // front matter
+        ] {
+            let e = try editor(markdown)
+            _ = e.textView.becomeFirstResponder()
+            e.pump(0.1)
+            XCTAssertEqual((markdown as NSString).substring(with: NSRange(location: caret - 1, length: 2)), "\n\n", "caret on the blank line")
+            e.select(raw: NSRange(location: caret, length: 0))
+            e.pump(Self.affordanceWait)
+            XCTAssertFalse(e.textView.insertAffordanceButton?.isShowing ?? false, "no affordance in \(markdown.debugDescription)")
+        }
+    }
+
+    func testInsertAffordanceNotShownInSlackOrWithoutFormatting() throws {
+        let slack = try EditorHarness("Hello\n\nWorld", flavor: .slack)
+        harnesses.append(slack)
+        _ = slack.textView.becomeFirstResponder()
+        slack.select(raw: NSRange(location: 6, length: 0))
+        slack.pump(Self.affordanceWait)
+        XCTAssertFalse(slack.textView.insertAffordanceButton?.isShowing ?? false, "Slack mrkdwn has no blocks to insert")
+        slack.tearDown()
+
+        let e = try editor("Hello\n\nWorld")
+        e.setWritingOptions(WritingOptions(), formattingEnabled: false)
+        _ = e.textView.becomeFirstResponder()
+        e.select(raw: NSRange(location: 6, length: 0))
+        e.pump(Self.affordanceWait)
+        XCTAssertFalse(e.textView.insertAffordanceButton?.isShowing ?? false, "distraction-free editing shows no affordance")
     }
 
     func testInsertAffordanceTimerCancelledIfInterruptedBeforeFiring() throws {
@@ -1175,8 +1233,11 @@ final class StyledTextViewTests: XCTestCase {
         XCTAssertFalse(button.isHidden)
         XCTAssertTrue(button.isAccessibilityElement)
 
+        // One handler, for the primary action only, so one tap runs it once
+        XCTAssertEqual(button.allControlEvents, .primaryActionTriggered)
+
         // Tap the affordance button
-        button.sendActions(for: .touchUpInside)
+        button.sendActions(for: .primaryActionTriggered)
         e.pump(0.1)
 
         // The button should hide immediately and fall out of accessibility tree
@@ -1249,8 +1310,38 @@ final class StyledTextViewTests: XCTestCase {
 
         XCTAssertFalse(e.textView.isShowingInsertPanel)
         XCTAssertNil(e.textView.inputView)
-        XCTAssertEqual(e.textView.markdownText, "Intro\n> [!NOTE]\n> \nOutro")
-        XCTAssertEqual(e.textView.markdownSelection.location, "Intro\n> [!NOTE]\n> ".count)
+        // Blank lines on both sides, so "Outro" isn't a lazy continuation of the callout
+        XCTAssertEqual(e.textView.markdownText, "Intro\n\n> [!NOTE]\n> \n\nOutro")
+        XCTAssertEqual(e.textView.markdownSelection.location, "Intro\n\n> [!NOTE]\n> ".count)
+    }
+
+    func testInsertedBlocksKeepTheirNeighbours() {
+        // A table on the blank line between paragraphs: "Outro" stays a paragraph
+        let table = MarkdownEditingCommands.insertBlock(.table, text: "Intro\n\nOutro", at: 6)
+        XCTAssertEqual(table.text, "Intro\n\n| Column 1 | Column 2 |\n| --- | --- |\n|  |  |\n\nOutro")
+        XCTAssertEqual(table.selection.location, ("Intro\n\n| Column 1 | Column 2 |\n| --- | --- |\n| " as NSString).length)
+        let tables = MarkdownDocument.parse(table.text, flavor: .github).root.children.filter {
+            if case .table = $0.kind { return true }; return false
+        }
+        XCTAssertEqual(tables.count, 1)
+        XCTAssertEqual(MarkdownDocument.parse(table.text, flavor: .github).root.children.last.map {
+            (table.text as NSString).substring(with: $0.range)
+        }, "Outro")
+
+        // An image between paragraphs is a paragraph of its own
+        let image = MarkdownEditingCommands.insertBlock(.image, text: "Intro\n\nOutro", at: 6)
+        XCTAssertEqual(image.text, "Intro\n\n![Image]()\n\nOutro")
+
+        // On a line with text (the keyboard bar's +), the block goes below it and the text stays
+        let below = MarkdownEditingCommands.insertBlock(.codeBlock, text: "Intro\nOutro", at: 2)
+        XCTAssertEqual(below.text, "Intro\n\n```\n\n```\n\nOutro")
+        XCTAssertEqual(below.selection.location, ("Intro\n\n```\n" as NSString).length)
+        let last = MarkdownEditingCommands.insertBlock(.callout, text: "Only line", at: 4)
+        XCTAssertEqual(last.text, "Only line\n\n> [!NOTE]\n> ")
+
+        // A blank line already there isn't doubled
+        let spaced = MarkdownEditingCommands.insertBlock(.math, text: "Intro\n\n\n\nOutro", at: 7)
+        XCTAssertEqual(spaced.text, "Intro\n\n$$\n\n$$\n\nOutro")
     }
 
     func testBlockInsertKindCommands() throws {
@@ -1282,45 +1373,33 @@ final class StyledTextViewTests: XCTestCase {
     }
 
     func testInsertAffordanceDoesNotShowWhenPreferenceDisabled() throws {
-        UserDefaults.standard.set(false, forKey: AppSettings.showEmptyLineInsertAffordance)
-        defer { UserDefaults.standard.removeObject(forKey: AppSettings.showEmptyLineInsertAffordance) }
-
         let e = try editor("")
+        e.setWritingOptions(WritingOptions(), showEmptyLineInsertAffordance: false)
         _ = e.textView.becomeFirstResponder()
         e.pump(0.1)
         e.select(raw: NSRange(location: 0, length: 0))
-        e.pump(0.85)
+        e.pump(Self.affordanceWait)
 
-        if let button = e.textView.insertAffordanceButton {
-            XCTAssertTrue(button.isHidden || button.alpha == 0, "Affordance must not show when showEmptyLineInsertAffordance is disabled")
-        }
+        XCTAssertFalse(e.textView.insertAffordanceButton?.isShowing ?? false,
+                       "Affordance must not show when showEmptyLineInsertAffordance is disabled")
     }
 
     func testInsertAffordanceDynamicToggleDismissesActiveAffordanceImmediately() throws {
-        UserDefaults.standard.set(true, forKey: AppSettings.showEmptyLineInsertAffordance)
-        defer { UserDefaults.standard.removeObject(forKey: AppSettings.showEmptyLineInsertAffordance) }
-
         let e = try editor("")
         _ = e.textView.becomeFirstResponder()
         e.pump(0.1)
         e.select(raw: NSRange(location: 0, length: 0))
-        e.pump(0.85)
+        e.pump(Self.affordanceWait)
 
         let button = try XCTUnwrap(e.textView.insertAffordanceButton)
-        XCTAssertFalse(button.isHidden)
-        XCTAssertEqual(button.alpha, 1.0)
+        XCTAssertTrue(button.isShowing)
 
-        // Toggle preference to false dynamically via coordinator / UserDefaults notification
-        UserDefaults.standard.set(false, forKey: AppSettings.showEmptyLineInsertAffordance)
-        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: nil)
-        e.pump(0.05)
-
-        XCTAssertTrue(button.isHidden || button.alpha == 0, "Toggling preference off must immediately dismiss active affordance")
+        // The setting reaches the (possibly kept) coordinator through updateUIView
+        e.setWritingOptions(WritingOptions(), showEmptyLineInsertAffordance: false)
+        XCTAssertFalse(button.isShowing, "Toggling preference off must immediately dismiss active affordance")
         XCTAssertFalse(e.coordinator.showEmptyLineInsertAffordance)
 
-        // Toggle back on
-        UserDefaults.standard.set(true, forKey: AppSettings.showEmptyLineInsertAffordance)
-        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: nil)
+        e.setWritingOptions(WritingOptions(), showEmptyLineInsertAffordance: true)
         XCTAssertTrue(e.coordinator.showEmptyLineInsertAffordance)
     }
 

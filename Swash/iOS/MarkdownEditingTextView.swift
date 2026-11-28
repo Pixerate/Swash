@@ -19,7 +19,6 @@ import PixerateMarkdown
 @MainActor
 final class IOSEditorController {
     fileprivate(set) weak var textView: MarkdownEditingTextView?
-    weak var retainedStyledCoordinator: StyledTextView.Coordinator?
     /// Called by the formatting bar, the edit menu and Tab handling; set by the hosting view.
     var onFormatCommand: ((FormatCommand) -> Void)?
     /// The document's flavour, so the edit menu checks commands against the right parse (Slack
@@ -158,7 +157,7 @@ final class EditorViewRetainer<TextView: MarkdownEditingTextView> {
 
 /// A TextKit 1 UITextView (the same text system as the macOS editor) with Markdown editing aids.
 /// Subclasses map selections and edits between the view's storage and the raw Markdown.
-class MarkdownEditingTextView: UITextView, UIPopoverPresentationControllerDelegate {
+class MarkdownEditingTextView: UITextView {
     fileprivate(set) weak var controller: IOSEditorController?
     private var formattingBarEnabled: Bool?
     /// Set while a Markdown edit replaces text, so the delegate doesn't intercept the replacement.
@@ -166,7 +165,10 @@ class MarkdownEditingTextView: UITextView, UIPopoverPresentationControllerDelega
     /// The document's flavour, for finding links (Slack mrkdwn writes them as `<url|text>`).
     var flavor: MarkdownFlavor = .github {
         didSet {
-            if oldValue != flavor { refreshFormattingBarState() }
+            guard oldValue != flavor else { return }
+            // The Insert button comes and goes with Slack mrkdwn, which has none of its blocks
+            if (oldValue == .slack) != (flavor == .slack) { rebuildFormattingBarItems() }
+            refreshFormattingBarState()
         }
     }
     /// The document's file URL, for resolving relative and `[[wiki]]` note links in its folder.
@@ -600,10 +602,11 @@ class MarkdownEditingTextView: UITextView, UIPopoverPresentationControllerDelega
     /// Whether the format panel is showing in place of the keyboard.
     var isShowingFormatPanel: Bool { inputView is FormatPanelInputView }
 
-    /// Whether the insert panel is showing (either as inputView or as a presented popover).
-    var isShowingInsertPanel: Bool {
-        inputView is InsertPanelInputView || insertPanelPopover != nil
-    }
+    /// Whether the insert panel is showing in place of the keyboard.
+    var isShowingInsertPanel: Bool { inputView is InsertPanelInputView }
+
+    /// Whether the document's flavour has the Insert panel's blocks (Slack mrkdwn has none of them).
+    var offersInsertPanel: Bool { flavor != .slack }
 
     /// Swaps the keyboard for the format panel (Aa), or back, as Notes does.
     func toggleFormatPanel() {
@@ -650,7 +653,7 @@ class MarkdownEditingTextView: UITextView, UIPopoverPresentationControllerDelega
         reloadInputViews()
     }
 
-    /// Toggles the insert panel: an inputView accessory overlay on iPhone and iPad.
+    /// Toggles the insert panel, which replaces the keyboard on iPhone and iPad alike.
     func toggleInsertPanel() {
         if isShowingFormatPanel {
             inputView = nil
@@ -667,22 +670,11 @@ class MarkdownEditingTextView: UITextView, UIPopoverPresentationControllerDelega
     /// Closes the insert panel if open.
     func dismissInsertPanel() {
         targetedInsertLocation = nil
-        if let popover = insertPanelPopover {
-            popover.dismiss(animated: true)
-            insertPanelPopover = nil
-        }
         if inputView is InsertPanelInputView {
             inputView = nil
             reloadInputViews()
         }
         insertButton?.isSelected = false
-    }
-
-    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
-        if presentationController.presentedViewController === insertPanelPopover {
-            insertPanelPopover = nil
-            insertButton?.isSelected = false
-        }
     }
 
     /// Handles block insertion selection from the Insert panel.
@@ -691,12 +683,6 @@ class MarkdownEditingTextView: UITextView, UIPopoverPresentationControllerDelega
         dismissInsertPanel()
         let edit = MarkdownEditingCommands.insertBlock(kind, text: markdownText, at: location)
         applyMarkdownEdit(edit, actionName: "Insert \(kind.title)")
-    }
-
-    private func topViewController() -> UIViewController? {
-        var top = window?.rootViewController
-        while let presented = top?.presentedViewController { top = presented }
-        return top
     }
 
     /// The keyboard comes back the next time editing starts.
@@ -716,7 +702,6 @@ class MarkdownEditingTextView: UITextView, UIPopoverPresentationControllerDelega
 
     private weak var formatPanelButton: UIButton?
     private weak var insertButton: UIButton?
-    private weak var insertPanelPopover: UIViewController?
     private weak var formattingBar: GlassAccessoryBar?
     /// The recent format buttons currently shown in the keyboard bar, in order.
     private(set) var recentFormatButtons: [UIButton] = []
@@ -824,11 +809,13 @@ class MarkdownEditingTextView: UITextView, UIPopoverPresentationControllerDelega
         formatPanelButton = panel
         items.append(panel)
 
-        let insert = GlassAccessoryBar.iconButton(symbol: "plus", label: "Insert",
-                                                  action: UIAction(title: "Insert") { [weak self] _ in self?.toggleInsertPanel() })
-        insert.isSelected = isShowingInsertPanel
-        insertButton = insert
-        items.append(insert)
+        if offersInsertPanel {
+            let insert = GlassAccessoryBar.iconButton(symbol: "plus", label: "Insert",
+                                                      action: UIAction(title: "Insert") { [weak self] _ in self?.toggleInsertPanel() })
+            insert.isSelected = isShowingInsertPanel
+            insertButton = insert
+            items.append(insert)
+        }
 
         recentFormatButtons.removeAll()
         recentButtonsByCommand.removeAll()
