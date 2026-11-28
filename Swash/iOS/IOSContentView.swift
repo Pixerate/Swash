@@ -32,6 +32,9 @@ struct IOSContentView: View {
     @AppStorage(WritingDefaults.focusUnit) private var focusUnit: FocusUnit = .paragraph
     @AppStorage(WritingDefaults.typewriterScrolling) private var typewriterScrolling = false
     @State private var partnerPaused = false
+    /// Matches the find bar can't show in Formatted (in tables and images), or that Replace All
+    /// skipped (#271).
+    @State private var findHint: EditorFindHint?
     @State private var conflictCount = 0
     @State private var showingConflictSheet = false
     @State private var conflictError: String?
@@ -139,6 +142,9 @@ struct IOSContentView: View {
         }
         .onAppear {
             editor.onPartnerPauseChange = { partnerPaused = $0 }
+            editor.onFindHintChange = { hint in
+                withAnimation(.easeInOut(duration: 0.2)) { findHint = hint }
+            }
             editor.onFormatCommand = { handleFormatCommand($0) }
             sceneActions.onFormatCommand = { handleFormatCommand($0) }
             sceneActions.onToggleDistractionFree = {
@@ -154,6 +160,7 @@ struct IOSContentView: View {
         }
         .onChange(of: viewMode, initial: true) { _, mode in
             if mode != .split, mode != lastSingleMode { lastSingleMode = mode }
+            findHint = nil
         }
         .onChange(of: fileURL) { _, _ in
             refreshConflicts()
@@ -227,6 +234,15 @@ struct IOSContentView: View {
                     .padding(.top, 8)
             }
         }
+        .overlay(alignment: .bottom) {
+            // Above the find bar, which sits over the keyboard or at the bottom of the screen
+            if let findHint, effectiveMode == .preview {
+                EditorFindHintView(hint: findHint, onShowInSource: { showInSource(findHint) },
+                                   onDismiss: { self.findHint = nil })
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
         .safeAreaBar(edge: .top) {
             // Conflict and folder-access banners stay visible in Focus Mode: they guard the file
             if !distractionFree {
@@ -244,6 +260,13 @@ struct IOSContentView: View {
         .background(DocumentShareBridge(source: exportSource, model: features))
         // Opening or closing an iPhone Duo: tidy up, then fold the old page into the new layout
         .background(FoldTransitionHost(onHingeMove: { prepareForDisplayChange() }))
+    }
+
+    /// Switches to Source and searches there for what the Formatted editor's find bar couldn't show.
+    private func showInSource(_ hint: EditorFindHint) {
+        findHint = nil
+        editor.presentFindInNextEditor(query: hint.query, showingReplace: hint.skipped > 0)
+        viewMode = .edit
     }
 
     /// Before the document moves to the other display: transient menus would come back in the

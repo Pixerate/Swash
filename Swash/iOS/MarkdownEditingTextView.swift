@@ -64,8 +64,16 @@ final class IOSEditorController {
     }
 
     func attach(_ textView: MarkdownEditingTextView) {
+        let isNewEditor = self.textView !== textView
         self.textView = textView
         textView.controller = self
+        if isNewEditor, let find = pendingFind {
+            pendingFind = nil
+            // Once the editor is in its window: the find bar attaches to it there
+            DispatchQueue.main.async { [weak textView] in
+                textView?.presentFind(showingReplace: find.showingReplace, query: find.query)
+            }
+        }
         if let partner = textView.writingPartner {
             if partner.isPaused != partnerPaused { partner.setPaused(partnerPaused, in: textView.writingPartnerHost) }
             partner.onPauseChange = { [weak self] paused in
@@ -78,6 +86,24 @@ final class IOSEditorController {
 
     func focus() {
         textView?.becomeFirstResponder()
+    }
+
+    // MARK: Find and replace (#271)
+
+    /// Called when the find bar's search has matches it can't show (inside tables and images in
+    /// Formatted) or Replace All skipped some; nil when there's nothing to say. Set by the hosting view.
+    var onFindHintChange: ((EditorFindHint?) -> Void)?
+    /// A search to start in the next editor that attaches ("Show in Source").
+    private var pendingFind: (query: String, showingReplace: Bool)?
+
+    /// Shows the find bar (with Replace when `showingReplace`) in the editor on screen.
+    func presentFind(showingReplace: Bool) {
+        textView?.presentFind(showingReplace: showingReplace)
+    }
+
+    /// Searches for `query` in the editor that attaches next, once it's on screen.
+    func presentFindInNextEditor(query: String, showingReplace: Bool) {
+        pendingFind = (query, showingReplace)
     }
 
     /// Editor coordinators (with their text views), one per editor kind, kept for as long as the
@@ -188,16 +214,21 @@ class MarkdownEditingTextView: UITextView {
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
         observeRecentFormats()
+        installFind()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         observeRecentFormats()
+        installFind()
     }
 
     nonisolated deinit {
         if let recentsObserver {
             NotificationCenter.default.removeObserver(recentsObserver)
+        }
+        if let storageObserver {
+            NotificationCenter.default.removeObserver(storageObserver)
         }
     }
 
@@ -361,13 +392,30 @@ class MarkdownEditingTextView: UITextView {
         scrollRangeToVisible(selectedRange)
     }
 
+    /// The replacement `replaceUndoably` is making, while it makes it.
+    private var applyingReplacement: (range: NSRange, text: String)?
+
+    /// Whether a change the delegate is asked about is allowed: anything, except while Swash makes
+    /// its own replacement, when only that replacement is. Once a text field with smart punctuation
+    /// has had the keyboard (the find bar's), UIKit follows `replace(_:withText:)` with its own
+    /// changes through the delegate, whatever this view's `smartDashesType`: a table's `---` rule
+    /// became `—` (GOTCHAS #126).
+    func isOwnEditChange(_ range: NSRange, replacement: String) -> Bool {
+        guard let applying = applyingReplacement else { return true }
+        return applying.range == range && applying.text == replacement
+    }
+
     /// Replaces a storage range through `UITextInput`, registering one undo step.
     func replaceUndoably(_ range: NSRange, with replacement: String, actionName: String) {
         guard let start = position(from: beginningOfDocument, offset: range.location),
               let end = position(from: start, offset: range.length),
               let textRange = textRange(from: start, to: end) else { return }
         isApplyingEdit = true
-        defer { isApplyingEdit = false }
+        applyingReplacement = (range, replacement)
+        defer {
+            isApplyingEdit = false
+            applyingReplacement = nil
+        }
         undoManager?.beginUndoGrouping()
         replace(textRange, withText: replacement)
         undoManager?.setActionName(actionName)
@@ -393,7 +441,153 @@ class MarkdownEditingTextView: UITextView {
             accept.discoverabilityTitle = "Accept Suggestion"
             commands.append(accept)
         }
-        return commands
+        return commands + findKeyCommands
+    }
+
+    // MARK: Find and replace (#271)
+
+    /// The find bar. Not UITextView's own (`isFindInteractionEnabled`): its `UITextSearching`
+    /// methods are declared in a Swift extension, so a subclass can't override them, and replacing
+    /// must go through the editor's edit path, skip hidden markers and be one undo step (GOTCHAS #126).
+    private(set) var editorFindInteraction: UIFindInteraction?
+    /// The find bar's searchable object and session delegate (the interaction holds it weakly).
+    private(set) var textSearcher: EditorTextSearcher?
+    private nonisolated(unsafe) var storageObserver: NSObjectProtocol?
+    private var isFindRefreshScheduled = false
+
+    /// UITextView's find actions (`find(_:)`, the system's Find menu items) present this one.
+    override var findInteraction: UIFindInteraction? { editorFindInteraction }
+
+    private func installFind() {
+        let searcher = EditorTextSearcher(textView: self)
+        let interaction = UIFindInteraction(sessionDelegate: searcher)
+        addInteraction(interaction)
+        textSearcher = searcher
+        editorFindInteraction = interaction
+        // Edits while the bar is up move or remove matches: search again once they've landed
+        storageObserver = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification, object: textStorage, queue: .main
+        ) { [weak self] notification in
+            let characters = (notification.object as? NSTextStorage)?.editedMask.contains(.editedCharacters) ?? true
+            MainActor.assumeIsolated {
+                if characters { self?.scheduleFindRefresh() }
+            }
+        }
+    }
+
+    private func scheduleFindRefresh() {
+        guard editorFindInteraction?.activeFindSession != nil, !isFindRefreshScheduled else { return }
+        isFindRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isFindRefreshScheduled = false
+            self.editorFindInteraction?.activeFindSession?.invalidateFoundResults()
+        }
+    }
+
+    /// ⌘F, ⌥⌘F, ⌘G and ⇧⌘G, as on the Mac. Not ⌘E (Use Selection for Find there): the format
+    /// manifest gives it to Inline Code.
+    private var findKeyCommands: [UIKeyCommand] {
+        guard editorFindInteraction != nil else { return [] }
+        let find = UIKeyCommand(title: "Find", action: #selector(showFindNavigator), input: "f", modifierFlags: .command)
+        let replace = UIKeyCommand(title: "Find and Replace", action: #selector(showFindAndReplaceNavigator), input: "f", modifierFlags: [.command, .alternate])
+        let next = UIKeyCommand(title: "Find Next", action: #selector(findNextMatch), input: "g", modifierFlags: .command)
+        let previous = UIKeyCommand(title: "Find Previous", action: #selector(findPreviousMatch), input: "g", modifierFlags: [.command, .shift])
+        for command in [find, replace, next, previous] { command.wantsPriorityOverSystemBehavior = true }
+        return [find, replace, next, previous]
+    }
+
+    @objc private func showFindNavigator() { presentFind(showingReplace: false) }
+    @objc private func showFindAndReplaceNavigator() { presentFind(showingReplace: true) }
+
+    @objc private func findNextMatch() {
+        guard let interaction = editorFindInteraction else { return }
+        guard interaction.activeFindSession != nil else { return presentFind(showingReplace: false) }
+        interaction.findNext()
+    }
+
+    @objc private func findPreviousMatch() {
+        guard let interaction = editorFindInteraction else { return }
+        guard interaction.activeFindSession != nil else { return presentFind(showingReplace: false) }
+        interaction.findPrevious()
+    }
+
+    /// Shows the find bar, searching for `query` if given (otherwise the last search).
+    func presentFind(showingReplace: Bool, query: String? = nil) {
+        guard let interaction = editorFindInteraction else { return }
+        if let query { interaction.searchText = query }
+        interaction.presentFindNavigator(showingReplace: showingReplace)
+    }
+
+    /// What the find bar can't show for the current search; reported to the controller.
+    var findHint: EditorFindHint? {
+        didSet {
+            if oldValue != findHint { controller?.onFindHintChange?(findHint) }
+        }
+    }
+
+    /// Storage ranges of `query`, as the find bar's options ask.
+    func findMatches(of query: String, options: UITextSearchOptions?) -> [NSRange] {
+        EditorFind.matches(of: query, in: textStorage.string as NSString,
+                           options: options?.stringCompareOptions ?? [.caseInsensitive],
+                           wordMatch: options.map { EditorFindWordMatch($0.wordMatchMethod) } ?? .contains)
+    }
+
+    /// Whether a storage range may be replaced: not across a hidden marker or an attachment.
+    func canReplaceFoundRange(_ range: NSRange) -> Bool {
+        !EditorFind.crossesHiddenMarker(range, in: textStorage)
+    }
+
+    /// Replaces storage `ranges` with `replacement` as one undo step, leaving the caret after the
+    /// last one, then tells the editor (`didReplaceFoundText`), which updates the binding and, in
+    /// Formatted, restyles the blocks touched. Ranges that would cross a hidden marker are left
+    /// alone; returns how many were.
+    ///
+    /// Each match is its own small replacement, not one edit from the first to the last: that span
+    /// would expand the tables and images between them into their source, and the restyle that
+    /// collapses them again changes the storage under the undo step, so undoing it went out of
+    /// bounds (GOTCHAS #126).
+    @discardableResult
+    func replaceFoundRanges(_ ranges: [NSRange], with replacement: String, actionName: String) -> Int {
+        let replaceable = ranges.filter(canReplaceFoundRange).sorted { $0.location < $1.location }
+        let skipped = ranges.count - replaceable.count
+        guard !replaceable.isEmpty else { return skipped }
+        undoManager?.beginUndoGrouping()
+        for range in replaceable.reversed() {
+            replaceUndoably(range, with: replacement, actionName: actionName)
+        }
+        undoManager?.setActionName(actionName)
+        undoManager?.endUndoGrouping()
+        let added = (replacement as NSString).length
+        let shift = replaceable.dropLast().reduce(0) { $0 + added - $1.length }
+        let caret = min(replaceable[replaceable.count - 1].location + shift + added, textStorage.length)
+        selectedRange = NSRange(location: caret, length: 0)
+        didReplaceFoundText()
+        return skipped
+    }
+
+    /// Find's replacements landed in the storage: the document follows them.
+    func didReplaceFoundText() {
+        delegate?.textViewDidChange?(self)
+        refreshFormattingBarState()
+    }
+
+    /// The find bar's search ran: note what it can't show (matches inside tables and images).
+    func noteSearch(_ query: String, options: UITextSearchOptions) {
+        let inAttachments = EditorFind.attachmentMatches(of: query, in: textStorage,
+                                                         options: options.stringCompareOptions, wordMatch: EditorFindWordMatch(options.wordMatchMethod))
+        var hint = EditorFindHint(query: query, tables: inAttachments.tables, images: inAttachments.images)
+        // A Replace All's skipped count stands until the search changes
+        if let old = findHint, old.query == query { hint.skipped = old.skipped }
+        findHint = hint.isEmpty ? nil : hint
+    }
+
+    /// Replace All ran, leaving `skipped` matches that cross hidden formatting.
+    func noteReplaceAll(_ query: String, skipped: Int) {
+        var hint = findHint ?? EditorFindHint(query: query)
+        hint.query = query
+        hint.skipped = skipped
+        findHint = hint.isEmpty ? nil : hint
     }
 
     // MARK: Writing partner

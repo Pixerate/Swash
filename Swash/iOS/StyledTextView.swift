@@ -292,6 +292,16 @@ struct StyledTextView: UIViewRepresentable {
             highlight(in: textView)
         }
 
+        /// Find's replacements landed in the storage (`MarkdownEditingTextView.replaceFoundRanges`):
+        /// update the document and restyle, keeping the caret after the last one.
+        func didReplaceFoundText(in textView: StyledUITextView) {
+            cachedOffsetMap = nil
+            parent.text = swashRawMarkdown(from: textView.textStorage)
+            editGeneration += 1
+            pendingRawSelection = rawRange(forStorage: textView.selectedRange, in: textView)
+            highlight(in: textView)
+        }
+
         /// Runs a structural editing command on the raw Markdown; false falls back to the default key behaviour.
         private func applyStructuralEdit(in textView: StyledUITextView, actionName: String, _ command: (String, NSRange) -> MarkdownEdit?) -> Bool {
             let raw = swashRawMarkdown(from: textView.textStorage)
@@ -374,6 +384,8 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
+            // UIKit's smart punctuation mustn't rewrite Swash's own edits (GOTCHAS #126)
+            if let editing = textView as? MarkdownEditingTextView, !editing.isOwnEditChange(range, replacement: replacement) { return false }
             if let styled = textView as? StyledUITextView {
                 cancelInsertAffordanceTimer()
                 styled.hideInsertAffordance(animated: false)
@@ -1020,6 +1032,12 @@ final class StyledUITextView: MarkdownEditingTextView {
 
     override var markdownText: String {
         swashRawMarkdown(from: textStorage)
+    }
+
+    /// Find's replacements restyle the blocks they touched (GOTCHAS #20).
+    override func didReplaceFoundText() {
+        guard let coordinator else { return super.didReplaceFoundText() }
+        coordinator.didReplaceFoundText(in: self)
     }
 
     override func applyMarkdownEdit(_ edit: MarkdownEdit, actionName: String) {

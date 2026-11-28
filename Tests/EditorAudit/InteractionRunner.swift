@@ -1412,6 +1412,52 @@ struct InteractionRunner {
                 expect: "dismissed=true mode=true")
         }
 
+        // Find and replace (#271): Swash's own NSTextFinder client, driven as the find bar drives it
+        func findClient(_ tv: NSTextView) -> EditorTextFinderClient? {
+            (tv as? SwashNSTextView)?.textFinder.client as? EditorTextFinderClient
+        }
+        func replaceAll(_ query: String, with replacement: String, in tv: NSTextView) -> Bool {
+            guard let client = findClient(tv) else { return false }
+            let ranges = EditorFind.matches(of: query, in: tv.string as NSString, options: [])
+            let values = ranges.map { NSValue(range: $0) }
+            guard client.shouldReplaceCharacters(inRanges: values, with: Array(repeating: replacement, count: ranges.count)) else {
+                client.didReplaceCharacters()
+                return false
+            }
+            for range in ranges.reversed() { client.replaceCharacters(in: range, with: replacement) }
+            client.didReplaceCharacters()
+            return true
+        }
+        do { let b = TextBox("Text"); let tv = makeEditor(b)
+             let swash = tv as? SwashNSTextView
+             log("find-uses-swash-finder", "", "builtIn=\(tv.usesFindBar) client=\(findClient(tv) != nil) container=\(swash?.textFinder.findBarContainer === tv.enclosingScrollView)",
+                 "the find bar is Swash's own NSTextFinder in the editor's scroll view",
+                 expect: "builtIn=false client=true container=true") }
+        do { let b = TextBox("Some **bold** text and bold again."); let tv = makeEditor(b)
+             let replaced = replaceAll("bold**", with: "x", in: tv); pump()
+             log("find-skips-hidden-marker", "Some **bold** text and bold again.", "\(replaced) \(b.text)",
+                 "a match that takes in a hidden ** isn't replaced", expect: "false Some **bold** text and bold again.") }
+        do { let b = TextBox("Some **bold** text and bold again."); let tv = makeEditor(b)
+             _ = replaceAll("bold", with: "strong", in: tv); pump(0.3)
+             let hidden = (tv.textStorage.map { s in (0..<s.length).filter { EditorFind.isHiddenMarker(at: $0, in: s) }.count }) ?? -1
+             log("find-replace-restyles", "Some **bold** text and bold again.", "\(b.text) hidden=\(hidden)",
+                 "replacing inside bold keeps it bold: the block restyles and the ** stay hidden",
+                 expect: "Some **strong** text and strong again. hidden=4") }
+        do { let original = "One cat.\n\n| cat | B |\n|---|---|\n| 1 | 2 |\n\nTwo cat.\n\n![cat](cat.png)\n\nLast cat."
+             let b = TextBox(original); let tv = makeEditor(b)
+             _ = replaceAll("cat", with: "dog", in: tv); pump(0.3)
+             let afterReplace = b.text
+             let actionName = tv.undoManager?.undoActionName ?? "-"
+             tv.undoManager?.undo(); pump(0.3)
+             log("find-replace-all-one-undo", original, "\(afterReplace == "One dog.\n\n| cat | B |\n|---|---|\n| 1 | 2 |\n\nTwo dog.\n\n![cat](cat.png)\n\nLast dog.") \(actionName) \(b.text == original)",
+                 "Replace All leaves tables and images alone and one undo puts every match back",
+                 expect: "true Replace All true") }
+        do { let b = TextBox("Intro.\n\n| cat | B |\n|---|---|\n| 1 | 2 |\n\n![cat photo](cat.png)\n\nEnd."); let tv = makeEditor(b)
+             let counts = tv.textStorage.map { EditorFind.attachmentMatches(of: "cat", in: $0) }
+             log("find-counts-attachment-matches", "", "tables=\(counts?.tables ?? -1) images=\(counts?.images ?? -1) visible=\(EditorFind.matches(of: "cat", in: tv.string as NSString).count)",
+                 "matches inside the collapsed table and image are counted for the hint",
+                 expect: "tables=1 images=2 visible=0") }
+
         try? out.write(toFile: CommandLine.arguments[1], atomically: true, encoding: .utf8)
         print(out)
         print(failures.isEmpty ? "INTERACTION: all expectations passed" : "INTERACTION FAILURES:\n" + failures.joined(separator: "\n"))

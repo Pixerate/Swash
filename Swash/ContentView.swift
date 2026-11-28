@@ -71,6 +71,9 @@ struct ContentView: View {
     var isEditable: Bool = true
     
     @State private var viewMode: ViewMode = .preview
+    /// Matches the find bar can't show in Formatted (in tables and images), or that Replace All
+    /// skipped (#271).
+    @State private var findHint: EditorFindHint?
     @State private var selectedRange: NSRange? = nil
     @State private var selectionRect: NSRect? = nil
     @State private var cellSelectionRect: NSRect? = nil
@@ -357,6 +360,7 @@ struct ContentView: View {
         }
         .onChange(of: viewMode) { oldMode, newMode in
             handleViewModeChange(from: oldMode, to: newMode)
+            findHint = nil
         }
         .task(id: document.text) {
             // The first pass (document just opened) is immediate; edits wait for a pause in typing
@@ -378,6 +382,9 @@ struct ContentView: View {
         .onAppear {
             outlineState.select = { heading in editor.reveal(rawLocation: heading.range.location) }
             editor.onPartnerMarksChange = { partnerMarkCount = $0 }
+            editor.onFindHintChange = { hint in
+                withAnimation(.easeInOut(duration: 0.2)) { findHint = hint }
+            }
             // An untitled document created for a quick note or an import starts with its text
             claimSeededTextIfNeeded()
             updateDraftName()
@@ -462,6 +469,15 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .id(documentID)
+            .overlay(alignment: .bottom) {
+                // Matches the find bar can't show in Formatted (#271)
+                if let findHint, viewMode == .preview {
+                    EditorFindHintView(hint: findHint, onShowInSource: { showInSource(findHint) },
+                                       onDismiss: { self.findHint = nil })
+                        .padding(.bottom, 12)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
             
             // Premium Bottom Status Bar
             if !distractionFree {
@@ -1951,6 +1967,14 @@ struct ContentView: View {
         commitEdit(newText, selection: NSRange(location: caret, length: 0), actionName: "Insert Table of Contents")
     }
     
+    /// Switches to Source and opens the find bar there on the same search, for what the Formatted
+    /// editor's bar couldn't show (#271).
+    private func showInSource(_ hint: EditorFindHint) {
+        findHint = nil
+        editor.presentFindInNextEditor(showingReplace: hint.skipped > 0)
+        viewMode = .edit
+    }
+
     private func handleViewModeChange(from oldMode: ViewMode, to newMode: ViewMode) {
         guard oldMode != newMode else { return }
         guard let window = self.window, !window.styleMask.contains(.fullScreen) else { return }
