@@ -598,20 +598,59 @@ final class StyledTextViewTests: XCTestCase {
         let markers = taskMarkers(in: e)
         XCTAssertEqual(markers.count, 2)
 
-        let layout = e.textView.layoutManager
-        for item in markers {
-            let glyph = layout.glyphIndexForCharacter(at: NSMaxRange(item.range))
-            let charIndex = layout.characterIndexForGlyph(at: glyph)
-            let font = (charIndex < e.storage.length ? e.storage.attribute(.font, at: charIndex, effectiveRange: nil) as? UIFont : nil)
-                ?? UIFont.systemFont(ofSize: 16)
-            let lineRect = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-            let glyphLoc = layout.location(forGlyphAt: glyph)
-            let baselineY = lineRect.origin.y + (glyphLoc.y > 0 ? glyphLoc.y : (lineRect.height + font.descender))
-            let lineMidY = baselineY - font.capHeight / 2.0
-
-            XCTAssertGreaterThan(lineMidY, lineRect.origin.y)
-            XCTAssertLessThan(lineMidY, lineRect.origin.y + lineRect.height)
+        for item in markerRects(in: e) {
+            XCTAssertGreaterThan(item.rect.midY, item.lineRect.minY)
+            XCTAssertLessThan(item.rect.midY, item.lineRect.maxY)
         }
+    }
+
+    /// Every list marker with the rect it's drawn in and its line fragment, in text-container coordinates.
+    private func markerRects(in e: EditorHarness) -> [(range: NSRange, info: ListMarkerInfo, rect: CGRect, lineRect: CGRect)] {
+        guard let layout = e.textView.layoutManager as? StyledLayoutManager else {
+            XCTFail("The editor doesn't use StyledLayoutManager")
+            return []
+        }
+        var result: [(NSRange, ListMarkerInfo, CGRect, CGRect)] = []
+        e.storage.enumerateAttribute(.listMarker, in: NSRange(location: 0, length: e.storage.length), options: []) { value, range, _ in
+            guard let info = value as? ListMarkerInfo else { return }
+            let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            guard let geometry = layout.listMarkerGeometry(forMarkerGlyphs: glyphs, indent: info.indent) else { return }
+            result.append((range, info, ListMarkerRenderer.markerRect(for: info, geometry: geometry), geometry.lineRect))
+        }
+        return result
+    }
+
+    /// An empty item at the end of the document has no visible text to measure, so its marker must
+    /// still be centred in its own line rather than drawn on the line above (#190).
+    private func assertEmptyLastItemMarkerInsideItsLine(_ markdown: String, isTask: Bool, file: StaticString = #filePath, line: UInt = #line) throws {
+        let e = try editor(markdown)
+        let markers = markerRects(in: e)
+        XCTAssertEqual(markers.count, 2, file: file, line: line)
+        guard let first = markers.first, let last = markers.last else { return }
+        XCTAssertEqual(last.info.isTask, isTask, file: file, line: line)
+        XCTAssertGreaterThan(last.lineRect.minY, first.lineRect.minY, "the empty item should be on its own line", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(last.rect.minY, last.lineRect.minY - 0.5, file: file, line: line)
+        XCTAssertLessThanOrEqual(last.rect.maxY, last.lineRect.maxY + 0.5, file: file, line: line)
+        XCTAssertGreaterThan(last.rect.minY, first.rect.maxY, "the empty item's marker overlaps the item above", file: file, line: line)
+        // Same size and column as a marker with text, since the body font stands in for the missing text
+        XCTAssertEqual(last.rect.height, first.rect.height, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(last.rect.minX, first.rect.minX, accuracy: 1, file: file, line: line)
+    }
+
+    func testEmptyTaskItemAtDocumentEndDrawsCheckboxInsideItsLine() throws {
+        try assertEmptyLastItemMarkerInsideItsLine("- [ ] first\n- [ ] ", isTask: true)
+    }
+
+    func testEmptyBulletItemAtDocumentEndDrawsBulletInsideItsLine() throws {
+        try assertEmptyLastItemMarkerInsideItsLine("- first\n- ", isTask: false)
+    }
+
+    func testEmptyTaskItemCheckboxIsTappable() throws {
+        let e = try editor("- [ ] first\n- [ ] ")
+        guard let last = markerRects(in: e).last else { return XCTFail("no marker") }
+        let inset = e.textView.textContainerInset
+        let tap = CGPoint(x: last.rect.midX + inset.left, y: last.rect.midY + inset.top)
+        XCTAssertEqual(e.textView.taskMarkerRange(at: tap), last.range)
     }
 
     func testCheckboxAndBulletAlignmentOnWrappedItems() throws {

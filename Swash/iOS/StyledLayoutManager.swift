@@ -113,18 +113,9 @@ final class StyledLayoutManager: NSLayoutManager {
         textStorage.enumerateAttribute(.listMarker, in: charRange, options: []) { value, range, _ in
             guard let marker = value as? ListMarkerInfo else { return }
             let markerGlyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-            guard markerGlyphs.length > 0 else { return }
-            let lineRect = lineFragmentRect(forGlyphAt: markerGlyphs.location, effectiveRange: nil)
-
-            let contentGlyph = min(NSMaxRange(markerGlyphs), max(0, numberOfGlyphs - 1))
-            let contentChar = characterIndexForGlyph(at: contentGlyph)
-            let textFont = (contentChar < textStorage.length ? textStorage.attribute(.font, at: contentChar, effectiveRange: nil) as? UIFont : nil) ?? UIFont.systemFont(ofSize: 16 * MarkdownEditorStyler.fontScale)
-            let glyphLoc = location(forGlyphAt: contentGlyph)
-            let baselineY = origin.y + lineRect.origin.y + (glyphLoc.y > 0 ? glyphLoc.y : (lineRect.height + textFont.descender))
-            let lineMidY = baselineY - textFont.capHeight / 2.0
-
-            let contentX = lineRect.origin.x + glyphLoc.x
-            let effectiveContentX = contentX > 0 ? contentX : marker.indent
+            guard let geometry = self.listMarkerGeometry(forMarkerGlyphs: markerGlyphs, indent: marker.indent) else { return }
+            let textFont = geometry.font
+            let markerRect = ListMarkerRenderer.markerRect(for: marker, geometry: geometry).offsetBy(dx: origin.x, dy: origin.y)
             let alpha = self.focusAlpha(for: range.location)
             let traits = self.currentTraits
             let canvasBg = self.canvasBackground
@@ -136,8 +127,7 @@ final class StyledLayoutManager: NSLayoutManager {
 
             if marker.isTask {
                 let metrics = ListMarkerRenderer.checkboxMetrics(for: textFont)
-                let boxX = origin.x + effectiveContentX - metrics.boxSize - 6.0
-                let boxRect = CGRect(x: boxX, y: lineMidY - metrics.boxSize / 2.0, width: metrics.boxSize, height: metrics.boxSize)
+                let boxRect = markerRect
 
                 if marker.isChecked {
                     let baseAccent = marker.color ?? self.themeAccentColor
@@ -166,9 +156,7 @@ final class StyledLayoutManager: NSLayoutManager {
                 }
             } else if let bulletKind = marker.bulletKind {
                 let metrics = ListMarkerRenderer.bulletMetrics(for: textFont)
-                let boxMetrics = ListMarkerRenderer.checkboxMetrics(for: textFont)
-                let markerCenterX = origin.x + effectiveContentX - 6.0 - boxMetrics.boxSize / 2.0
-                let bulletRect = CGRect(x: markerCenterX - metrics.bulletSize / 2.0, y: lineMidY - metrics.bulletSize / 2.0, width: metrics.bulletSize, height: metrics.bulletSize)
+                let bulletRect = markerRect
                 let baseColor = marker.color ?? UIColor.secondaryLabel
                 let bulletColor = ListMarkerRenderer.accessibleColor(for: baseColor, on: canvasBg, traits: traits, minContrast: 3.0)
 
@@ -189,23 +177,74 @@ final class StyledLayoutManager: NSLayoutManager {
                     squarePath.fill()
                 }
             } else {
-                let numberFont = UIFont.systemFont(ofSize: max(12.0, textFont.pointSize - 1.0), weight: .regular)
+                let numberFont = ListMarkerRenderer.numberFont(for: textFont)
                 let baseColor = marker.color ?? UIColor.secondaryLabel
                 let numberColor = ListMarkerRenderer.accessibleColor(for: baseColor, on: canvasBg, traits: traits, minContrast: 3.0)
                 let attributes: [NSAttributedString.Key: Any] = [
                     .font: numberFont,
                     .foregroundColor: numberColor
                 ]
-                let size = (marker.text as NSString).size(withAttributes: attributes)
-                let x = origin.x + effectiveContentX - size.width - 8.0
-                let y = baselineY - numberFont.ascender
-                (marker.text as NSString).draw(in: CGRect(x: x, y: y, width: size.width + 4.0, height: size.height), withAttributes: attributes)
+                (marker.text as NSString).draw(in: CGRect(x: markerRect.minX, y: markerRect.minY, width: markerRect.width + 4.0, height: markerRect.height), withAttributes: attributes)
             }
 
             if alpha < 1 {
                 context.restoreGState()
             }
         }
+    }
+
+    /// Where a list marker's item text sits, in text-container coordinates, for drawing the marker and hit-testing it.
+    func listMarkerGeometry(forMarkerGlyphs markerGlyphs: NSRange, indent: CGFloat) -> ListMarkerGeometry? {
+        guard let textStorage, markerGlyphs.length > 0, markerGlyphs.location < numberOfGlyphs else { return nil }
+        var lineGlyphs = NSRange()
+        let lineRect = lineFragmentRect(forGlyphAt: markerGlyphs.location, effectiveRange: &lineGlyphs)
+
+        // A hidden marker is set in a 0.01 pt font (MarkdownEditorStyler.hide), so it can't stand in for the item's text
+        func visibleFont(atGlyph glyph: Int) -> UIFont? {
+            let char = characterIndexForGlyph(at: glyph)
+            guard char < textStorage.length, let font = textStorage.attribute(.font, at: char, effectiveRange: nil) as? UIFont,
+                  font.pointSize >= 1 else { return nil }
+            return font
+        }
+
+        // The item's first visible glyph on this line: an empty item at the end of the document has none, and
+        // its content glyph clamps to the hidden marker itself
+        var anchorGlyph: Int?
+        var anchorFont: UIFont?
+        let searchStart = max(NSMaxRange(markerGlyphs), lineGlyphs.location)
+        if searchStart < NSMaxRange(lineGlyphs) {
+            for glyph in searchStart..<NSMaxRange(lineGlyphs) {
+                if let font = visibleFont(atGlyph: glyph) {
+                    anchorGlyph = glyph
+                    anchorFont = font
+                    break
+                }
+            }
+        }
+        let textFont = anchorFont ?? defaultBodyFont
+
+        // Without visible text, the item's text would start where the (practically zero-width) hidden marker sits
+        let contentX = lineRect.minX + location(forGlyphAt: anchorGlyph ?? (NSMaxRange(markerGlyphs) - 1)).x
+        let effectiveContentX = contentX > 0 ? contentX : indent
+
+        let baselineY: CGFloat
+        if let anchorGlyph, location(forGlyphAt: anchorGlyph).y > 1 {
+            baselineY = lineRect.minY + location(forGlyphAt: anchorGlyph).y
+        } else {
+            // Nothing visible to measure (an empty `- ` or `- [ ] ` item): centre the body font's line in the
+            // line fragment, keeping the marker inside its own line rather than on its top edge (#190)
+            let used = lineFragmentUsedRect(forGlyphAt: markerGlyphs.location, effectiveRange: nil)
+            let band = used.height >= textFont.lineHeight * 0.5 ? used : lineRect
+            baselineY = band.midY + (textFont.ascender + textFont.descender) / 2.0
+        }
+        return ListMarkerGeometry(lineRect: lineRect, font: textFont, baselineY: baselineY, contentX: effectiveContentX)
+    }
+
+    private var defaultBodyFont: UIFont {
+        if let typography = styledTextView?.coordinator?.parent.typography {
+            return typography.font(ofSize: typography.textSize * MarkdownEditorStyler.fontScale, weight: .regular)
+        }
+        return UIFont.systemFont(ofSize: 14 * MarkdownEditorStyler.fontScale)
     }
 
     /// Every code-block language badge, in text-container coordinates.
@@ -329,8 +368,45 @@ final class StyledLayoutManager: NSLayoutManager {
     }
 }
 
+/// Where a list item's text sits on its first line, in text-container coordinates.
+struct ListMarkerGeometry {
+    let lineRect: CGRect
+    /// The item text's font (the body font for an empty item).
+    let font: UIFont
+    let baselineY: CGFloat
+    /// The x where the item's text starts; markers are drawn just left of it.
+    let contentX: CGFloat
+
+    /// The visual centre of the item's text (half its cap height above the baseline).
+    var midY: CGFloat { baselineY - font.capHeight / 2.0 }
+}
+
 /// Vector geometry, dynamic scaling and accessible contrast calculation for list markers.
 enum ListMarkerRenderer {
+    /// The checkbox square for a task item.
+    static func checkboxRect(_ geometry: ListMarkerGeometry) -> CGRect {
+        let boxSize = checkboxMetrics(for: geometry.font).boxSize
+        return CGRect(x: geometry.contentX - boxSize - 6.0, y: geometry.midY - boxSize / 2.0, width: boxSize, height: boxSize)
+    }
+
+    /// The font an ordered item's number is drawn in.
+    static func numberFont(for font: UIFont) -> UIFont {
+        UIFont.systemFont(ofSize: max(12.0, font.pointSize - 1.0), weight: .regular)
+    }
+
+    /// The rect a marker is drawn in: the checkbox, the bullet, or the number's text box.
+    static func markerRect(for marker: ListMarkerInfo, geometry: ListMarkerGeometry) -> CGRect {
+        if marker.isTask { return checkboxRect(geometry) }
+        if marker.bulletKind != nil {
+            let bulletSize = bulletMetrics(for: geometry.font).bulletSize
+            let centerX = checkboxRect(geometry).midX
+            return CGRect(x: centerX - bulletSize / 2.0, y: geometry.midY - bulletSize / 2.0, width: bulletSize, height: bulletSize)
+        }
+        let numberFont = numberFont(for: geometry.font)
+        let size = (marker.text as NSString).size(withAttributes: [.font: numberFont])
+        return CGRect(x: geometry.contentX - size.width - 8.0, y: geometry.baselineY - numberFont.ascender, width: size.width, height: size.height)
+    }
+
     static func rgbaComponents(for color: UIColor, traits: UITraitCollection) -> (r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat) {
         let resolved = color.resolvedColor(with: traits)
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0

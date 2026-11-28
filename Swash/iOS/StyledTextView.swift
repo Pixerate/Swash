@@ -1243,19 +1243,12 @@ final class StyledUITextView: MarkdownEditingTextView {
         var hit: NSRange?
         textStorage.enumerateAttribute(.listMarker, in: lineCharacters, options: []) { value, range, stop in
             guard let info = value as? ListMarkerInfo, info.isTask else { return }
-            let contentChar = min(NSMaxRange(range), max(0, textStorage.length - 1))
-            let contentGlyph = layoutManager.glyphIndexForCharacter(at: contentChar)
-            let glyphLoc = layoutManager.location(forGlyphAt: contentGlyph)
-            let contentX = lineRect.minX + glyphLoc.x
-            let effectiveContentX = contentX > 0 ? contentX : info.indent
-
-            let textFont = (contentChar < textStorage.length ? textStorage.attribute(.font, at: contentChar, effectiveRange: nil) as? UIFont : nil) ?? UIFont.systemFont(ofSize: 16 * MarkdownEditorStyler.fontScale)
-            let boxSize = round(max(14.0, textFont.pointSize * 0.95))
-            let baselineY = lineRect.origin.y + (glyphLoc.y > 0 ? glyphLoc.y : (lineRect.height + textFont.descender))
-            let lineMidY = baselineY - textFont.capHeight / 2.0
-
-            let boxX = effectiveContentX - boxSize - 6.0
-            let boxCenter = CGPoint(x: boxX + boxSize / 2.0, y: lineMidY)
+            let markerGlyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            guard let geometry = (layoutManager as? StyledLayoutManager)?.listMarkerGeometry(forMarkerGlyphs: markerGlyphs, indent: info.indent) else { return }
+            let box = ListMarkerRenderer.checkboxRect(geometry)
+            let boxSize = box.width
+            let effectiveContentX = geometry.contentX
+            let boxCenter = CGPoint(x: box.midX, y: box.midY)
 
             let hitTargetSize: CGFloat = max(44.0, boxSize + 16.0)
             let minX = min(boxCenter.x - hitTargetSize / 2.0, effectiveContentX - max(44.0, boxSize + 12.0))
