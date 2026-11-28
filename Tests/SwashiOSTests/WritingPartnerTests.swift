@@ -268,6 +268,172 @@ final class WritingPartnerTests: XCTestCase {
         #endif
         XCTAssertGreaterThan(classes, 0, "NLTagger gave no word classes, so the partner would never fix its/it's, id/I'd or ill/I'll")
     }
+
+    // MARK: FormattingVoice (#113)
+
+    func testFormattingVoiceTidiesBlockAfterCaretLeaves() throws {
+        let harness = try editor()
+        harness.textView.becomeFirstResponder()
+        type("#Heading", in: harness)
+        waitForPartner(harness)
+        // Untouched while the caret is still in the block
+        XCTAssertEqual(harness.text, "#Heading")
+
+        type("\n\nNext paragraph", in: harness)
+        waitForPartner(harness)
+        XCTAssertEqual(harness.text, "# Heading\n\nNext paragraph")
+
+        let undoManager = try XCTUnwrap(harness.textView.undoManager)
+        XCTAssertTrue(undoManager.canUndo)
+        XCTAssertEqual(undoManager.undoActionName, "Formatting")
+        undoManager.undo()
+        harness.pump(0.2)
+        XCTAssertEqual(harness.text, "#Heading\n\nNext paragraph")
+        XCTAssertEqual(harness.coordinator.rawRange(forStorage: harness.textView.selectedRange, in: harness.textView).location,
+                       (harness.text as NSString).length)
+    }
+
+    // MARK: Undo isolation
+
+    func testUndoIsolatesPunctuationStepFromSurroundingUndoableEdits() throws {
+        let harness = try editor()
+        harness.textView.becomeFirstResponder()
+        typeUndoably("dont ", in: harness.textView)
+        harness.pumpUntilStyled()
+        waitForPartner(harness)
+        XCTAssertEqual(harness.text, "Don't ")
+
+        typeUndoably("next", in: harness.textView)
+        harness.pumpUntilStyled()
+        waitForPartner(harness)
+        XCTAssertEqual(harness.text, "Don't next")
+
+        let undoManager = try XCTUnwrap(harness.textView.undoManager)
+        XCTAssertTrue(undoManager.canUndo)
+        undoManager.undo()
+        harness.pump(0.2)
+        XCTAssertEqual(harness.text, "Don't ")
+
+        XCTAssertTrue(undoManager.canUndo)
+        XCTAssertEqual(undoManager.undoActionName, WritingPartnerDefaults.actionName)
+        undoManager.undo()
+        harness.pump(0.2)
+        XCTAssertEqual(harness.text, "dont ")
+        XCTAssertEqual(harness.coordinator.rawRange(forStorage: harness.textView.selectedRange, in: harness.textView).location,
+                       (harness.text as NSString).length)
+    }
+
+    // MARK: SourceTextView parity
+
+    func testSourceTextViewFixesPunctuationAndTidiesOnCaretExit() throws {
+        let harness = try SourceEditorHarness()
+        defer { harness.tearDown() }
+        harness.textView.becomeFirstResponder()
+
+        harness.type("so i dont know ")
+        harness.waitForPartner()
+        XCTAssertEqual(harness.text, "So I don't know ")
+
+        harness.type("\n\n#Heading\n\nBody")
+        harness.waitForPartner()
+        XCTAssertEqual(harness.text, "So I don't know \n\n# Heading\n\nBody")
+    }
+
+    func testSourceTextViewIgnoresExternalSwiftUIUpdates() throws {
+        let harness = try SourceEditorHarness("#Heading\n\nBody")
+        defer { harness.tearDown() }
+        harness.box.text = "#Heading\n\nBody updated"
+        harness.host.rootView = SourceTextView(
+            text: Binding(get: { harness.box.text }, set: { harness.box.text = $0 }),
+            controller: harness.controller
+        )
+        harness.pump(0.2)
+        harness.waitForPartner()
+        XCTAssertEqual(harness.text, "#Heading\n\nBody updated")
+    }
+
+    /// Types `string` through `UITextInput.replace(_:withText:)` so UIKit registers an undoable edit.
+    private func typeUndoably(_ string: String, in textView: MarkdownEditingTextView) {
+        for character in string {
+            let chunk = String(character)
+            let selected = textView.selectedRange
+            if textView.delegate?.textView?(textView, shouldChangeTextIn: selected, replacementText: chunk) ?? true,
+               let range = textView.selectedTextRange {
+                textView.replace(range, withText: chunk)
+            }
+        }
+    }
+}
+
+/// Hosts `SourceTextView` in a `UIWindow` for Writing Partner coordinator tests.
+@MainActor
+private final class SourceEditorHarness {
+    final class TextBox {
+        var text: String
+        init(_ text: String) { self.text = text }
+        nonisolated deinit {}
+    }
+
+    let box: TextBox
+    let controller = IOSEditorController()
+    let window: UIWindow
+    let host: UIHostingController<SourceTextView>
+    let textView: MarkdownEditingTextView
+
+    var text: String { box.text }
+    var coordinator: SourceTextView.Coordinator { textView.delegate as! SourceTextView.Coordinator }
+
+    init(_ markdown: String = "", file: StaticString = #filePath, line: UInt = #line) throws {
+        box = TextBox(markdown)
+        let box = box
+        let binding = Binding(get: { box.text }, set: { box.text = $0 })
+        host = UIHostingController(rootView: SourceTextView(text: binding, controller: controller))
+
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else {
+            throw XCTSkip("no window scene")
+        }
+        window = UIWindow(windowScene: scene)
+        window.frame = CGRect(origin: .zero, size: CGSize(width: 390, height: 800))
+        window.rootViewController = host
+        window.isHidden = false
+        window.layoutIfNeeded()
+
+        guard let found = EditorHarness.find(MarkdownEditingTextView.self, in: host.view) else {
+            XCTFail("No MarkdownEditingTextView in the hosted SourceTextView", file: file, line: line)
+            throw XCTSkip("source editor not hosted")
+        }
+        textView = found
+        pump(0.05)
+    }
+
+    func tearDown() {
+        window.isHidden = true
+        window.rootViewController = nil
+    }
+
+    nonisolated deinit {}
+
+    func pump(_ seconds: TimeInterval = 0.1) {
+        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+        window.layoutIfNeeded()
+    }
+
+    func type(_ string: String) {
+        for character in string {
+            let chunk = String(character)
+            let range = textView.selectedRange
+            if textView.delegate?.textView?(textView, shouldChangeTextIn: range, replacementText: chunk) ?? true {
+                textView.insertText(chunk)
+            }
+        }
+    }
+
+    func waitForPartner(limit: TimeInterval = 10) {
+        let deadline = Date().addingTimeInterval(limit)
+        pump(0.05)
+        while Date() < deadline, !coordinator.writingPartner.isIdle { pump(0.02) }
+        pump(0.1)
+    }
 }
 
 /// A pause-tier bandleader that answers with nothing to change, or fails like a dropped connection.
