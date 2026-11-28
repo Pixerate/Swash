@@ -12,6 +12,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import Combine
+import OSLog
 import PixerateMarkdown
 
 // MARK: - Opening
@@ -120,20 +121,95 @@ final class DocumentOpener {
 
 // MARK: - New documents with content
 
-/// Text for the next untitled documents to start with (quick capture, import). `ContentView`
-/// takes one when an empty, unsaved document appears.
+/// Initial text for untitled documents (quick capture, import). Each seed is bound to the specific
+/// `NSDocument` (and `NSWindow`, once known) created for it, so a concurrent ⌘N or restored window
+/// never claims another document's seed.
+///
+/// Seeds hold their document and window weakly and are matched by identity (`===`), not by
+/// `ObjectIdentifier`: an identifier can be reused by a later object at the same address
+/// (GOTCHAS #13), which would hand a stale seed to an unrelated window. A seed whose window closes
+/// before it is claimed is dropped, and seeds whose document and window are both gone are pruned.
 @MainActor
 enum NewDocumentSeed {
-    private static var queue: [String] = []
+    private struct Seed {
+        weak var document: NSDocument?
+        weak var window: NSWindow?
+        let text: String
+        var isOrphaned: Bool { document == nil && window == nil }
+    }
+
+    private static var seeds: [Seed] = []
+    private static var closeObserver: NSObjectProtocol?
+    private static let logger = Logger(subsystem: "com.pixerate.Swash", category: "Document")
 
     static func createDocument(with text: String) {
-        queue.append(text)
-        NSDocumentController.shared.newDocument(nil)
+        do {
+            let document = try NSDocumentController.shared.openUntitledDocumentAndDisplay(true)
+            let window = document.windowControllers.lazy.compactMap(\.window).first
+            register(text: text, document: document, window: window)
+        } catch {
+            logger.error("Failed to open untitled document: \(error.localizedDescription)")
+        }
     }
 
-    static func take() -> String? {
-        queue.isEmpty ? nil : queue.removeFirst()
+    /// The seed bound to `window` or to its document, removed so it is applied once.
+    static func take(for window: NSWindow) -> String? {
+        pruneOrphans()
+        let document = document(for: window)
+        guard let index = seeds.firstIndex(where: { seed in
+            seed.window === window || (document != nil && seed.document === document)
+        }) else { return nil }
+        return seeds.remove(at: index).text
     }
+
+    private static func register(text: String, document: NSDocument?, window: NSWindow?) {
+        installCloseObserver()
+        pruneOrphans()
+        seeds.append(Seed(document: document, window: window, text: text))
+    }
+
+    private static func document(for window: NSWindow) -> NSDocument? {
+        (window.windowController?.document as? NSDocument) ?? NSDocumentController.shared.document(for: window)
+    }
+
+    private static func pruneOrphans() {
+        seeds.removeAll(where: \.isOrphaned)
+    }
+
+    /// Drops the seeds bound to `window`, or to its document, when the window closes unclaimed.
+    private static func discardSeeds(forClosing window: NSWindow) {
+        let document = document(for: window)
+        seeds.removeAll { seed in
+            seed.isOrphaned || seed.window === window || (document != nil && seed.document === document)
+        }
+    }
+
+    private static func installCloseObserver() {
+        guard closeObserver == nil else { return }
+        // `queue: nil` delivers on the posting thread; windows close on the main thread.
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: nil, queue: nil
+        ) { notification in
+            guard let window = notification.object as? NSWindow else { return }
+            MainActor.assumeIsolated { discardSeeds(forClosing: window) }
+        }
+    }
+
+    #if DEBUG
+    static func registerForTesting(text: String, document: NSDocument? = nil, window: NSWindow? = nil) {
+        register(text: text, document: document, window: window)
+    }
+
+    /// Seeds still waiting to be claimed, after pruning those whose document and window are gone.
+    static var pendingCountForTesting: Int {
+        pruneOrphans()
+        return seeds.count
+    }
+
+    static func clearForTesting() {
+        seeds.removeAll()
+    }
+    #endif
 }
 
 // MARK: - Reopening
