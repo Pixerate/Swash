@@ -422,6 +422,12 @@ class MarkdownEditingTextView: UITextView {
         undoManager?.endUndoGrouping()
     }
 
+    /// Ends any active keyboard typing undo group without changing the selection (GOTCHAS #78, #102).
+    func breakUndoCoalescing() {
+        inputDelegate?.selectionWillChange(self)
+        inputDelegate?.selectionDidChange(self)
+    }
+
     // MARK: Hardware keyboard
 
     override var keyCommands: [UIKeyCommand]? {
@@ -927,6 +933,12 @@ class MarkdownEditingTextView: UITextView {
     /// The last parse behind `activeFormats`: the bar refreshes on every edit and selection
     /// change, and re-parsing the whole document each time lags on long documents.
     private var cachedFormatting: (text: String, flavor: MarkdownFlavor, formatting: MarkdownFormatting)?
+
+    /// Returns the cached parse if `cachedFormatting` already holds `text` for `flavor`.
+    func cachedDocument(for text: String, flavor: MarkdownFlavor) -> MarkdownDocument? {
+        guard let cached = cachedFormatting, cached.flavor == flavor, cached.text == text else { return nil }
+        return cached.formatting.document
+    }
 
     /// Formats currently active at `markdownSelection`.
     var activeFormats: Set<FormatCommand> {

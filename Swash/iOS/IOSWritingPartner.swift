@@ -80,7 +80,26 @@ final class IOSWritingPartnerHost: WritingPartnerHost {
     func applyPartnerEdit(newRawText: String, rawSelection: NSRange, actionName: String) {
         isApplyingPartnerEdit = true
         defer { isApplyingPartnerEdit = false }
+        textView?.breakUndoCoalescing()
         apply(newRawText, rawSelection, actionName)
+        textView?.breakUndoCoalescing()
+    }
+
+    /// Minimal UTF-16 diff between `oldText` and `newText` (never splitting a surrogate pair).
+    static func rawDiff(from oldText: String, to newText: String) -> (range: NSRange, replacement: String) {
+        let oldNS = oldText as NSString
+        let newNS = newText as NSString
+        let minLength = min(oldNS.length, newNS.length)
+        var prefix = 0
+        while prefix < minLength && oldNS.character(at: prefix) == newNS.character(at: prefix) { prefix += 1 }
+        if prefix > 0 && CFStringIsSurrogateHighCharacter(oldNS.character(at: prefix - 1)) { prefix -= 1 }
+        var suffix = 0
+        while suffix < minLength - prefix &&
+              oldNS.character(at: oldNS.length - 1 - suffix) == newNS.character(at: newNS.length - 1 - suffix) { suffix += 1 }
+        if suffix > 0 && CFStringIsSurrogateLowCharacter(oldNS.character(at: oldNS.length - suffix)) { suffix -= 1 }
+        let range = NSRange(location: prefix, length: oldNS.length - prefix - suffix)
+        let replacement = newNS.substring(with: NSRange(location: prefix, length: newNS.length - prefix - suffix))
+        return (range, replacement)
     }
 
     /// The keyboard's autocorrect and inline predictions write at the caret too; while the partner

@@ -63,6 +63,8 @@ struct SourceTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: MarkdownEditingTextView, context: Context) {
+        context.coordinator.isUpdatingFromSwiftUI = true
+        defer { context.coordinator.isUpdatingFromSwiftUI = false }
         context.coordinator.parent = self
         controller.attach(textView)
         if context.coordinator.lastBaseURL != nil, context.coordinator.lastBaseURL != baseURL {
@@ -121,6 +123,7 @@ struct SourceTextView: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: SourceTextView
         let retainer = EditorViewRetainer<MarkdownEditingTextView>()
+        var isUpdatingFromSwiftUI = false
         var lastTextSize: CGFloat = EditorTypography.defaultTextSize
         var lastBaseURL: URL?
         /// The writing partner (#109). In Source the text view's text is the raw Markdown.
@@ -148,19 +151,26 @@ struct SourceTextView: UIViewRepresentable {
                 textView?.applyMarkdownEdit(MarkdownEdit(text: text, selection: selection), actionName: actionName)
             }
             host.flavor = { [weak self] in self?.parent.flavor ?? .github }
+            host.cachedDocument = { [weak self, weak textView] text in
+                let flavor = self?.parent.flavor ?? textView?.flavor ?? .github
+                return textView?.cachedDocument(for: text, flavor: flavor)
+            }
             partnerHost = host
             textView.writingPartner = writingPartner
             textView.writingPartnerHost = host
         }
 
         func textViewDidChange(_ textView: UITextView) {
+            guard !isUpdatingFromSwiftUI else { return }
             parent.text = textView.text
             if let host = partnerHost, !host.isApplyingPartnerEdit { writingPartner.didChange(in: host) }
             (textView as? MarkdownEditingTextView)?.refreshFormattingBarState()
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
-            if let textView = textView as? MarkdownEditingTextView, !textView.isApplyingEdit, let host = partnerHost {
+            guard !isUpdatingFromSwiftUI else { return }
+            if let textView = textView as? MarkdownEditingTextView, !textView.isApplyingEdit,
+               let host = partnerHost, !host.isApplyingPartnerEdit {
                 writingPartner.selectionDidChange(in: host)
             }
             (textView as? MarkdownEditingTextView)?.refreshFormattingBarState()
@@ -169,26 +179,41 @@ struct SourceTextView: UIViewRepresentable {
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
             // UIKit's smart punctuation mustn't rewrite Swash's own edits (GOTCHAS #126)
             if let editing = textView as? MarkdownEditingTextView, !editing.isOwnEditChange(range, replacement: replacement) { return false }
-            if let textView = textView as? MarkdownEditingTextView, !textView.isApplyingEdit, textView.markedTextRange == nil,
-               !textView.isWritingToolsActive, let host = partnerHost {
+            guard let textView = textView as? MarkdownEditingTextView, !isUpdatingFromSwiftUI,
+                  !textView.isApplyingEdit, textView.markedTextRange == nil else { return true }
+            if parent.formattingEnabled {
+                let current = textView.text ?? ""
+                var edit: MarkdownEdit?
+                var actionName = ""
+                if replacement == "\n", range.length == 0 {
+                    edit = MarkdownEditingCommands.newline(
+                        text: current,
+                        selection: range,
+                        document: textView.cachedDocument(for: current, flavor: parent.flavor)
+                    )
+                    actionName = "Typing"
+                } else if replacement.isEmpty, range.length == 1, textView.selectedRange.length == 0 {
+                    // Backspace at the start of a list item, heading or quote removes its marker
+                    edit = MarkdownEditingCommands.backspace(
+                        text: current,
+                        selection: NSRange(location: range.location + 1, length: 0),
+                        document: textView.cachedDocument(for: current, flavor: parent.flavor)
+                    )
+                    actionName = "Delete"
+                }
+                if let edit {
+                    if !textView.isWritingToolsActive, let host = partnerHost {
+                        let diff = IOSWritingPartnerHost.rawDiff(from: current, to: edit.text)
+                        writingPartner.willType(diff.replacement, inRaw: diff.range, host: host)
+                    }
+                    textView.applyMarkdownEdit(edit, actionName: actionName)
+                    return false
+                }
+            }
+            if !textView.isWritingToolsActive, let host = partnerHost {
                 writingPartner.willType(replacement, inRaw: range, host: host)
             }
-            guard parent.formattingEnabled, let textView = textView as? MarkdownEditingTextView,
-                  !textView.isApplyingEdit, textView.markedTextRange == nil else { return true }
-            let current = textView.text ?? ""
-            var edit: MarkdownEdit?
-            var actionName = ""
-            if replacement == "\n", range.length == 0 {
-                edit = MarkdownEditingCommands.newline(text: current, selection: range)
-                actionName = "Typing"
-            } else if replacement.isEmpty, range.length == 1, textView.selectedRange.length == 0 {
-                // Backspace at the start of a list item, heading or quote removes its marker
-                edit = MarkdownEditingCommands.backspace(text: current, selection: NSRange(location: range.location + 1, length: 0))
-                actionName = "Delete"
-            }
-            guard let edit = edit else { return true }
-            textView.applyMarkdownEdit(edit, actionName: actionName)
-            return false
+            return true
         }
 
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {

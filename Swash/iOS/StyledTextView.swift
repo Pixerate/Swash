@@ -164,6 +164,7 @@ struct StyledTextView: UIViewRepresentable {
         }
 
         private var cachedOffsetMap: AttachmentOffsetMap?
+        private var cachedParsedDocument: (text: String, flavor: MarkdownFlavor, document: MarkdownDocument)?
         /// The writing partner (#109): the Mac's session, with this editor as its host.
         let writingPartner = WritingPartnerSession()
         private(set) var partnerHost: IOSWritingPartnerHost?
@@ -233,9 +234,22 @@ struct StyledTextView: UIViewRepresentable {
                 self.applyEdit(in: textView, newRawText: text, rawSelection: selection, actionName: actionName)
             }
             host.flavor = { [weak self] in self?.parent.flavor ?? .github }
+            host.cachedDocument = { [weak self, weak textView] text in
+                if let doc = self?.cachedDocument(for: text) { return doc }
+                let flavor = self?.parent.flavor ?? textView?.flavor ?? .github
+                return textView?.cachedDocument(for: text, flavor: flavor)
+            }
             partnerHost = host
             textView.writingPartner = writingPartner
             textView.writingPartnerHost = host
+        }
+
+        private func cachedDocument(for text: String) -> MarkdownDocument? {
+            let flavor = parent.flavor
+            if let cached = cachedParsedDocument, cached.flavor == flavor, cached.text == text {
+                return cached.document
+            }
+            return textView?.cachedDocument(for: text, flavor: flavor)
         }
 
         /// The person's change landed (not Swash's own edits, nor the partner's).
@@ -307,6 +321,10 @@ struct StyledTextView: UIViewRepresentable {
             let raw = swashRawMarkdown(from: textView.textStorage)
             let selection = rawRange(forStorage: textView.selectedRange, in: textView)
             guard let edit = command(raw, selection) else { return false }
+            if !isUpdatingFromSwiftUI, !textView.isWritingToolsActive, let host = partnerHost {
+                let diff = IOSWritingPartnerHost.rawDiff(from: raw, to: edit.text)
+                writingPartner.willType(diff.replacement, inRaw: diff.range, host: host)
+            }
             applyEdit(in: textView, newRawText: edit.text, rawSelection: edit.selection, actionName: actionName)
             return true
         }
@@ -392,11 +410,29 @@ struct StyledTextView: UIViewRepresentable {
             }
             guard let textView = textView as? StyledUITextView, !textView.isApplyingEdit, !isHighlighting,
                   textView.markedTextRange == nil else { return true }
+            textView.dismissBlockMenu()
+            if replacement == "\n", range.length == 0 {
+                let handled = applyStructuralEdit(in: textView, actionName: "New Line") {
+                    MarkdownEditingCommands.newline(text: $0, selection: $1, document: cachedDocument(for: $0))
+                }
+                if handled {
+                    partnerDidChange(textView)
+                    return false
+                }
+            }
+            if replacement.isEmpty, range.length == 1, textView.selectedRange.length == 0 {
+                let handled = applyStructuralEdit(in: textView, actionName: "Delete") {
+                    MarkdownEditingCommands.backspace(text: $0, selection: $1, markersHidden: true, document: cachedDocument(for: $0))
+                }
+                if handled {
+                    partnerDidChange(textView)
+                    return false
+                }
+            }
             // The person's own typing, for the writing partner (GOTCHAS #78): not SwiftUI updates or Writing Tools
             if !isUpdatingFromSwiftUI, !textView.isWritingToolsActive, let host = partnerHost {
                 writingPartner.willType(replacement, inRaw: rawRange(forStorage: range, in: textView), host: host)
             }
-            textView.dismissBlockMenu()
             if replacement == "/", range.length == 0 {
                 let raw = swashRawMarkdown(from: textView.textStorage)
                 let rawLocation = rawRange(forStorage: range, in: textView).location
@@ -410,18 +446,6 @@ struct StyledTextView: UIViewRepresentable {
                     }
                 }
                 return true
-            }
-            if replacement == "\n", range.length == 0 {
-                let handled = applyStructuralEdit(in: textView, actionName: "New Line") { MarkdownEditingCommands.newline(text: $0, selection: $1) }
-                if handled { partnerDidChange(textView) }
-                return !handled
-            }
-            if replacement.isEmpty, range.length == 1, textView.selectedRange.length == 0 {
-                let handled = applyStructuralEdit(in: textView, actionName: "Delete") {
-                    MarkdownEditingCommands.backspace(text: $0, selection: $1, markersHidden: true)
-                }
-                if handled { partnerDidChange(textView) }
-                return !handled
             }
             return true
         }
@@ -449,7 +473,9 @@ struct StyledTextView: UIViewRepresentable {
                 centerCaret(in: styled)
                 styled.refreshFormattingBarState()
                 // The Formatting voice tidies a block once the caret has left it (#113)
-                if !styled.isApplyingEdit, let host = partnerHost { writingPartner.selectionDidChange(in: host) }
+                if !styled.isApplyingEdit, let host = partnerHost, !host.isApplyingPartnerEdit {
+                    writingPartner.selectionDidChange(in: host)
+                }
                 scheduleInsertAffordanceTimer(in: styled)
             }
         }
@@ -669,6 +695,7 @@ struct StyledTextView: UIViewRepresentable {
             storage.setAttributes(baseAttributes, range: NSRange(location: 0, length: storage.length))
 
             let document = MarkdownDocument.parse(rawText, flavor: parent.flavor)
+            cachedParsedDocument = (rawText, parent.flavor, document)
             let styler = MarkdownEditorStyler(storage: storage, document: document)
             styler.typography = parent.typography
             configureRichPreviews(styler, for: textView)
@@ -693,6 +720,7 @@ struct StyledTextView: UIViewRepresentable {
             let rawText = swashRawMarkdown(from: storage)
             let raw = rawText as NSString
             let document = MarkdownDocument.parse(rawText, flavor: parent.flavor)
+            cachedParsedDocument = (rawText, parent.flavor, document)
             let blocks = document.root.children
             let current = Self.blockSummaries(document, raw: raw)
 
