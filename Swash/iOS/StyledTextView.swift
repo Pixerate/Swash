@@ -1250,7 +1250,7 @@ final class StyledUITextView: MarkdownEditingTextView {
             let effectiveContentX = geometry.contentX
             let boxCenter = CGPoint(x: box.midX, y: box.midY)
 
-            let hitTargetSize: CGFloat = max(44.0, boxSize + 16.0)
+            let hitTargetSize = ListMarkerRenderer.checkboxMetrics(for: geometry.font).hitTarget
             let minX = min(boxCenter.x - hitTargetSize / 2.0, effectiveContentX - max(44.0, boxSize + 12.0))
             let maxX = min(boxCenter.x + hitTargetSize / 2.0, effectiveContentX + 4.0)
             let minY = boxCenter.y - hitTargetSize / 2.0

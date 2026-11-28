@@ -4,7 +4,7 @@
 //
 //  TextKit 1 layout manager for the iOS Edit Text editor. It draws what the macOS
 //  SwashLayoutManager and NSTextBlock draw there: quote, alert and code boxes and rules
-//  (`.blockDecorations`), list bullets and checkboxes, code-block language badges, alert icons and
+//  (`.blockDecorations`), list bullets and checkboxes (SF Symbols), code-block language badges, alert icons and
 //  rendered math and Mermaid previews.
 //
 
@@ -125,60 +125,17 @@ final class StyledLayoutManager: NSLayoutManager {
                 context.setAlpha(alpha)
             }
 
-            if marker.isTask {
-                let metrics = ListMarkerRenderer.checkboxMetrics(for: textFont)
-                let boxRect = markerRect
-
-                if marker.isChecked {
-                    let baseAccent = marker.color ?? self.themeAccentColor
-                    let fillColor = ListMarkerRenderer.accessibleColor(for: baseAccent, on: canvasBg, traits: traits, minContrast: 3.0)
-                    let fillPath = UIBezierPath(roundedRect: boxRect, cornerRadius: metrics.cornerRadius)
-                    fillColor.setFill()
-                    fillPath.fill()
-
-                    let checkPath = UIBezierPath()
-                    checkPath.move(to: CGPoint(x: boxRect.minX + boxRect.width * 0.26, y: boxRect.minY + boxRect.height * 0.52))
-                    checkPath.addLine(to: CGPoint(x: boxRect.minX + boxRect.width * 0.42, y: boxRect.minY + boxRect.height * 0.70))
-                    checkPath.addLine(to: CGPoint(x: boxRect.minX + boxRect.width * 0.74, y: boxRect.minY + boxRect.height * 0.32))
-                    checkPath.lineWidth = max(1.5, round(metrics.boxSize * 0.12))
-                    checkPath.lineCapStyle = .round
-                    checkPath.lineJoinStyle = .round
-                    canvasBg.resolvedColor(with: traits).setStroke()
-                    checkPath.stroke()
-                } else {
-                    let baseBorder = marker.color ?? UIColor.secondaryLabel
-                    let strokeColor = ListMarkerRenderer.accessibleColor(for: baseBorder, on: canvasBg, traits: traits, minContrast: 3.0)
-                    let strokeRect = boxRect.insetBy(dx: metrics.lineWidth / 2.0, dy: metrics.lineWidth / 2.0)
-                    let strokePath = UIBezierPath(roundedRect: strokeRect, cornerRadius: metrics.cornerRadius)
-                    strokePath.lineWidth = metrics.lineWidth
-                    strokeColor.setStroke()
-                    strokePath.stroke()
-                }
-            } else if let bulletKind = marker.bulletKind {
-                let metrics = ListMarkerRenderer.bulletMetrics(for: textFont)
-                let bulletRect = markerRect
-                let baseColor = marker.color ?? UIColor.secondaryLabel
-                let bulletColor = ListMarkerRenderer.accessibleColor(for: baseColor, on: canvasBg, traits: traits, minContrast: 3.0)
-
-                switch bulletKind {
-                case .disc:
-                    let discPath = UIBezierPath(ovalIn: bulletRect)
-                    bulletColor.setFill()
-                    discPath.fill()
-                case .ring:
-                    let ringRect = bulletRect.insetBy(dx: metrics.ringStrokeWidth / 2.0, dy: metrics.ringStrokeWidth / 2.0)
-                    let ringPath = UIBezierPath(ovalIn: ringRect)
-                    ringPath.lineWidth = metrics.ringStrokeWidth
-                    bulletColor.setStroke()
-                    ringPath.stroke()
-                case .square:
-                    let squarePath = UIBezierPath(roundedRect: bulletRect, cornerRadius: metrics.squareCornerRadius)
-                    bulletColor.setFill()
-                    squarePath.fill()
-                }
+            if let image = ListMarkerRenderer.symbolImage(for: marker, font: textFont) {
+                // SF Symbols, like Reminders' circles and the system's list bullets (#184)
+                let base: UIColor = marker.isChecked
+                    ? (marker.color ?? self.themeAccentColor)
+                    : ListMarkerRenderer.neutralColor(for: traits)
+                let tint = ListMarkerRenderer.accessibleColor(for: base, on: canvasBg, traits: traits, minContrast: 3.0)
+                // UIImage drawing sets its own alpha, so the Focus Mode fade is passed in rather than taken from the context
+                image.withTintColor(tint, renderingMode: .alwaysOriginal).draw(in: markerRect, blendMode: .normal, alpha: alpha)
             } else {
                 let numberFont = ListMarkerRenderer.numberFont(for: textFont)
-                let baseColor = marker.color ?? UIColor.secondaryLabel
+                let baseColor = marker.color ?? ListMarkerRenderer.neutralColor(for: traits)
                 let numberColor = ListMarkerRenderer.accessibleColor(for: baseColor, on: canvasBg, traits: traits, minContrast: 3.0)
                 let attributes: [NSAttributedString.Key: Any] = [
                     .font: numberFont,
@@ -195,49 +152,7 @@ final class StyledLayoutManager: NSLayoutManager {
 
     /// Where a list marker's item text sits, in text-container coordinates, for drawing the marker and hit-testing it.
     func listMarkerGeometry(forMarkerGlyphs markerGlyphs: NSRange, indent: CGFloat) -> ListMarkerGeometry? {
-        guard let textStorage, markerGlyphs.length > 0, markerGlyphs.location < numberOfGlyphs else { return nil }
-        var lineGlyphs = NSRange()
-        let lineRect = lineFragmentRect(forGlyphAt: markerGlyphs.location, effectiveRange: &lineGlyphs)
-
-        // A hidden marker is set in a 0.01 pt font (MarkdownEditorStyler.hide), so it can't stand in for the item's text
-        func visibleFont(atGlyph glyph: Int) -> UIFont? {
-            let char = characterIndexForGlyph(at: glyph)
-            guard char < textStorage.length, let font = textStorage.attribute(.font, at: char, effectiveRange: nil) as? UIFont,
-                  font.pointSize >= 1 else { return nil }
-            return font
-        }
-
-        // The item's first visible glyph on this line: an empty item at the end of the document has none, and
-        // its content glyph clamps to the hidden marker itself
-        var anchorGlyph: Int?
-        var anchorFont: UIFont?
-        let searchStart = max(NSMaxRange(markerGlyphs), lineGlyphs.location)
-        if searchStart < NSMaxRange(lineGlyphs) {
-            for glyph in searchStart..<NSMaxRange(lineGlyphs) {
-                if let font = visibleFont(atGlyph: glyph) {
-                    anchorGlyph = glyph
-                    anchorFont = font
-                    break
-                }
-            }
-        }
-        let textFont = anchorFont ?? defaultBodyFont
-
-        // Without visible text, the item's text would start where the (practically zero-width) hidden marker sits
-        let contentX = lineRect.minX + location(forGlyphAt: anchorGlyph ?? (NSMaxRange(markerGlyphs) - 1)).x
-        let effectiveContentX = contentX > 0 ? contentX : indent
-
-        let baselineY: CGFloat
-        if let anchorGlyph, location(forGlyphAt: anchorGlyph).y > 1 {
-            baselineY = lineRect.minY + location(forGlyphAt: anchorGlyph).y
-        } else {
-            // Nothing visible to measure (an empty `- ` or `- [ ] ` item): centre the body font's line in the
-            // line fragment, keeping the marker inside its own line rather than on its top edge (#190)
-            let used = lineFragmentUsedRect(forGlyphAt: markerGlyphs.location, effectiveRange: nil)
-            let band = used.height >= textFont.lineHeight * 0.5 ? used : lineRect
-            baselineY = band.midY + (textFont.ascender + textFont.descender) / 2.0
-        }
-        return ListMarkerGeometry(lineRect: lineRect, font: textFont, baselineY: baselineY, contentX: effectiveContentX)
+        listMarkerGeometry(forMarkerGlyphs: markerGlyphs, indent: indent, defaultFont: defaultBodyFont)
     }
 
     private var defaultBodyFont: UIFont {
@@ -368,39 +283,60 @@ final class StyledLayoutManager: NSLayoutManager {
     }
 }
 
-/// Where a list item's text sits on its first line, in text-container coordinates.
-struct ListMarkerGeometry {
-    let lineRect: CGRect
-    /// The item text's font (the body font for an empty item).
-    let font: UIFont
-    let baselineY: CGFloat
-    /// The x where the item's text starts; markers are drawn just left of it.
-    let contentX: CGFloat
-
-    /// The visual centre of the item's text (half its cap height above the baseline).
-    var midY: CGFloat { baselineY - font.capHeight / 2.0 }
-}
-
-/// Vector geometry, dynamic scaling and accessible contrast calculation for list markers.
+/// SF Symbol choice, sizing and accessible contrast for list markers.
 enum ListMarkerRenderer {
-    /// The checkbox square for a task item.
-    static func checkboxRect(_ geometry: ListMarkerGeometry) -> CGRect {
-        let boxSize = checkboxMetrics(for: geometry.font).boxSize
-        return CGRect(x: geometry.contentX - boxSize - 6.0, y: geometry.midY - boxSize / 2.0, width: boxSize, height: boxSize)
+    /// The SF Symbol a marker is drawn with (see `ListMarkerStyle`), or nil for an ordered item.
+    static func symbolName(for marker: ListMarkerInfo) -> String? {
+        ListMarkerStyle.symbolName(for: marker)
     }
 
-    /// The font an ordered item's number is drawn in.
+    /// The symbol configuration for a marker, sized from its line's font so it follows Dynamic Type and
+    /// the Typography setting.
+    static func symbolConfiguration(for marker: ListMarkerInfo, font: UIFont) -> UIImage.SymbolConfiguration {
+        let pointSize = ListMarkerStyle.symbolPointSize(for: marker, fontSize: font.pointSize)
+        return marker.isTask
+            ? UIImage.SymbolConfiguration(pointSize: pointSize, weight: .regular, scale: .medium)
+            : UIImage.SymbolConfiguration(pointSize: pointSize, weight: .bold, scale: .small)
+    }
+
+    /// The (untinted) symbol image for a marker, or nil for an ordered item.
+    static func symbolImage(for marker: ListMarkerInfo, font: UIFont) -> UIImage? {
+        guard let name = symbolName(for: marker) else { return nil }
+        return UIImage(systemName: name, withConfiguration: symbolConfiguration(for: marker, font: font))
+    }
+
+    /// The size a marker's symbol draws at (zero for an ordered item).
+    static func symbolSize(for marker: ListMarkerInfo, font: UIFont) -> CGSize {
+        symbolImage(for: marker, font: font)?.size ?? .zero
+    }
+
+    /// The checkbox circle's size and its tap target (at least 44 pt, as the HIG asks).
+    static func checkboxMetrics(for font: UIFont) -> (size: CGSize, hitTarget: CGFloat) {
+        let size = symbolSize(for: ListMarkerInfo(text: "☐", indent: 0), font: font)
+        return (size, max(44.0, max(size.width, size.height) + 16.0))
+    }
+
+    /// The colour of unticked checkboxes, bullets and numbers: `secondaryLabel`, or `label` under Increase Contrast.
+    static func neutralColor(for traits: UITraitCollection) -> UIColor {
+        traits.accessibilityContrast == .high ? .label : .secondaryLabel
+    }
+
+    /// The checkbox circle for a task item, just left of the item's text and centred on its first line.
+    static func checkboxRect(_ geometry: ListMarkerGeometry) -> CGRect {
+        ListMarkerStyle.checkboxRect(size: checkboxMetrics(for: geometry.font).size, geometry: geometry)
+    }
+
+    /// The font an ordered item's number is drawn in, with monospaced digits so numbers line up.
     static func numberFont(for font: UIFont) -> UIFont {
-        UIFont.systemFont(ofSize: max(12.0, font.pointSize - 1.0), weight: .regular)
+        UIFont.monospacedDigitSystemFont(ofSize: max(12.0, font.pointSize - 1.0), weight: .regular)
     }
 
     /// The rect a marker is drawn in: the checkbox, the bullet, or the number's text box.
     static func markerRect(for marker: ListMarkerInfo, geometry: ListMarkerGeometry) -> CGRect {
         if marker.isTask { return checkboxRect(geometry) }
         if marker.bulletKind != nil {
-            let bulletSize = bulletMetrics(for: geometry.font).bulletSize
-            let centerX = checkboxRect(geometry).midX
-            return CGRect(x: centerX - bulletSize / 2.0, y: geometry.midY - bulletSize / 2.0, width: bulletSize, height: bulletSize)
+            return ListMarkerStyle.bulletRect(size: symbolSize(for: marker, font: geometry.font),
+                                              checkboxSize: checkboxMetrics(for: geometry.font).size, geometry: geometry)
         }
         let numberFont = numberFont(for: geometry.font)
         let size = (marker.text as NSString).size(withAttributes: [.font: numberFont])
@@ -421,79 +357,21 @@ enum ListMarkerRenderer {
     }
 
     static func relativeLuminance(r: CGFloat, g: CGFloat, b: CGFloat) -> CGFloat {
-        func channel(_ val: CGFloat) -> CGFloat {
-            val <= 0.04045 ? val / 12.92 : pow((val + 0.055) / 1.055, 2.4)
-        }
-        return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+        ListMarkerStyle.relativeLuminance(r: r, g: g, b: b)
     }
 
     static func contrastRatio(_ l1: CGFloat, _ l2: CGFloat) -> CGFloat {
-        let lighter = max(l1, l2)
-        let darker = min(l1, l2)
-        return (lighter + 0.05) / (darker + 0.05)
+        ListMarkerStyle.contrastRatio(l1, l2)
     }
 
-    /// Dynamically adjusts foreground color to guarantee at least `minContrast` (default 3.0:1) against `background` under `traits`.
+    /// `foreground`, adjusted if needed to reach at least `minContrast` (default 3:1) against `background` under `traits`.
     static func accessibleColor(for foreground: UIColor, on background: UIColor, traits: UITraitCollection, minContrast: CGFloat = 3.0) -> UIColor {
-        let bgResolved = background.resolvedColor(with: traits)
         let fgResolved = foreground.resolvedColor(with: traits)
-        let (bgR, bgG, bgB, _) = rgbaComponents(for: bgResolved, traits: traits)
+        let (bgR, bgG, bgB, _) = rgbaComponents(for: background, traits: traits)
         let (fgR, fgG, fgB, fgA) = rgbaComponents(for: fgResolved, traits: traits)
-        let bgLum = relativeLuminance(r: bgR, g: bgG, b: bgB)
-        let fgLum = relativeLuminance(r: fgR, g: fgG, b: fgB)
-
-        let currentContrast = contrastRatio(bgLum, fgLum)
-        if currentContrast >= minContrast {
-            return fgResolved
-        }
-
-        let maxWhiteContrast = contrastRatio(bgLum, 1.0)
-        let maxBlackContrast = contrastRatio(bgLum, 0.0)
-        let targetIsWhite = maxWhiteContrast >= minContrast && (fgLum >= bgLum || maxBlackContrast < minContrast)
-
-        let targetR: CGFloat = targetIsWhite ? 1.0 : 0.0
-        let targetG: CGFloat = targetIsWhite ? 1.0 : 0.0
-        let targetB: CGFloat = targetIsWhite ? 1.0 : 0.0
-
-        var low: CGFloat = 0.0
-        var high: CGFloat = 1.0
-        var bestR = fgR
-        var bestG = fgG
-        var bestB = fgB
-
-        for _ in 0..<16 {
-            let mid = (low + high) / 2.0
-            let r = fgR + (targetR - fgR) * mid
-            let g = fgG + (targetG - fgG) * mid
-            let b = fgB + (targetB - fgB) * mid
-            let lum = relativeLuminance(r: r, g: g, b: b)
-            let cr = contrastRatio(bgLum, lum)
-            if cr >= minContrast {
-                bestR = r
-                bestG = g
-                bestB = b
-                high = mid
-            } else {
-                low = mid
-            }
-        }
-        return UIColor(red: bestR, green: bestG, blue: bestB, alpha: fgA)
-    }
-
-    /// Checkbox dimensions scaled proportionally to font size.
-    static func checkboxMetrics(for font: UIFont) -> (boxSize: CGFloat, cornerRadius: CGFloat, lineWidth: CGFloat) {
-        let boxSize = round(max(14.0, font.pointSize * 0.95))
-        let cornerRadius = max(2.0, round(boxSize * 0.22))
-        let lineWidth = max(1.2, round(boxSize * 0.08))
-        return (boxSize, cornerRadius, lineWidth)
-    }
-
-    /// Bullet dimensions scaled proportionally to font size.
-    static func bulletMetrics(for font: UIFont) -> (bulletSize: CGFloat, ringStrokeWidth: CGFloat, squareCornerRadius: CGFloat) {
-        let bulletSize = round(max(5.0, font.pointSize * 0.35))
-        let ringStrokeWidth = max(1.2, round(bulletSize * 0.22))
-        let squareCornerRadius = max(1.0, round(bulletSize * 0.18))
-        return (bulletSize, ringStrokeWidth, squareCornerRadius)
+        let adjusted = ListMarkerStyle.contrastAdjusted((fgR, fgG, fgB), on: (bgR, bgG, bgB), minContrast: minContrast)
+        if adjusted == (fgR, fgG, fgB) { return fgResolved }
+        return UIColor(red: adjusted.r, green: adjusted.g, blue: adjusted.b, alpha: fgA)
     }
 }
 #endif

@@ -22,7 +22,7 @@ Use the neon palette for UI chrome, and keep ink and parchment for sticker art. 
 | Role | Light | Dark | Notes |
 | --- | --- | --- | --- |
 | Accent (primary fuchsia) | `#C800DE` | `#EE6BFF` | Use the darker value on light backgrounds so it has enough contrast; it is Pixerate's `--primary`. |
-| Accent gradient | `#EC4899` → `#E12AFB` → `#8E51FF` | same | For small fills only: a ticked checkbox, active states. |
+| Accent gradient | `#EC4899` → `#E12AFB` → `#8E51FF` | same | For small fills only, such as active states (not list markers, which are native). |
 | Deep indigo | `#4338CA` | `#6D63F0` | Gradient end and secondary accent. |
 | Muted marker | `secondaryLabel` | `secondaryLabel` | Unticked boxes and bullets at rest, so the text stays the focus. |
 
@@ -30,25 +30,23 @@ Use the neon palette for UI chrome, and keep ink and parchment for sticker art. 
 
 ## Shapes
 
-- **Pixel square:** a rounded square whose corner radius is about 28% of its side, the same shape as the pixels in the icon. It is Swash's base shape for small markers.
-- **Swash stroke:** a calligraphic stroke that is thin on one side and thick on the other, with tapered ends. Use it for ticks and flourishes, not for outlines.
+- **Pixel square:** a rounded square whose corner radius is about 28% of its side, the same shape as the pixels in the icon. It is Swash's base shape for small decoration (not list markers, which are native SF Symbols).
+- **Swash stroke:** a calligraphic stroke that is thin on one side and thick on the other, with tapered ends. Use it for flourishes, not for outlines or list ticks.
 - **Speckles:** tiny round dots or pixel squares. Decoration for art and empty states only, never for inline text markers.
 
 ## Inline Markdown markers
 
-These rules cover what the editors draw for list syntax (`StyledLayoutManager` on iOS; the Mac editor should match):
+List markers in the editors look native, not on-brand: they're SF Symbols, like Reminders and the system's lists. Both editors draw them the same way (`StyledLayoutManager` on iOS, `SwashLayoutManager` on the Mac; the shared choices are `ListMarkerStyle` in `EditorSupport.swift`):
 
-- **Size scales with the body font.** Never use a fixed point size. Take the size from the line's font: about 0.9× the cap height for checkboxes and 0.35× the x-height for bullets.
-- **Centre markers on the first line's x-height** (or on the cap height for checkboxes), not on the line fragment. Otherwise they sit low next to large fonts or wrapped lines.
-- **Task checkbox, unticked:** a pixel-square outline, 1.5 pt stroke, in `secondaryLabel`.
-- **Task checkbox, ticked:** a pixel square filled with the accent gradient and a white swash-stroke tick. Strike through or dim the item's text as the editor does today.
-- **Bullet, level 1:** a filled pixel square in the accent colour, at 0.8 opacity.
-- **Bullet, level 2:** a pixel-square outline.
-- **Bullet, level 3 and deeper:** a small filled circle in `secondaryLabel`.
-- **Numbered lists:** keep the text numerals, in the body font's monospaced digits, coloured `secondaryLabel`.
-- **Tap targets:** at least 44×44 pt for checkboxes on iOS, even though the drawn box is smaller.
-- **Respect Focus mode:** markers fade with their paragraph's `focusAlpha`.
-- **Accessibility:** markers must meet 3:1 contrast against the editor background in both appearances and with Increase Contrast. Under Increase Contrast, use `label` instead of `secondaryLabel`.
+- **Task, unticked:** `circle`, a Reminders-style circle, in `secondaryLabel`.
+- **Task, ticked:** `checkmark.circle.fill` in the theme accent. Dim the item's text as the editor does today.
+- **Bullet, level 1:** `circle.fill`. **Level 2:** `circle`. **Level 3 and deeper:** `square.fill`. All small (the symbol's small scale, at about 0.42× the line's font size, bold so the ring holds up) and in `secondaryLabel`, centred in the checkbox column.
+- **Numbered lists:** keep the text numerals, in the system font's monospaced digits, coloured `secondaryLabel`.
+- **Size comes from the line's font.** Never use a fixed point size: the symbol configuration takes its point size from the item's font, so markers follow Dynamic Type, the Typography setting and headings. A checkbox is as tall as the text (medium scale, regular weight).
+- **Centre markers on the first line:** on the item text's cap height, not on the line fragment, so they don't sit low next to large fonts or wrapped lines. An empty item (`- ` or `- [ ] `, often the last line) has no text to measure, so the body font is centred in its line instead.
+- **Accessibility:** markers must meet 3:1 contrast against the editor background in both appearances (they're adjusted when a theme's colours fall short). Under Increase Contrast, use `label` instead of `secondaryLabel`.
+- **Respect Focus mode:** markers fade with their paragraph.
+- **Tap targets:** on iOS a checkbox's tap target is at least 44×44 pt, centred on the drawn circle; on the Mac a click on the circle or just around it toggles the task.
 
 ## Voice
 
