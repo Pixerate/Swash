@@ -658,7 +658,7 @@ nonisolated struct PunctuateVoice: WritingPartner, Sendable {
             }
             let options = TextMechanicsOptions(
                 profile: flavor == .slack ? .chat : .prose,
-                enabled: { isActive(PunctuationRule($0)) },
+                enabled: { $0 == .terminalPunctuation ? false : isActive(PunctuationRule($0)) },
                 enterEndedLine: enterEndedLine,
                 spelling: spellingCorrection,
                 tagger: TextMechanics.naturalLanguageTagger
@@ -674,7 +674,22 @@ nonisolated struct PunctuateVoice: WritingPartner, Sendable {
                 baseEdits: baseEdits,
                 isActive: isActive
             )
-            return GrammarVoice.merge(baseEdits: baseEdits, grammarEdits: grammarEdits)
+            var merged = GrammarVoice.merge(baseEdits: baseEdits, grammarEdits: grammarEdits)
+            if flavor != .slack,
+               boundary >= 0,
+               boundary < ns.length,
+               ns.character(at: boundary) == 0x0A,
+               isActive(.terminalPunctuation),
+               let terminal = terminalPunctuation(
+                   ns: ns,
+                   lineEnd: boundary,
+                   document: document,
+                   enterEndedLine: enterEndedLine,
+                   priorEdits: merged
+               ) {
+                merged.append(terminal)
+            }
+            return merged
         }
     }
 
@@ -828,6 +843,542 @@ nonisolated extension PunctuateVoice {
         }
         return (before, after)
     }
+
+    // MARK: Terminal Punctuation & Clause Disambiguation
+
+    struct ClauseToken: Equatable, Sendable {
+        var text: String
+        var lower: String
+        var range: NSRange
+    }
+
+    private static let unambiguousQuestionWords: Set<String> = [
+        "who", "what", "why", "how", "which", "whose", "whom",
+        "who's", "what's", "why's", "how's",
+        "when's", "where's", "when'd", "where'd", "when'll", "where'll", "when're", "where're", "when've", "where've",
+        "is", "are", "am", "was", "were", "do", "does", "did", "can", "could", "would", "should", "will", "shall",
+        "may", "might", "have", "has", "had",
+        "isn't", "aren't", "wasn't", "weren't", "don't", "doesn't", "didn't", "can't", "couldn't", "won't",
+        "wouldn't", "shouldn't", "mustn't", "haven't", "hasn't", "hadn't",
+    ]
+
+    private static let inversionVerbs: Set<String> = [
+        "is", "are", "am", "was", "were", "isn't", "aren't", "wasn't", "weren't", "ain't",
+        "do", "does", "did", "don't", "doesn't", "didn't",
+        "can", "could", "will", "would", "shall", "should", "may", "might", "must",
+        "can't", "couldn't", "won't", "wouldn't", "shan't", "shouldn't", "mustn't",
+        "have", "has", "had", "haven't", "hasn't", "hadn't",
+    ]
+
+    private static let nonQuestionAdverbs: Set<String> = [
+        "there", "here", "now", "then", "once", "only", "even", "just", "still", "already", "always", "never", "often", "sometimes",
+    ]
+
+    private static let whModifierAdverbs: Set<String> = [
+        "exactly", "else", "ever", "precisely", "specifically", "roughly", "actually", "really", "typically", "usually", "normally", "generally",
+    ]
+
+    private static let whPrepositions: Set<String> = [
+        "in", "on", "at", "from", "around", "under", "over", "inside", "within", "across", "along",
+        "near", "by", "for", "of", "through", "throughout", "during", "after", "before", "between", "among",
+    ]
+
+    private static let whDeterminers: Set<String> = [
+        "the", "this", "that", "these", "those", "a", "an", "our", "your", "my", "their", "its", "his", "her",
+        "each", "every", "any", "which", "what",
+    ]
+
+    /// A full stop or question mark for the line ended at `lineEnd` (the newline): inspects only
+    /// the final sentence on the line (after any mid-line `.`, `?`, or `!` sentence boundary),
+    /// requires at least 4 words in that final sentence, and distinguishes declarative `"When"` /
+    /// `"Where"` subordinate clauses from genuine questions.
+    static func terminalPunctuation(
+        ns: NSString,
+        lineEnd: Int,
+        document: MarkdownDocument,
+        enterEndedLine: Bool?,
+        priorEdits: [PunctuationEdit] = []
+    ) -> PunctuationEdit? {
+        guard lineEnd > 0 else { return nil }
+        let endedLine = enterEndedLine ?? (lineEnd + 1 >= ns.length || ns.character(at: lineEnd + 1) == 0x0A)
+        guard endedLine else { return nil }
+
+        let last = lineEnd - 1
+        guard let scalar = Unicode.Scalar(ns.character(at: last)), CharacterSet.alphanumerics.contains(scalar) else { return nil }
+
+        var wordStart = lineEnd
+        while wordStart > 0, isWordCharacter(ns.character(at: wordStart - 1)) { wordStart -= 1 }
+        let wordRange = NSRange(location: wordStart, length: lineEnd - wordStart)
+        guard wordRange.length > 0,
+              TextMechanics.isProse(wordRange, ns: ns, document: document),
+              !GrammarVoice.insideUnclosedSpan(before: wordStart, ns: ns) else { return nil }
+
+        let textNode = GrammarVoice.node(at: last, in: document)
+        guard textNode.kind == .text else { return nil }
+        var paragraph = textNode.parent
+        while let current = paragraph, current.kind != .paragraph {
+            if current.kind.isBlock { return nil }
+            paragraph = current.parent
+        }
+        guard let paragraph else { return nil }
+        var ancestor = paragraph.parent
+        while let current = ancestor {
+            switch current.kind {
+            case .listItem, .tableCell, .alert, .footnoteDefinition: return nil
+            default: ancestor = current.parent
+            }
+        }
+
+        var lineStart = lineEnd
+        while lineStart > 0, ns.character(at: lineStart - 1) != 0x0A { lineStart -= 1 }
+        var sentenceStart = lineStart
+        while sentenceStart < lineEnd {
+            let c = ns.character(at: sentenceStart)
+            if c == 0x20 || c == 0x09 || c == 0x3E {
+                sentenceStart += 1
+            } else {
+                break
+            }
+        }
+
+        var i = sentenceStart
+        while i < lineEnd {
+            let mark = ns.character(at: i)
+            if mark == 0x2E || mark == 0x3F || mark == 0x21 {
+                guard i > sentenceStart else { i += 1; continue }
+                if mark == 0x3F || mark == 0x21,
+                   i + 1 < lineEnd,
+                   ns.character(at: i + 1) == 0x3F || ns.character(at: i + 1) == 0x21 {
+                    i += 1
+                    continue
+                }
+                if mark == 0x2E {
+                    let prevChar = ns.character(at: i - 1)
+                    if prevChar == 0x2E || (i + 1 < lineEnd && ns.character(at: i + 1) == 0x2E) {
+                        i += 1
+                        continue
+                    }
+                    if prevChar == 0x20 || prevChar == 0x09 || (prevChar >= 0x30 && prevChar <= 0x39) {
+                        i += 1
+                        continue
+                    }
+                    var prevStart = i
+                    while prevStart > sentenceStart,
+                          isWordCharacter(ns.character(at: prevStart - 1)) || ns.character(at: prevStart - 1) == 0x2E {
+                        prevStart -= 1
+                    }
+                    let prevLower = ns.substring(with: NSRange(location: prevStart, length: i - prevStart)).lowercased()
+                    if GrammarVoice.abbreviations.contains(prevLower) {
+                        i += 1
+                        continue
+                    }
+                    if prevLower.count == 1 && !(prevLower == "i" && prevStart >= sentenceStart + 2) {
+                        i += 1
+                        continue
+                    }
+                }
+                guard isSentenceProsePosition(at: i, in: ns, document: document) else {
+                    i += 1
+                    continue
+                }
+                var after = i + 1
+                while after < lineEnd {
+                    let c = ns.character(at: after)
+                    if c == 0x22 || c == 0x27 || c == 0x201D || c == 0x2019 || c == 0x29 || c == 0x5D || c == 0x2A || c == 0x5F || c == 0x7E {
+                        after += 1
+                    } else {
+                        break
+                    }
+                }
+                guard after < lineEnd, ns.character(at: after) == 0x20 || ns.character(at: after) == 0x09 else {
+                    i += 1
+                    continue
+                }
+                var next = after
+                while next < lineEnd, ns.character(at: next) == 0x20 || ns.character(at: next) == 0x09 {
+                    next += 1
+                }
+                if next < lineEnd {
+                    sentenceStart = next
+                    i = next
+                    continue
+                }
+            }
+            i += 1
+        }
+
+        let sentenceRange = NSRange(location: sentenceStart, length: lineEnd - sentenceStart)
+        var resolvedNS = ns.substring(with: sentenceRange) as NSString
+        let localEdits = priorEdits
+            .filter { $0.range.location >= sentenceRange.location && NSMaxRange($0.range) <= NSMaxRange(sentenceRange) }
+            .sorted { $0.range.location > $1.range.location }
+        for edit in localEdits {
+            let localRange = NSRange(location: edit.range.location - sentenceRange.location, length: edit.range.length)
+            if NSMaxRange(localRange) <= resolvedNS.length {
+                resolvedNS = resolvedNS.replacingCharacters(in: localRange, with: edit.replacement) as NSString
+            }
+        }
+        let finalSentence = stripLeadingQuoteMarkers(resolvedNS as String)
+        guard finalSentenceWordCount(in: finalSentence) >= 4 else { return nil }
+        let replacement = isQuestionClause(finalSentence) ? "?" : "."
+        return PunctuationEdit(range: NSRange(location: lineEnd, length: 0), replacement: replacement, rules: [.terminalPunctuation])
+    }
+
+    private static func isSentenceProsePosition(at location: Int, in ns: NSString, document: MarkdownDocument) -> Bool {
+        guard !GrammarVoice.insideUnclosedSpan(before: location, ns: ns) else { return false }
+        var current: MarkdownNode? = GrammarVoice.node(at: location, in: document)
+        while let n = current {
+            switch n.kind {
+            case .code, .codeBlock, .math, .htmlInline, .htmlBlock, .frontMatter, .image, .table, .tableCell, .tableRow, .linkReferenceDefinition:
+                return false
+            case .link(_, _, let kind):
+                switch kind {
+                case .autolink, .extendedAutolink:
+                    return false
+                case .inline, .reference:
+                    if n.markers.contains(where: { NSLocationInRange(location, $0) }) {
+                        return false
+                    }
+                }
+            default:
+                break
+            }
+            current = n.parent
+        }
+        return true
+    }
+
+    private static func stripLeadingQuoteMarkers(_ text: String) -> String {
+        var idx = text.startIndex
+        while idx < text.endIndex, text[idx] == " " || text[idx] == "\t" || text[idx] == ">" {
+            idx = text.index(after: idx)
+        }
+        return String(text[idx...])
+    }
+
+    private static func finalSentenceWordCount(in sentence: String) -> Int {
+        let strippedLinks = stripLinkDestinations(in: sentence)
+        return strippedLinks.split(whereSeparator: { $0 == " " || $0 == "\t" }).reduce(0) { count, token in
+            let hasAlnum = token.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
+            return count + (hasAlnum ? 1 : 0)
+        }
+    }
+
+    private static func stripLinkDestinations(in text: String) -> String {
+        let ns = text as NSString
+        var out = ""
+        var inBackticks = false
+        var i = 0
+        while i < ns.length {
+            let c = ns.character(at: i)
+            if c == 0x5C, i + 1 < ns.length {
+                out += ns.substring(with: NSRange(location: i, length: 2))
+                i += 2
+                continue
+            }
+            if c == 0x60 {
+                inBackticks.toggle()
+                out.append("`")
+                i += 1
+                continue
+            }
+            if !inBackticks, c == 0x5D, i + 1 < ns.length, ns.character(at: i + 1) == 0x28 {
+                out.append("]")
+                i += 2
+                var depth = 1
+                while i < ns.length, depth > 0 {
+                    let inner = ns.character(at: i)
+                    if inner == 0x5C { i += 2; continue }
+                    if inner == 0x28 { depth += 1 } else if inner == 0x29 { depth -= 1 }
+                    i += 1
+                }
+                continue
+            }
+            let r = ns.rangeOfComposedCharacterSequence(at: i)
+            out += ns.substring(with: r)
+            i = NSMaxRange(r)
+        }
+        return out
+    }
+
+    /// Distinguishes genuine questions from declarative sentences and `"When"` / `"Where"`
+    /// subordinate clauses using clause structure and `NLTagger` lexical classes (with closed-class
+    /// fallbacks when `NLTagger` returns `nil`, such as on the iOS Simulator).
+    static func isQuestionClause(
+        _ clause: String,
+        taggerOverride: (([ClauseToken], String) -> [NLTag?])? = nil
+    ) -> Bool {
+        let trimmed = stripLeadingQuoteMarkers(clause)
+        guard let firstChar = trimmed.first else { return false }
+        if firstChar == "`" || firstChar == "$" || firstChar == "<" { return false }
+
+        let tokens = clauseTokens(in: trimmed)
+        guard let first = tokens.first?.lower, !first.isEmpty else { return false }
+        if unambiguousQuestionWords.contains(first) { return true }
+        guard first == "when" || first == "where" else { return false }
+
+        if tokens.count >= 2 && inversionVerbs.contains(tokens[1].lower) {
+            return true
+        }
+
+        let nsClause = trimmed as NSString
+        let commas = topLevelCommaOffsets(in: trimmed)
+
+        // Parenthetical interruption immediately after "When," / "Where," ("When, if ever, does this happen")
+        if commas.count >= 2 {
+            let beforeFirst = nsClause.substring(to: commas[0])
+            if clauseTokens(in: beforeFirst).count == 1, commas[1] + 1 < nsClause.length {
+                let afterSecond = nsClause.substring(from: commas[1] + 1)
+                if !clauseTokens(in: afterSecond).isEmpty {
+                    let reconstructed = "\(tokens[0].text) \(afterSecond)"
+                    return isQuestionClause(reconstructed, taggerOverride: taggerOverride)
+                }
+            }
+        }
+
+        let leadingClause = commas.first.map { nsClause.substring(to: $0) } ?? trimmed
+        let leadTokens = clauseTokens(in: leadingClause)
+        let leadTags = lexicalTags(for: leadTokens, in: leadingClause, taggerOverride: taggerOverride)
+
+        func isInvertedVerbAfterModifier(at idx: Int) -> Bool {
+            guard idx + 1 < leadTokens.count else { return false }
+            let verb = leadTokens[idx].lower
+            guard inversionVerbs.contains(verb) else { return false }
+            if verb == "do" || verb == "don't" || verb == "have" {
+                let next = leadTokens[idx + 1].lower
+                if ["i", "you", "we", "they"].contains(next) { return true }
+                return idx + 2 < leadTokens.count && leadTags[(idx + 2)...].contains(.verb)
+            }
+            return true
+        }
+
+        if leadTokens.count >= 4 {
+            let w1 = leadTokens[1].lower
+            if !nonQuestionAdverbs.contains(w1),
+               leadTags[1] == .adverb || whModifierAdverbs.contains(w1),
+               isInvertedVerbAfterModifier(at: 2) {
+                return true
+            }
+            if w1 != "to", leadTags[1] == .preposition || whPrepositions.contains(w1) {
+                var k = 2
+                if k < leadTokens.count, leadTags[k] == .determiner || whDeterminers.contains(leadTokens[k].lower) {
+                    k += 1
+                }
+                if k < leadTokens.count, leadTags[k] == .adjective, !inversionVerbs.contains(leadTokens[k].lower) {
+                    k += 1
+                }
+                if k < leadTokens.count,
+                   !inversionVerbs.contains(leadTokens[k].lower),
+                   leadTags[k] == .noun || leadTags[k] == nil || leadTags[k] == .other {
+                    k += 1
+                    if isInvertedVerbAfterModifier(at: k) {
+                        return true
+                    }
+                }
+            }
+        }
+
+        if let firstComma = commas.first, firstComma + 1 < nsClause.length {
+            let mainClause = nsClause.substring(from: firstComma + 1)
+            let mainTokens = clauseTokens(in: mainClause)
+            if let head = mainTokens.first?.lower {
+                // "When in doubt, do the simplest thing" and "Where possible, have the build run
+                // tests" are commands: a main clause opened by an auxiliary that can also be an
+                // imperative is only a question when a subject follows it.
+                if imperativeAuxiliaries.contains(head),
+                   !hasInvertedSubject(mainTokens, in: mainClause, taggerOverride: taggerOverride) {
+                    return false
+                }
+                return isQuestionClause(mainClause, taggerOverride: taggerOverride)
+            }
+        }
+
+        return false
+    }
+
+    /// Auxiliaries that also open commands ("do the following", "don't break the build", "have the
+    /// team review it"), so a clause they start is a question only when a subject follows them.
+    private static let imperativeAuxiliaries: Set<String> = ["do", "don't", "have"]
+
+    private static let invertedSubjectPronouns: Set<String> = ["i", "you", "we", "they"]
+
+    /// Whether `tokens` (a clause opened by one of `imperativeAuxiliaries`) puts a subject after the
+    /// auxiliary and a verb after that subject, as a question does ("do you call me", "do the
+    /// tests pass", "have the builds finished"), rather than starting a command ("do the simplest
+    /// thing", "do the following steps", "have the build run tests").
+    private static func hasInvertedSubject(
+        _ tokens: [ClauseToken],
+        in clause: String,
+        taggerOverride: (([ClauseToken], String) -> [NLTag?])?
+    ) -> Bool {
+        guard tokens.count >= 2 else { return false }
+        if invertedSubjectPronouns.contains(tokens[1].lower) { return true }
+        let tags = lexicalTags(for: tokens, in: clause, taggerOverride: taggerOverride)
+        // The subject: an optional determiner, any adjectives (including "-ing" words used as
+        // adjectives, "the following steps"), then a head noun.
+        var k = 1
+        if k < tokens.count, tags[k] == .determiner || whDeterminers.contains(tokens[k].lower) { k += 1 }
+        while k < tokens.count,
+              tags[k] == .adjective || (tags[k] == .verb && tokens[k].lower.hasSuffix("ing") && k > 1) {
+            k += 1
+        }
+        guard k < tokens.count,
+              !inversionVerbs.contains(tokens[k].lower),
+              tags[k] == .noun || tags[k] == .pronoun || tags[k] == nil || tags[k] == .other
+        else { return false } // "don't break the build": a verb straight after the auxiliary is a command
+        let verbIndices = (k + 1 ..< tokens.count).filter { tags[$0] == .verb }
+        guard let verbIndex = verbIndices.first else { return false }
+        if tokens[0].lower == "have" {
+            // "Have the builds finished" asks; "have the team review it" tells: after "have" the
+            // verb must look like a past participle, not a bare infinitive.
+            return looksLikePastParticiple(tokens[verbIndex].lower)
+        }
+        return true
+    }
+
+    private static let irregularPastParticiples: Set<String> = [
+        "been", "done", "gone", "made", "said", "had", "got", "found", "left", "built", "sent", "kept",
+        "brought", "bought", "thought", "taught", "caught", "held", "lost", "met", "paid", "read", "seen",
+        "set", "shut", "sold", "told", "won", "begun", "broken", "chosen", "drawn", "driven", "eaten",
+        "fallen", "flown", "forgotten", "given", "grown", "hidden", "known", "ridden", "risen", "shown",
+        "spoken", "stolen", "taken", "thrown", "woken", "worn", "written",
+    ]
+
+    private static func looksLikePastParticiple(_ word: String) -> Bool {
+        word.hasSuffix("ed") || irregularPastParticiples.contains(word)
+    }
+
+    static func clauseTokens(in text: String) -> [ClauseToken] {
+        let ns = text as NSString
+        var tokens: [ClauseToken] = []
+        var i = 0
+        while i < ns.length {
+            let c = ns.character(at: i)
+            if c == 0x5C, i + 1 < ns.length {
+                i += 2
+                continue
+            }
+            // Emit a placeholder token for inline code or inline math so the following word cannot shift into slot 1
+            if c == 0x60 {
+                let start = i
+                var ticks = 0
+                while i < ns.length, ns.character(at: i) == 0x60 { ticks += 1; i += 1 }
+                while i < ns.length {
+                    if ns.character(at: i) == 0x60 {
+                        var run = 0
+                        while i < ns.length, ns.character(at: i) == 0x60 { run += 1; i += 1 }
+                        if run == ticks { break }
+                    } else {
+                        i += 1
+                    }
+                }
+                tokens.append(ClauseToken(text: "`", lower: "`", range: NSRange(location: start, length: i - start)))
+                continue
+            }
+            if c == 0x24 {
+                let start = i
+                i += 1
+                while i < ns.length {
+                    let inner = ns.character(at: i)
+                    if inner == 0x5C, i + 1 < ns.length { i += 2; continue }
+                    if inner == 0x24 { i += 1; break }
+                    i += 1
+                }
+                tokens.append(ClauseToken(text: "$", lower: "$", range: NSRange(location: start, length: i - start)))
+                continue
+            }
+            if c == 0x5D, i + 1 < ns.length, ns.character(at: i + 1) == 0x28 {
+                i += 2
+                var depth = 1
+                while i < ns.length, depth > 0 {
+                    let inner = ns.character(at: i)
+                    if inner == 0x5C { i += 2; continue }
+                    if inner == 0x28 { depth += 1 } else if inner == 0x29 { depth -= 1 }
+                    i += 1
+                }
+                continue
+            }
+            if isWordCharacter(c) {
+                var start = i
+                while i < ns.length, isWordCharacter(ns.character(at: i)) { i += 1 }
+                var end = i
+                while start < end, ns.character(at: start) == 0x27 || ns.character(at: start) == 0x2019 { start += 1 }
+                while end > start, ns.character(at: end - 1) == 0x27 || ns.character(at: end - 1) == 0x2019 { end -= 1 }
+                if end > start {
+                    let range = NSRange(location: start, length: end - start)
+                    let raw = ns.substring(with: range)
+                    let lower = raw.replacingOccurrences(of: "’", with: "'").lowercased()
+                    tokens.append(ClauseToken(text: raw, lower: lower, range: range))
+                }
+                continue
+            }
+            i += 1
+        }
+        return tokens
+    }
+
+    private static func topLevelCommaOffsets(in text: String) -> [Int] {
+        let ns = text as NSString
+        var offsets: [Int] = []
+        var inBackticks = false
+        var inMath = false
+        var parenDepth = 0
+        var bracketDepth = 0
+        var inStraightQuotes = false
+        var curlyQuoteDepth = 0
+        var i = 0
+        while i < ns.length {
+            let c = ns.character(at: i)
+            if c == 0x5C, i + 1 < ns.length {
+                i += 2
+                continue
+            }
+            if c == 0x60 {
+                inBackticks.toggle()
+            } else if !inBackticks {
+                if c == 0x24 {
+                    inMath.toggle()
+                } else if !inMath {
+                    switch c {
+                    case 0x28: parenDepth += 1
+                    case 0x29: if parenDepth > 0 { parenDepth -= 1 }
+                    case 0x5B: bracketDepth += 1
+                    case 0x5D: if bracketDepth > 0 { bracketDepth -= 1 }
+                    case 0x22: inStraightQuotes.toggle()
+                    case 0x201C: curlyQuoteDepth += 1
+                    case 0x201D: if curlyQuoteDepth > 0 { curlyQuoteDepth -= 1 }
+                    case 0x2C:
+                        if parenDepth == 0 && bracketDepth == 0 && !inStraightQuotes && curlyQuoteDepth == 0 {
+                            offsets.append(i)
+                        }
+                    default: break
+                    }
+                }
+            }
+            i += 1
+        }
+        return offsets
+    }
+
+    private static func lexicalTags(
+        for tokens: [ClauseToken],
+        in text: String,
+        taggerOverride: (([ClauseToken], String) -> [NLTag?])?
+    ) -> [NLTag?] {
+        if let taggerOverride {
+            let overridden = taggerOverride(tokens, text)
+            if overridden.count == tokens.count {
+                return overridden
+            }
+        }
+        let tagger = NLTagger(tagSchemes: [.lexicalClass])
+        tagger.string = text
+        return tokens.map { token in
+            if token.lower == "`" || token.lower == "$" { return nil }
+            guard let strRange = Range(token.range, in: text) else { return nil }
+            return tagger.tag(at: strRange.lowerBound, unit: .word, scheme: .lexicalClass).0
+        }
+    }
 }
 
 // MARK: - Grammar Voice (#111)
@@ -900,7 +1451,7 @@ nonisolated enum GrammarVoice {
         "then", "than", "so", "yet", "vs", "via", "per",
     ]
 
-    private static let abbreviations: Set<String> = [
+    static let abbreviations: Set<String> = [
         "e.g", "i.e", "etc", "vs", "cf", "approx", "mr", "mrs", "ms", "dr", "st", "no", "fig", "ca", "al",
     ]
 
