@@ -110,6 +110,11 @@
 				Swash.entitlements,
 				Swash.storekit,
 			);
+			platformFiltersByRelativePath = {
+				Settings.bundle = (
+					ios,
+				);
+			};
 			target = 0460133F30045F6800853817 /* Swash */;
 		};
 		0460137730045F6800853817 /* Exceptions for "Swash" folder in "SwashQuickLookExtension" target */ = {
@@ -151,6 +156,7 @@
 				PixerateAccountSettings.swift,
 				PixerateWritingBandleader.swift,
 				ServicesProvider.swift,
+				Settings.bundle,
 				SettingsView.swift,
 				SparkleUpdater.swift,
 				"Swash-iOS.entitlements",
