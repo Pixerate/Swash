@@ -39,6 +39,11 @@ nonisolated enum WritingDefaults {
     static let typewriterScrolling = "typewriterScrolling"
 }
 
+/// App settings keys for user-configurable preferences.
+nonisolated enum AppSettings {
+    static let showEmptyLineInsertAffordance = "showEmptyLineInsertAffordance"
+}
+
 extension FocusUnit {
     /// The part of `text` that stays at full strength around `selection`.
     static func range(_ unit: FocusUnit, around selection: NSRange, in text: NSString) -> NSRange {

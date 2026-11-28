@@ -53,6 +53,9 @@ struct SwashApp: App {
 final class SwashAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UserDefaults.standard.register(defaults: [
+            AppSettings.showEmptyLineInsertAffordance: true
+        ])
         PixerateAccess.startAtLaunch()
         // Levels stored before #229 become Copyedit; the switches Settings no longer shows are cleared once
         WritingPartnerDefaults.adoptLearnedDefaults()
