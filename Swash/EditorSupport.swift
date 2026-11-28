@@ -24,6 +24,12 @@ extension Notification.Name {
 
 /// A list bullet, number or task checkbox drawn by the layout manager in place of the hidden marker.
 struct ListMarkerInfo {
+    enum BulletKind: Equatable {
+        case disc
+        case ring
+        case square
+    }
+
     let text: String
     let indent: CGFloat
     var color: PlatformColor? = nil
@@ -31,6 +37,16 @@ struct ListMarkerInfo {
     /// Task items keep a ☐/☑ glyph (written out by rich-text copies) but are drawn as checkboxes.
     var isTask: Bool { text == "☐" || text == "☑" }
     var isChecked: Bool { text == "☑" }
+
+    /// Vector bullet classification for list levels.
+    var bulletKind: BulletKind? {
+        switch text {
+        case "•": return .disc
+        case "◦": return .ring
+        case "▪": return .square
+        default: return nil
+        }
+    }
 }
 
 /// An attachment that stands in for a span of Markdown source (a table or an image).

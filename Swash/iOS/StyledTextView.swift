@@ -1000,6 +1000,7 @@ final class StyledUITextView: MarkdownEditingTextView {
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
+        (layoutManager as? StyledLayoutManager)?.styledTextView = self
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTaskTap(_:)))
         taskTapFilter.textView = self
         tap.delegate = taskTapFilter
@@ -1457,15 +1458,27 @@ final class StyledUITextView: MarkdownEditingTextView {
         let glyphIndex = layoutManager.glyphIndex(for: containerPoint, in: textContainer)
         var lineGlyphs = NSRange()
         let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &lineGlyphs)
-        guard containerPoint.y >= lineRect.minY, containerPoint.y <= lineRect.maxY else { return nil }
+        let verticalMargin = max(0, (44.0 - lineRect.height) / 2.0)
+        guard containerPoint.y >= lineRect.minY - verticalMargin, containerPoint.y <= lineRect.maxY + verticalMargin else { return nil }
         let lineCharacters = layoutManager.characterRange(forGlyphRange: lineGlyphs, actualGlyphRange: nil)
         var hit: NSRange?
         textStorage.enumerateAttribute(.listMarker, in: lineCharacters, options: []) { value, range, stop in
-            guard let info = value as? ListMarkerInfo, info.text == "☐" || info.text == "☑" else { return }
-            let contentGlyph = layoutManager.glyphIndexForCharacter(at: min(NSMaxRange(range), max(0, textStorage.length - 1)))
-            let contentX = lineRect.minX + layoutManager.location(forGlyphAt: contentGlyph).x
-            // The checkbox is drawn just left of the item's text; a finger needs a generous target
-            if containerPoint.x >= contentX - 40 && containerPoint.x <= contentX + 4 {
+            guard let info = value as? ListMarkerInfo, info.isTask else { return }
+            let markerGlyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            guard let geometry = (layoutManager as? StyledLayoutManager)?.listMarkerGeometry(forMarkerGlyphs: markerGlyphs, indent: info.indent) else { return }
+            let box = ListMarkerRenderer.checkboxRect(geometry)
+            let boxSize = box.width
+            let effectiveContentX = geometry.contentX
+            let boxCenter = CGPoint(x: box.midX, y: box.midY)
+
+            let hitTargetSize: CGFloat = max(44.0, boxSize + 16.0)
+            let minX = min(boxCenter.x - hitTargetSize / 2.0, effectiveContentX - max(44.0, boxSize + 12.0))
+            let maxX = min(boxCenter.x + hitTargetSize / 2.0, effectiveContentX + 4.0)
+            let minY = boxCenter.y - hitTargetSize / 2.0
+            let maxY = boxCenter.y + hitTargetSize / 2.0
+
+            if containerPoint.x >= minX && containerPoint.x <= maxX &&
+               containerPoint.y >= minY && containerPoint.y <= maxY {
                 hit = range
                 stop.pointee = true
             }
