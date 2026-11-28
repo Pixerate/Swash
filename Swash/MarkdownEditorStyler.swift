@@ -352,8 +352,15 @@ final class MarkdownEditorStyler {
             }
             hideMarker(markerRange)
             storage.addAttribute(.listMarker, value: ListMarkerInfo(text: glyph, indent: inner.indent, color: color), range: storageMarker)
-            setParagraphStyle(inner, lineSpacing: 5, paragraphSpacing: 6, over: lineRange)
+            setParagraphStyle(inner, lineSpacing: 5, paragraphSpacing: 6, minimumLineHeight: emptyItemLineHeight(inner), over: lineRange)
         }
+    }
+
+    /// An empty list item's line holds only its hidden (0.01 pt) marker, so without a minimum height it
+    /// collapses and the drawn marker lands on the line above (#190); keep it as tall as a line of body text.
+    private func emptyItemLineHeight(_ context: BlockContext) -> CGFloat {
+        let body = font(for: context.inline)
+        return ceil(body.ascender - body.descender + body.leading)
     }
     
     /// Code-like ranges of the whole document (raw offsets), sorted: code, HTML, math and front matter
@@ -506,9 +513,11 @@ final class MarkdownEditorStyler {
         _ context: BlockContext,
         lineSpacing: CGFloat = 5,
         paragraphSpacing: CGFloat = 0,
-        paragraphSpacingBefore: CGFloat = 0
+        paragraphSpacingBefore: CGFloat = 0,
+        minimumLineHeight: CGFloat = 0
     ) -> NSParagraphStyle {
         let p = NSMutableParagraphStyle()
+        p.minimumLineHeight = minimumLineHeight
         #if os(macOS)
         p.headIndent = context.indent
         p.firstLineHeadIndent = context.indent
@@ -529,12 +538,14 @@ final class MarkdownEditorStyler {
         lineSpacing: CGFloat = 5,
         paragraphSpacing: CGFloat = 0,
         paragraphSpacingBefore: CGFloat = 0,
+        minimumLineHeight: CGFloat = 0,
         over range: NSRange
     ) {
         // Paragraph attributes must cover whole paragraphs, including the trailing newline
         let r = valid(text.paragraphRange(for: rawClamp(range)))
         guard r.length > 0 else { return }
-        let style = paragraphStyle(context, lineSpacing: lineSpacing, paragraphSpacing: paragraphSpacing, paragraphSpacingBefore: paragraphSpacingBefore)
+        let style = paragraphStyle(context, lineSpacing: lineSpacing, paragraphSpacing: paragraphSpacing,
+                                   paragraphSpacingBefore: paragraphSpacingBefore, minimumLineHeight: minimumLineHeight)
         storage.addAttribute(.paragraphStyle, value: style, range: r)
         #if os(iOS)
         if !context.decorations.isEmpty {
@@ -783,7 +794,8 @@ final class MarkdownEditorStyler {
                 hideContinuationIndent(in: node.range, maxColumns: contentColumn)
             }
             let itemSpacing: CGFloat = inner.isTightList ? 6 : 4
-            setParagraphStyle(inner, lineSpacing: 5, paragraphSpacing: itemSpacing, over: node.range)
+            setParagraphStyle(inner, lineSpacing: 5, paragraphSpacing: itemSpacing,
+                              minimumLineHeight: node.children.isEmpty ? emptyItemLineHeight(inner) : 0, over: node.range)
             for (index, child) in node.children.enumerated() {
                 var childContext = inner
                 // A completed task's own text is dimmed; nested content keeps its colour
