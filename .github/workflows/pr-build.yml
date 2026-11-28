@@ -72,6 +72,9 @@ jobs:
       - name: Shortcuts and App Intents engine tests
         run: scripts/run_shortcuts_tests.sh
 
+      - name: New document seed tests (initial text window binding)
+        run: scripts/run_new_document_seed_tests.sh
+
       - name: Markdown conformance tests (@pixerate/markdown-conformance)
         run: scripts/run_conformance_tests.sh
 
