@@ -97,6 +97,15 @@ final class EditorHarness {
         window.layoutIfNeeded()
     }
 
+    /// Pumps after an edit until its styling pass has run. The pass is queued on the main queue,
+    /// which a slow CI simulator can take longer than a fixed pump to reach, leaving the storage
+    /// unstyled when a test reads it (GOTCHAS #114).
+    func pumpUntilStyled(timeout: TimeInterval = 5) {
+        pump()
+        let deadline = Date().addingTimeInterval(timeout)
+        while coordinator.isRestylePending, Date() < deadline { pump(0.05) }
+    }
+
     // MARK: Selection (raw-Markdown offsets)
 
     /// Puts the caret (or a selection) at a raw-Markdown range.
@@ -149,7 +158,7 @@ final class EditorHarness {
         if shouldChange(textView.selectedRange, to: string) {
             textView.insertText(string)
         }
-        pump()
+        pumpUntilStyled()
     }
 
     func pressReturn() { type("\n") }
@@ -160,7 +169,7 @@ final class EditorHarness {
         if range.length > 0, shouldChange(range, to: "") {
             textView.deleteBackward()
         }
-        pump()
+        pumpUntilStyled()
     }
 
     /// Runs the hardware-keyboard command for `input` (Tab, Shift-Tab) as UIKit would.
@@ -171,7 +180,7 @@ final class EditorHarness {
             return
         }
         textView.perform(action, with: command)
-        pump()
+        pumpUntilStyled()
     }
 
     // MARK: Styling

@@ -60,6 +60,8 @@
       "name": "AI Writing Assistant, Autocorrect & Subscriptions",
       "paths": [
         "Swash/WritingPartner.swift",
+        "Swash/EditLayers.swift",
+        "Swash/WritingPartnerEditsView.swift",
         "Swash/FormattingVoice.swift",
         "Swash/PartnerMarks.swift",
         "Swash/WritingPartnerHost.swift",
@@ -74,7 +76,8 @@
         "Swash/PixerateAccountSettings.swift",
         "Swash/Swash.storekit",
         "Swash/iOS/IOSWritingPartner.swift",
-        "Swash/iOS/IOSWritingPartnerSettings.swift"
+        "Swash/iOS/IOSWritingPartnerSettings.swift",
+        "Swash/iOS/IOSWritingPartnerStylePreview.swift"
       ],
       "docs": [
         "docs/writing-partner-privacy.md"

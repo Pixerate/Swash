@@ -13,8 +13,9 @@
 		046013CA30045F6A00853817 /* PixerateMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C930045F6A00853817 /* PixerateMarkdown */; };
 		046013C630045F6A00853817 /* PixerateCore in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C530045F6A00853817 /* PixerateCore */; };
 		046013C830045F6A00853817 /* PixerateCore in Frameworks */ = {isa = PBXBuildFile; productRef = 046013C730045F6A00853817 /* PixerateCore */; };
-		0460F1A630045F6A00853817 /* FlairEffects in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = 0460F1A530045F6A00853817 /* FlairEffects */; };
+		0460F1A630045F6A00853817 /* FlairEffects in Frameworks */ = {isa = PBXBuildFile; productRef = 0460F1A530045F6A00853817 /* FlairEffects */; };
 		0460F1A830045F6A00853817 /* FlairEffects in Frameworks */ = {isa = PBXBuildFile; productRef = 0460F1A730045F6A00853817 /* FlairEffects */; };
+		0460B1A330045F6A00853817 /* SwashPixie in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = 0460B1A130045F6A00853817 /* SwashPixie */; };
 		046013F230045F6A00853817 /* PixerateAccount in Frameworks */ = {isa = PBXBuildFile; productRef = 046013F130045F6A00853817 /* PixerateAccount */; };
 		046013F430045F6A00853817 /* PixerateStore in Frameworks */ = {isa = PBXBuildFile; productRef = 046013F330045F6A00853817 /* PixerateStore */; };
 		0460137130045F6800853817 /* SwashQuickLookExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0460137030045F6800853817 /* SwashQuickLookExtension.appex */; platformFilters = (macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -145,6 +146,7 @@
 				Rendering/katex.min.js,
 				Rendering/mermaid.min.js,
 				"Rendering/swash-render.html",
+				PixieDocument.swift,
 				PixerateAccess.swift,
 				PixerateAccountSettings.swift,
 				PixerateWritingBandleader.swift,
@@ -269,6 +271,7 @@
 				0460F1A630045F6A00853817 /* FlairEffects in Frameworks */,
 				046013F230045F6A00853817 /* PixerateAccount in Frameworks */,
 				046013F430045F6A00853817 /* PixerateStore in Frameworks */,
+				0460B1A330045F6A00853817 /* SwashPixie in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -374,6 +377,7 @@
 				0460F1A530045F6A00853817 /* FlairEffects */,
 				046013F130045F6A00853817 /* PixerateAccount */,
 				046013F330045F6A00853817 /* PixerateStore */,
+				0460B1A130045F6A00853817 /* SwashPixie */,
 			);
 			productName = Swash;
 			productReference = 0460134030045F6800853817 /* Swash.app */;
@@ -560,6 +564,7 @@
 				0460136030045F6A00853817 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				0460AE0130045F6A00853817 /* XCLocalSwiftPackageReference "Packages/MacAppKitExtras" */,
 				046013E030045F6A00853817 /* XCLocalSwiftPackageReference "Packages/PixerateStickers" */,
+				0460B1A030045F6A00853817 /* XCLocalSwiftPackageReference "Packages/SwashPixie" */,
 				046013C030045F6A00853817 /* XCRemoteSwiftPackageReference "editor" */,
 				0460F1A030045F6A00853817 /* XCRemoteSwiftPackageReference "flair" */,
 				046013F030045F6A00853817 /* XCRemoteSwiftPackageReference "PixerateAccount" */,
@@ -819,7 +824,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -869,7 +874,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1022,7 +1027,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.QuickLookExtension;
 				PRODUCT_MODULE_NAME = SwashQuickLookExtension;
@@ -1053,7 +1058,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.QuickLookExtension;
 				PRODUCT_MODULE_NAME = SwashQuickLookExtension;
@@ -1096,7 +1101,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ShareExtension;
 				PRODUCT_MODULE_NAME = SwashShareExtension;
@@ -1139,7 +1144,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ShareExtension;
 				PRODUCT_MODULE_NAME = SwashShareExtension;
@@ -1169,7 +1174,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ThumbnailExtension;
 				PRODUCT_MODULE_NAME = SwashThumbnailExtension;
@@ -1199,7 +1204,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ThumbnailExtension;
 				PRODUCT_MODULE_NAME = SwashThumbnailExtension;
@@ -1241,7 +1246,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.WidgetExtension;
 				PRODUCT_MODULE_NAME = SwashWidgetExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1282,7 +1287,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.WidgetExtension;
 				PRODUCT_MODULE_NAME = SwashWidgetExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1304,7 +1309,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.SwashiOSTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -1329,7 +1334,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.SwashiOSTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -1362,7 +1367,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LM_SKIP_METADATA_EXTRACTION = YES;
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.Stickers;
 				PRODUCT_MODULE_NAME = SwashStickers;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1398,7 +1403,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LM_SKIP_METADATA_EXTRACTION = YES;
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.Stickers;
 				PRODUCT_MODULE_NAME = SwashStickers;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1454,7 +1459,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				OTHER_LDFLAGS = "$(inherited) -Wl,-dead_strip_dylibs";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1546,7 +1551,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.QuickLookExtension;
 				PRODUCT_MODULE_NAME = SwashQuickLookExtension;
@@ -1589,7 +1594,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ShareExtension;
 				PRODUCT_MODULE_NAME = SwashShareExtension;
@@ -1619,7 +1624,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				LM_SKIP_METADATA_EXTRACTION = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.ThumbnailExtension;
 				PRODUCT_MODULE_NAME = SwashThumbnailExtension;
@@ -1661,7 +1666,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../Contents/Frameworks",
 				);
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.WidgetExtension;
 				PRODUCT_MODULE_NAME = SwashWidgetExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1683,7 +1688,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.SwashiOSTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -1716,7 +1721,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				LM_SKIP_METADATA_EXTRACTION = YES;
-				MARKETING_VERSION = 1.44.0;
+				MARKETING_VERSION = 1.49.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pixerate.Swash.Stickers;
 				PRODUCT_MODULE_NAME = SwashStickers;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1830,6 +1835,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/PixerateStickers;
 		};
+		0460B1A030045F6A00853817 /* XCLocalSwiftPackageReference "Packages/SwashPixie" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/SwashPixie;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1862,7 +1871,7 @@
 			repositoryURL = "https://github.com/Pixerate/flair";
 			requirement = {
 				kind = upToNextMinorVersion;
-				minimumVersion = 0.135.2;
+				minimumVersion = 0.145.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -1937,6 +1946,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 0460F1A030045F6A00853817 /* XCRemoteSwiftPackageReference "flair" */;
 			productName = FlairEffects;
+		};
+		0460B1A130045F6A00853817 /* SwashPixie */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0460B1A030045F6A00853817 /* XCLocalSwiftPackageReference "Packages/SwashPixie" */;
+			productName = SwashPixie;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

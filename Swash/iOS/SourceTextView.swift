@@ -25,7 +25,16 @@ struct SourceTextView: UIViewRepresentable {
     var textSize: CGFloat = EditorTypography.defaultTextSize
 
     func makeUIView(context: Context) -> MarkdownEditingTextView {
+        let retainer = context.coordinator.retainer
+        if let textView = retainer.keptTextView {
+            // The same editor in a new container (#65); not re-registered with the scroll sync,
+            // which would move it to the other pane's offset
+            updateUIView(textView, context: context)
+            retainer.reattached(textView)
+            return textView
+        }
         let textView = MarkdownEditingTextView(usingTextLayoutManager: false)
+        retainer.keep(textView, key: nil)
         textView.delegate = context.coordinator
         textView.text = text
         textView.font = Self.font(textSize: textSize)
@@ -57,7 +66,7 @@ struct SourceTextView: UIViewRepresentable {
         context.coordinator.parent = self
         controller.attach(textView)
         if context.coordinator.lastBaseURL != nil, context.coordinator.lastBaseURL != baseURL {
-            context.coordinator.writingPartner.resetBandleaderSession()
+            context.coordinator.writingPartner.documentDidChange()
         }
         context.coordinator.lastBaseURL = baseURL
         if textView.text != text {
@@ -92,10 +101,26 @@ struct SourceTextView: UIViewRepresentable {
         return CGSize(width: width, height: height)
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+    /// The document's source editor comes back to the same coordinator and text view when SwiftUI
+    /// rebuilds it (see `IOSEditorController.retainedEditor`).
+    func makeCoordinator() -> Coordinator {
+        if let coordinator = controller.retainedEditor(Coordinator.self),
+           coordinator.retainer.canReuse(showing: text, key: nil, current: { $0.text ?? "" }) {
+            coordinator.parent = self
+            return coordinator
+        }
+        let coordinator = Coordinator(parent: self)
+        controller.retainEditor(coordinator)
+        return coordinator
+    }
+
+    static func dismantleUIView(_ textView: MarkdownEditingTextView, coordinator: Coordinator) {
+        coordinator.retainer.dismantled(textView)
+    }
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: SourceTextView
+        let retainer = EditorViewRetainer<MarkdownEditingTextView>()
         var lastTextSize: CGFloat = EditorTypography.defaultTextSize
         var lastBaseURL: URL?
         /// The writing partner (#109). In Source the text view's text is the raw Markdown.

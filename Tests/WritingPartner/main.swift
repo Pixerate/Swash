@@ -229,31 +229,50 @@ do {
     check(!WritingPartnerStats.load(defaults, voice: .chat).isActive(.pronounI), "two undos in chat stop pronounI in chat")
     check(WritingPartnerStats.load(defaults, voice: .punctuate).isActive(.pronounI), "prose pronounI is unaffected by chat undos")
     check(WritingPartnerStats.load(defaults, flavor: .github) == kept, "prose stats unchanged after saving chat stats")
-    check(WritingPartnerDefaults.mode(defaults) == .automatic, "on (Automatically) by default (#112)")
+    check(WritingPartnerDefaults.mode(defaults) == .copyedit, "on (Copyedit) by default (#112, #229)")
     // Upgrades keep their setting (#112): earlier Swash keys with no mode stored mean the partner was off
     do {
         let suite = "swash-writing-partner-migration-tests"
         let fresh = UserDefaults(suiteName: suite)!
         fresh.removePersistentDomain(forName: suite)
-        check(WritingPartnerDefaults.migrateExistingInstall(fresh) == .automatic, "a new install is on")
+        check(WritingPartnerDefaults.migrateExistingInstall(fresh) == .copyedit, "a new install is on, in Copyedit")
         fresh.removePersistentDomain(forName: suite)
         fresh.set(true, forKey: "SUHasLaunchedBefore")
         check(WritingPartnerDefaults.migrateExistingInstall(fresh) == .off && WritingPartnerDefaults.mode(fresh) == .off,
               "an upgrade with no mode stored stays off")
-        fresh.set(WritingPartnerMode.automatic.rawValue, forKey: WritingPartnerDefaults.mode)
-        check(WritingPartnerDefaults.migrateExistingInstall(fresh) == .automatic, "a later choice isn't migrated again")
+        fresh.set(WritingPartnerMode.ghostwrite.rawValue, forKey: WritingPartnerDefaults.mode)
+        check(WritingPartnerDefaults.migrateExistingInstall(fresh) == .ghostwrite, "a later choice isn't migrated again")
+        // Levels stored before #229: Automatically and Suggest both become Copyedit, and are rewritten
+        for legacy in ["automatic", "suggest"] {
+            fresh.removePersistentDomain(forName: suite)
+            fresh.set(true, forKey: "SUHasLaunchedBefore")
+            fresh.set(legacy, forKey: WritingPartnerDefaults.mode)
+            check(WritingPartnerDefaults.migrateExistingInstall(fresh) == .copyedit
+                    && fresh.string(forKey: WritingPartnerDefaults.mode) == "copyedit", "\(legacy) becomes Copyedit (#229)")
+        }
+        // The switches Settings no longer shows are cleared once (#229), so nothing stays off unseen
         fresh.removePersistentDomain(forName: suite)
-        fresh.set(true, forKey: "SUHasLaunchedBefore")
-        fresh.set(WritingPartnerMode.suggest.rawValue, forKey: WritingPartnerDefaults.mode)
-        check(WritingPartnerDefaults.migrateExistingInstall(fresh) == .suggest, "an upgrade's explicit choice is kept")
+        fresh.set(false, forKey: WritingPartnerDefaults.spelling)
+        fresh.set(false, forKey: WritingPartnerDefaults.doubledWords)
+        fresh.set(false, forKey: WritingPartnerDefaults.formattingKey(.formatTables))
+        fresh.set(true, forKey: WritingPartnerDefaults.curlyQuotes)
+        WritingPartnerDefaults.migrateExistingInstall(fresh)
+        check(WritingPartnerDefaults.spelling(fresh) && WritingPartnerDefaults.isRuleEnabled(.doubledWords, fresh)
+                && WritingPartnerDefaults.isRuleEnabled(.formatTables, fresh), "old rule switches are cleared on upgrade (#229)")
+        check(WritingPartnerDefaults.curlyQuotes(fresh), "Curly quotes stays a choice (#229)")
+        fresh.set(false, forKey: WritingPartnerDefaults.spelling)
+        WritingPartnerDefaults.migrateExistingInstall(fresh)
+        check(!WritingPartnerDefaults.spelling(fresh), "the switches are cleared only once")
         fresh.removePersistentDomain(forName: suite)
     }
-    defaults.set(WritingPartnerMode.suggest.rawValue, forKey: WritingPartnerDefaults.mode)
-    check(WritingPartnerDefaults.mode(defaults) == .suggest && WritingPartnerMode.suggest.title == "Suggest", "suggest mode round-trip")
-    check(WritingPartnerMode.allCases.map(\.title) == ["Off", "Suggest", "Automatically"], "mode titles")
+    check(WritingPartnerMode(rawValue: "suggest") == .copyedit && WritingPartnerMode(rawValue: "automatic") == .copyedit
+            && WritingPartnerMode(rawValue: "ghostwrite") == .ghostwrite && WritingPartnerMode(rawValue: "nonsense") == nil,
+          "legacy levels read as Copyedit")
+    check(WritingPartnerMode.allCases.map(\.title) == ["Off", "Copyedit", "Ghostwrite"], "level titles (#229)")
+    check(WritingPartnerMode.copyedit.engagementMode == .copyedit && WritingPartnerMode.ghostwrite.engagementMode == .ghostwrite
+            && WritingPartnerMode.off.engagementMode == nil, "each level's engagementMode")
     check(WritingPartnerDefaults.spelling(defaults), "spelling on by default")
-    defaults.set(false, forKey: WritingPartnerDefaults.spelling)
-    check(!WritingPartnerDefaults.spelling(defaults), "an explicit choice wins")
+    check(WritingPartnerDefaults.suggestions(UserDefaults(suiteName: "swash-suggestions-empty")!), "Suggestions is on by default (#229)")
     defaults.removePersistentDomain(forName: "swash-writing-partner-tests")
 }
 
@@ -1166,7 +1185,7 @@ do {
     let grammarRules = PunctuationRule.allCases.filter(\.isGrammar)
     check(grammarRules == [.doubledWords, .aAndAn, .agreementAndTense, .missingWords], "All four grammar rules present in PunctuationRule.allCases")
 
-    // All four rules default to on and each has its own switch
+    // All four rules default to on (#229: no switches in Settings; the old keys are hidden overrides for tests)
     for rule in grammarRules {
         check(WritingPartnerDefaults.isRuleEnabled(rule, defaults), "\(rule.title) is on by default")
     }
@@ -1350,7 +1369,7 @@ do {
             caret: paraNS.length,
             flavor: .github,
             provider: .pixerate,
-            mode: .automatic
+            mode: .copyedit
         )
         // 4 items have confidence >= 0.80 -> automatic; 1 item has confidence 0.65 -> suggestion; 1 item has 0.30 -> dropped
         check(result.automatic.count == 4, "4 high-confidence corrections become automatic PartnerEdits (got \(result.automatic.count))")
@@ -1360,8 +1379,8 @@ do {
         check(result.automatic.map(\.rules) == [[.agreementAndTense], [.agreementAndTense], [.missingWords], [.agreementAndTense]], "Each automatic edit carries its PunctuationRule")
         check(result.suggestions.first?.original == "more better" && result.suggestions.first?.replacement == "better", "Below-threshold correction offered as suggestion")
 
-        // In Suggest mode, all accepted corrections (both high and medium confidence) are offered as suggestions
-        let suggestResult = GrammarVoice.pauseEdits(
+        // Ghostwrite (#229) makes the same corrections as Copyedit; Off makes none
+        let ghostResult = GrammarVoice.pauseEdits(
             from: leadRes,
             paragraph: paragraph,
             paragraphRange: NSRange(location: 0, length: paraNS.length),
@@ -1369,9 +1388,12 @@ do {
             caret: paraNS.length,
             flavor: .github,
             provider: .pixerate,
-            mode: .suggest
+            mode: .ghostwrite
         )
-        check(suggestResult.automatic.isEmpty && suggestResult.suggestions.count == 5, "In Suggest mode all 5 accepted corrections are offered as suggestions")
+        check(ghostResult.automatic.count == 4 && ghostResult.suggestions.count == 1, "Ghostwrite makes the same grammar corrections as Copyedit")
+        let offResult = GrammarVoice.pauseEdits(from: leadRes, paragraph: paragraph, paragraphRange: NSRange(location: 0, length: paraNS.length),
+                                                documentText: paragraph, caret: paraNS.length, flavor: .github, provider: .pixerate, mode: .off)
+        check(offResult.automatic.isEmpty && offResult.suggestions.isEmpty, "Off makes no grammar corrections")
     }
 
     // 4.2 OnDeviceLeadResponse guided generation mirror types with grammar
@@ -1603,7 +1625,7 @@ do {
         paragraphRange: NSRange(location: 0, length: (paragraph as NSString).length),
         documentText: paragraph,
         flavor: .github,
-        mode: .automatic,
+        mode: .copyedit,
         spellingEnabled: true,
         memory: memory
     )
@@ -1615,20 +1637,19 @@ do {
     check(plan.offeredEdits.first?.original == "their" && plan.offeredEdits.first?.replacement == "there",
           "Uncertain wrong-word suggestion is offered as underline")
 
-    // In Suggest mode, even high-confidence suggestions are offered rather than applied at once
-    let suggestMemory = BandleaderSessionMemory()
-    let suggestPlan = BandleaderSuggestionPlanner.plan(
+    // Off (#229) plans nothing
+    let offMemory = BandleaderSessionMemory()
+    let offPlan = BandleaderSuggestionPlanner.plan(
         response: decoded,
         paragraph: paragraph,
         paragraphRange: NSRange(location: 0, length: (paragraph as NSString).length),
         documentText: paragraph,
         flavor: .github,
-        mode: .suggest,
+        mode: .off,
         spellingEnabled: true,
-        memory: suggestMemory
+        memory: offMemory
     )
-    check(suggestPlan.automaticEdits.isEmpty && suggestPlan.offeredEdits.count == 3,
-          "In Suggest mode, all 3 eligible suggestions are offered")
+    check(offPlan.automaticEdits.isEmpty && offPlan.offeredEdits.isEmpty, "Off plans no inline suggestions")
 
     // Inline code is never modified even if server sends a range inside backticks
     let codeSuggestion = JazzTextSuggestion(
@@ -1644,7 +1665,7 @@ do {
         paragraphRange: NSRange(location: 0, length: (paragraph as NSString).length),
         documentText: paragraph,
         flavor: .github,
-        mode: .automatic,
+        mode: .copyedit,
         spellingEnabled: true,
         memory: memory
     )
@@ -1708,7 +1729,7 @@ do {
         paragraphRange: NSRange(location: 0, length: (paragraph as NSString).length),
         documentText: paragraph,
         flavor: .github,
-        mode: .automatic,
+        mode: .copyedit,
         spellingEnabled: true,
         memory: memory
     )
@@ -1888,10 +1909,11 @@ do {
                                                 documentText: doc, memory: BandleaderSessionMemory())
     check(plan.automaticEdits.map(\.replacement) == ["from"], "On-device context spelling: the confident fix is made")
     check(plan.offeredEdits.map(\.replacement) == ["lose"], "On-device context spelling: the unsure fix is offered")
-    let suggestPlan = BandleaderSuggestionPlanner.plan(response: response, paragraph: doc,
-                                                       paragraphRange: NSRange(location: 0, length: (doc as NSString).length),
-                                                       documentText: doc, mode: .suggest, memory: BandleaderSessionMemory())
-    check(suggestPlan.automaticEdits.isEmpty && suggestPlan.offeredEdits.count == 2, "In Suggest mode every context spelling fix is offered")
+    let ghostPlan = BandleaderSuggestionPlanner.plan(response: response, paragraph: doc,
+                                                     paragraphRange: NSRange(location: 0, length: (doc as NSString).length),
+                                                     documentText: doc, mode: .ghostwrite, memory: BandleaderSessionMemory())
+    check(ghostPlan.automaticEdits.map(\.replacement) == ["from"] && ghostPlan.offeredEdits.map(\.replacement) == ["lose"],
+          "Ghostwrite plans context spelling like Copyedit")
     let off = BandleaderSuggestionPlanner.plan(response: response, paragraph: doc,
                                                paragraphRange: NSRange(location: 0, length: (doc as NSString).length),
                                                documentText: doc, spellingEnabled: false, memory: BandleaderSessionMemory())
@@ -1940,7 +1962,7 @@ do {
     ], paragraph: "I came form the shop.")
     check(two.first?.alternatives == ["for"] && two.first?.shouldApplyAtOnce == false,
           "A correction with two candidates is marked, not made: \(String(describing: two.first?.alternatives))")
-    check(WritingPartnerDefaults.markUncertain(UserDefaults(suiteName: "marks-tests-empty")!), "Marking is on by default")
+    check(WritingPartnerDefaults.suggestions(UserDefaults(suiteName: "marks-tests-empty")!), "Suggestions (marking) is on by default")
     check(!WritingPartnerDefaults.announceMarks(UserDefaults(suiteName: "marks-tests-empty")!), "Announcing marks is off unless asked for")
 }
 

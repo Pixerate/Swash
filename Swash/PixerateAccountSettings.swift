@@ -329,3 +329,129 @@ struct PixerateAccountSections: View {
         #endif
     }
 }
+
+// MARK: - Previews
+
+#if DEBUG
+/// One entitlement from one source, as `GET /api/me/entitlements` reports it.
+private func previewEntitlements(
+    _ entitlement: String,
+    source: String,
+    ownership: String? = nil,
+    supportId: String = "SWSH-4X9Q"
+) -> PixerateEntitlements {
+    PixerateEntitlements(
+        entitlements: entitlement == PixerateEntitlement.pixeratePro
+            ? [PixerateEntitlement.pixeratePro, PixerateEntitlement.swashPro]
+            : [entitlement],
+        grants: [
+            PixerateEntitlementGrant(
+                entitlement: entitlement,
+                source: source,
+                via: source == "app_store" ? "customer" : "team",
+                productId: source == "app_store" ? "com.pixerate.swash.pro.monthly" : nil,
+                ownership: ownership
+            )
+        ],
+        supportId: supportId
+    )
+}
+
+private let previewUser = AuthUser(
+    id: "user_preview",
+    email: "writer@example.com",
+    displayName: "Ada Writer"
+)
+
+private let previewTeams = [
+    Team(id: "team_preview", name: "Ada's Team", ownerId: "user_preview"),
+    Team(id: "team_studio", name: "Studio", ownerId: "someone_else")
+]
+
+/// The account sections in a grouped form, as Settings shows them.
+private struct AccountSectionsPreview: View {
+    var access: PixerateAccess
+    var signedIn = false
+
+    var body: some View {
+        Form {
+            PixerateAccountSections(
+                access: access,
+                previewSignedInUser: signedIn ? previewUser : nil,
+                previewSignedInTeams: signedIn ? previewTeams : []
+            )
+        }
+        .formStyle(.grouped)
+        .frame(minWidth: 420, minHeight: 520)
+    }
+}
+
+#Preview("Free (paywall)") {
+    AccountSectionsPreview(access: .preview(distribution: .appStore))
+}
+
+#Preview("Swash Pro") {
+    AccountSectionsPreview(
+        access: .preview(
+            entitlements: previewEntitlements(
+                PixerateEntitlement.swashPro,
+                source: "app_store",
+                ownership: "PURCHASED"
+            )
+        )
+    )
+}
+
+#Preview("Swash Pro, shared by family") {
+    AccountSectionsPreview(
+        access: .preview(
+            entitlements: previewEntitlements(
+                PixerateEntitlement.swashPro,
+                source: "app_store",
+                ownership: "FAMILY_SHARED"
+            )
+        )
+    )
+}
+
+#Preview("Included with Pixerate Pro") {
+    AccountSectionsPreview(
+        access: .preview(
+            entitlements: previewEntitlements(PixerateEntitlement.pixeratePro, source: "plan"),
+            signedIn: true
+        ),
+        signedIn: true
+    )
+}
+
+#Preview("Complimentary") {
+    AccountSectionsPreview(
+        access: .preview(
+            entitlements: previewEntitlements(PixerateEntitlement.pixeratePro, source: "complimentary"),
+            signedIn: true
+        ),
+        signedIn: true
+    )
+}
+
+#Preview("Direct download, signed out") {
+    AccountSectionsPreview(
+        access: .preview(distribution: .direct, entitlements: PixerateEntitlements())
+    )
+}
+
+#Preview("Signed in with Swash Pro", traits: .sizeThatFitsLayout) {
+    AccountSectionsPreview(
+        access: .preview(
+            entitlements: previewEntitlements(
+                PixerateEntitlement.swashPro,
+                source: "app_store",
+                ownership: "PURCHASED"
+            ),
+            signedIn: true
+        ),
+        signedIn: true
+    )
+    .preferredColorScheme(.dark)
+}
+#endif
