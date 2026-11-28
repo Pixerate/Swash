@@ -158,6 +158,21 @@ struct DocumentMenuCommands: Commands {
                 .disabled(handler == nil || fileURL == nil)
             Button("Copy File Path") { handler?(.copyFilePath) }
                 .disabled(handler == nil || fileURL == nil)
+            Divider()
+            // NSTextView's find bar only answers menu items: without these, ⌘F does nothing (#271).
+            Menu("Find") {
+                Button("Find…") { TextFinderCommand.send(.showFindInterface) }
+                    .keyboardShortcut("f", modifiers: .command)
+                Button("Find and Replace…") { TextFinderCommand.send(.showReplaceInterface) }
+                    .keyboardShortcut("f", modifiers: [.command, .option])
+                Button("Find Next") { TextFinderCommand.send(.nextMatch) }
+                    .keyboardShortcut("g", modifiers: .command)
+                Button("Find Previous") { TextFinderCommand.send(.previousMatch) }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+                // No ⌘E: it is Format › Inline Code (shared format manifest).
+                Button("Use Selection for Find") { TextFinderCommand.send(.setSearchString) }
+            }
+            .disabled(handler == nil)
         }
         CommandGroup(before: .toolbar) {
             ForEach(Array(ViewMode.menuOrder.enumerated()), id: \.element) { index, mode in
@@ -199,4 +214,16 @@ enum DocumentLinkText {
         NSPasteboard.general.setString(string, forType: .string)
     }
 }
+
+/// Sends an `NSTextFinder` action to the focused text view, the way AppKit's standard Find menu
+/// items do: `performTextFinderAction(_:)` reads the action from the sender's `tag`.
+enum TextFinderCommand {
+    @discardableResult
+    static func send(_ action: NSTextFinder.Action) -> Bool {
+        let sender = NSMenuItem()
+        sender.tag = action.rawValue
+        return NSApp.sendAction(#selector(NSResponder.performTextFinderAction(_:)), to: nil, from: sender)
+    }
+}
+
 #endif
