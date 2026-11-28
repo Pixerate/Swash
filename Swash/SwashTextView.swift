@@ -392,27 +392,37 @@ final class SwashLayoutManager: NSLayoutManager {
         info.image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: info.alpha, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high.rawValue])
     }
     
-    /// One checkbox cell, reconfigured for each task marker it draws.
-    private lazy var checkboxCell: NSButtonCell = {
-        let cell = NSButtonCell()
-        cell.setButtonType(.switch)
-        cell.title = ""
-        cell.controlSize = .small
-        cell.isEnabled = true
-        return cell
-    }()
-    
-    /// Draws a native checkbox ending just left of `contentX`, centred on the line.
-    private func drawCheckbox(checked: Bool, contentX: CGFloat, lineMidY: CGFloat) {
-        let cell = checkboxCell
-        cell.state = checked ? .on : .off
-        let size = cell.cellSize
-        let rect = NSRect(x: contentX - size.width - 6, y: lineMidY - size.height / 2, width: size.width, height: size.height)
-        if let view = firstTextView {
-            cell.draw(withFrame: rect, in: view)
+    /// The body font, standing in for an empty list item's missing text.
+    var defaultBodyFont: NSFont {
+        (firstTextView?.delegate as? SwashTextView.Coordinator)?.parent.typography.bodyFont ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+    }
+
+    /// Where a list marker's item text sits, in text-container coordinates.
+    func listMarkerGeometry(forMarkerGlyphs markerGlyphs: NSRange, indent: CGFloat) -> ListMarkerGeometry? {
+        listMarkerGeometry(forMarkerGlyphs: markerGlyphs, indent: indent, defaultFont: defaultBodyFont)
+    }
+
+    /// Draws a list marker as an SF Symbol (#184), matching the iOS editor: a Reminders-style circle for a
+    /// task, the system's bullet for its level, or the item's number as text.
+    private func drawListMarker(_ marker: ListMarkerInfo, geometry: ListMarkerGeometry, origin: NSPoint, alpha: CGFloat) {
+        let rect = ListMarkerSymbols.markerRect(for: marker, geometry: geometry).offsetBy(dx: origin.x, dy: origin.y)
+        let view = firstTextView
+        let background = view?.backgroundColor ?? .textBackgroundColor
+        if let image = ListMarkerSymbols.symbolImage(for: marker, font: geometry.font) {
+            let base = marker.isChecked ? (marker.color ?? .controlAccentColor) : ListMarkerSymbols.neutralColor
+            let tint = ListMarkerSymbols.accessibleColor(for: base, on: background, in: view)
+            ListMarkerSymbols.tinted(image, with: tint)
+                .draw(in: rect, from: .zero, operation: .sourceOver, fraction: alpha, respectFlipped: true, hints: nil)
+        } else {
+            let tint = ListMarkerSymbols.accessibleColor(for: marker.color ?? ListMarkerSymbols.neutralColor, on: background, in: view)
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: ListMarkerSymbols.numberFont(for: geometry.font),
+                .foregroundColor: tint.withAlphaComponent(tint.alphaComponent * alpha)
+            ]
+            (marker.text as NSString).draw(in: CGRect(x: rect.minX, y: rect.minY, width: rect.width + 4, height: rect.height), withAttributes: attributes)
         }
     }
-    
+
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         fillIndentedTextBlocks(forGlyphRange: glyphsToShow, at: origin)
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
@@ -454,38 +464,86 @@ final class SwashLayoutManager: NSLayoutManager {
         }
         
         textStorage.enumerateAttribute(.listMarker, in: charRange, options: []) { value, range, _ in
-            if let markerInfo = value as? ListMarkerInfo {
-                let glyphRange = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-                let lineRect = lineFragmentRect(forGlyphAt: glyphRange.location, effectiveRange: nil)
-                let contentGlyph = min(glyphRange.location + glyphRange.length, max(0, numberOfGlyphs - 1))
-                let contentChar = characterIndexForGlyph(at: contentGlyph)
-                let textFont = (contentChar < textStorage.length ? textStorage.attribute(.font, at: contentChar, effectiveRange: nil) as? NSFont : nil) ?? NSFont.systemFont(ofSize: 14)
-                let glyphLoc = location(forGlyphAt: contentGlyph)
-                let baselineY = origin.y + lineRect.origin.y + glyphLoc.y
-                let contentX = lineRect.origin.x + glyphLoc.x
-                
-                if markerInfo.isTask {
-                    let lineMidY = baselineY - textFont.capHeight / 2
-                    drawCheckbox(checked: markerInfo.isChecked, contentX: origin.x + (contentX > 0 ? contentX : markerInfo.indent),
-                                 lineMidY: lineMidY)
-                    return
-                }
-                
-                let font = NSFont.systemFont(ofSize: max(11, textFont.pointSize - 1), weight: .regular)
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: font,
-                    .foregroundColor: markerInfo.color ?? NSColor.secondaryLabelColor
-                ]
-                
-                let markerSize = (markerInfo.text as NSString).size(withAttributes: attrs)
-                // Position the marker just left of where the item's text actually starts, so it also
-                // lines up inside quotes, alerts and other text blocks with their own padding
-                let x = origin.x + (contentX > 0 ? contentX : markerInfo.indent) - markerSize.width - 10
-                let y = baselineY - font.ascender
-                
-                let drawRect = CGRect(x: x, y: y, width: markerSize.width + 4, height: markerSize.height)
-                (markerInfo.text as NSString).draw(in: drawRect, withAttributes: attrs)
-            }
+            guard let marker = value as? ListMarkerInfo else { return }
+            let markerGlyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            guard let geometry = listMarkerGeometry(forMarkerGlyphs: markerGlyphs, indent: marker.indent) else { return }
+            // Focus Mode dims the item's text with a temporary colour (WritingModes.applyFocus); fade its marker with it
+            let itemStart = min(NSMaxRange(range), textStorage.length - 1)
+            let isDimmed = temporaryAttribute(.foregroundColor, atCharacterIndex: max(0, itemStart), effectiveRange: nil) != nil
+            drawListMarker(marker, geometry: geometry, origin: origin, alpha: isDimmed ? ListMarkerSymbols.unfocusedAlpha : 1)
+        }
+    }
+}
+
+/// AppKit rendering of `ListMarkerStyle`: symbol images, sizes and colours for the Mac editor's list markers.
+enum ListMarkerSymbols {
+    /// Matches the iOS editor's Focus Mode fade (`StyledLayoutManager.unfocusedAlpha`).
+    static let unfocusedAlpha: CGFloat = 0.3
+
+    /// The (untinted) symbol image for a marker, sized from its line's font, or nil for an ordered item.
+    static func symbolImage(for marker: ListMarkerInfo, font: NSFont) -> NSImage? {
+        guard let name = ListMarkerStyle.symbolName(for: marker) else { return nil }
+        let pointSize = ListMarkerStyle.symbolPointSize(for: marker, fontSize: font.pointSize)
+        let configuration = marker.isTask
+            ? NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular, scale: .medium)
+            : NSImage.SymbolConfiguration(pointSize: pointSize, weight: .bold, scale: .small)
+        return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
+    }
+
+    static func symbolSize(for marker: ListMarkerInfo, font: NSFont) -> CGSize {
+        symbolImage(for: marker, font: font)?.size ?? .zero
+    }
+
+    /// The checkbox circle for a task item, just left of the item's text and centred on its first line.
+    static func checkboxRect(_ geometry: ListMarkerGeometry) -> CGRect {
+        ListMarkerStyle.checkboxRect(size: symbolSize(for: ListMarkerInfo(text: "☐", indent: 0), font: geometry.font), geometry: geometry)
+    }
+
+    /// The font an ordered item's number is drawn in, with monospaced digits so numbers line up.
+    static func numberFont(for font: NSFont) -> NSFont {
+        NSFont.monospacedDigitSystemFont(ofSize: max(11, font.pointSize - 1), weight: .regular)
+    }
+
+    /// The rect a marker is drawn in: the checkbox, the bullet, or the number's text box.
+    static func markerRect(for marker: ListMarkerInfo, geometry: ListMarkerGeometry) -> CGRect {
+        if marker.isTask { return checkboxRect(geometry) }
+        if marker.bulletKind != nil {
+            return ListMarkerStyle.bulletRect(size: symbolSize(for: marker, font: geometry.font),
+                                              checkboxSize: symbolSize(for: ListMarkerInfo(text: "☐", indent: 0), font: geometry.font),
+                                              geometry: geometry)
+        }
+        let font = numberFont(for: geometry.font)
+        let size = (marker.text as NSString).size(withAttributes: [.font: font])
+        // Just left of where the item's text starts, so it also lines up inside quotes and alerts
+        return CGRect(x: geometry.contentX - size.width - 10, y: geometry.baselineY - font.ascender, width: size.width, height: size.height)
+    }
+
+    /// Unticked checkboxes, bullets and numbers: `secondaryLabelColor`, or `labelColor` with Increase Contrast.
+    static var neutralColor: NSColor {
+        NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? .labelColor : .secondaryLabelColor
+    }
+
+    /// `foreground`, resolved for `view`'s appearance and adjusted if needed to reach 3:1 against `background`.
+    static func accessibleColor(for foreground: NSColor, on background: NSColor, in view: NSView?, minContrast: CGFloat = 3.0) -> NSColor {
+        var fg = foreground.usingColorSpace(.sRGB)
+        var bg = background.usingColorSpace(.sRGB)
+        (view?.effectiveAppearance ?? NSAppearance.currentDrawing()).performAsCurrentDrawingAppearance {
+            fg = foreground.usingColorSpace(.sRGB)
+            bg = background.usingColorSpace(.sRGB)
+        }
+        guard let fg, let bg else { return foreground }
+        let adjusted = ListMarkerStyle.contrastAdjusted((fg.redComponent, fg.greenComponent, fg.blueComponent),
+                                                        on: (bg.redComponent, bg.greenComponent, bg.blueComponent), minContrast: minContrast)
+        return NSColor(srgbRed: adjusted.r, green: adjusted.g, blue: adjusted.b, alpha: fg.alphaComponent)
+    }
+
+    /// The (monochrome) symbol filled with `color`; a ticked circle's checkmark stays a cut-out.
+    static func tinted(_ image: NSImage, with color: NSColor) -> NSImage {
+        NSImage(size: image.size, flipped: false) { rect in
+            image.draw(in: rect)
+            color.set()
+            rect.fill(using: .sourceIn)
+            return true
         }
     }
 }
@@ -522,17 +580,14 @@ class SwashNSTextView: NSTextView {
         let lineCharacters = layoutManager.characterRange(forGlyphRange: lineGlyphs, actualGlyphRange: nil)
         var hit: NSRange? = nil
         storage.enumerateAttribute(.listMarker, in: lineCharacters, options: []) { value, range, stop in
-            guard let info = value as? ListMarkerInfo, info.isTask else { return }
-            let contentChar = min(NSMaxRange(range), max(0, storage.length - 1))
-            let contentGlyph = layoutManager.glyphIndexForCharacter(at: contentChar)
-            let glyphLoc = layoutManager.location(forGlyphAt: contentGlyph)
-            let contentX = lineRect.minX + glyphLoc.x
-            let baselineY = lineRect.origin.y + glyphLoc.y
-            let textFont = (storage.attribute(.font, at: contentChar, effectiveRange: nil) as? NSFont) ?? NSFont.systemFont(ofSize: 14)
-            let lineMidY = baselineY - textFont.capHeight / 2
-            // The checkbox is drawn just left of the item's text, vertically centered with the text
-            if containerPoint.x >= contentX - 30 && containerPoint.x <= contentX + 2,
-               containerPoint.y >= lineMidY - 12 && containerPoint.y <= lineMidY + 12 {
+            guard let info = value as? ListMarkerInfo, info.isTask,
+                  let geometry = (layoutManager as? SwashLayoutManager)?.listMarkerGeometry(
+                    forMarkerGlyphs: layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil), indent: info.indent)
+            else { return }
+            // The drawn circle, with a few points of slack around it, up to where the item's text starts
+            let circle = ListMarkerSymbols.checkboxRect(geometry)
+            let target = CGRect(x: circle.minX - 6, y: circle.minY - 6, width: geometry.contentX + 2 - (circle.minX - 6), height: circle.height + 12)
+            if target.contains(containerPoint) {
                 hit = range
                 stop.pointee = true
             }

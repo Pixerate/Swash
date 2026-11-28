@@ -25,6 +25,9 @@ final class PreviewSnapshotTests: XCTestCase {
         }
     }
 
+    /// Tasks, nested bullets, numbers and empty items at the end, for the editor's list markers.
+    private static let listMarkdown = "## Today\n\n- [ ] Buy milk\n- [x] Water the plants\n- Bullet\n  - Nested\n    - Deeper\n1. First\n2. Second\n- [ ] "
+
     func testRenderSwiftUIPreviews() async throws {
         let exportDir = ProcessInfo.processInfo.environment["SWASH_PREVIEW_EXPORT_DIR"]
             .flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
@@ -74,6 +77,13 @@ final class PreviewSnapshotTests: XCTestCase {
                             .navigationTitle("Outline")
                     }
                 )
+            },
+            // List markers are SF Symbols: Reminders-style circles and the system's bullets (#184)
+            PreviewCase(name: "iOS-EditorLists-Light", style: .light, size: CGSize(width: 393, height: 420)) {
+                AnyView(StyledTextView(text: .constant(Self.listMarkdown), controller: IOSEditorController(), flavor: .github, baseURL: nil))
+            },
+            PreviewCase(name: "iOS-EditorLists-Dark", style: .dark, size: CGSize(width: 393, height: 420)) {
+                AnyView(StyledTextView(text: .constant(Self.listMarkdown), controller: IOSEditorController(), flavor: .github, baseURL: nil))
             },
             PreviewCase(name: "iOS-DocumentInfo-Light", style: .light) {
                 AnyView(
